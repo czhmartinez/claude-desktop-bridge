@@ -128,6 +128,8 @@ function observed(sessionId: string, cwd: string): ObservedClaudeSession {
     transcriptMtimeMs: Date.now(),
     processAlive: true,
     activeTask: false,
+    hostModel: "claude-fable-5[1m]",
+    hostEffort: "high",
   };
 }
 
@@ -198,6 +200,8 @@ describe("SessionBroker", () => {
     observer.publish();
     await waitFor(() => hosts[0]?.sends === 1);
     expect(hosts[0]!.options.resume).toBe(true);
+    expect(hosts[0]!.options.model).toBe("claude-fable-5[1m]");
+    expect(hosts[0]!.options.effort).toBe("high");
     const duplicate = await broker.startTurn({
       requestId: "request-duplicate",
       idempotencyKey: "same-command",

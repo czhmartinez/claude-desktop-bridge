@@ -79,6 +79,14 @@ describe.skipIf(!runRealM0)("ClaudeSessionHost real M0 gate", () => {
       permissionRequests += 1;
       permissionBroker.resolveRequest(request.requestId, "allow-once");
     });
+    const model = process.env.BRIDGE_M0_MODEL?.trim();
+    const effort = process.env.BRIDGE_M0_EFFORT === "low" ||
+      process.env.BRIDGE_M0_EFFORT === "medium" ||
+      process.env.BRIDGE_M0_EFFORT === "high" ||
+      process.env.BRIDGE_M0_EFFORT === "xhigh" ||
+      process.env.BRIDGE_M0_EFFORT === "max"
+      ? process.env.BRIDGE_M0_EFFORT
+      : undefined;
     const firstHost = new ClaudeSessionHost({
       sessionId,
       cwd,
@@ -87,6 +95,8 @@ describe.skipIf(!runRealM0)("ClaudeSessionHost real M0 gate", () => {
       permissionBroker,
       resume: false,
       settingSources: [],
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
     });
     firstHost.onEvent((event) => events.push(event));
 
@@ -116,6 +126,8 @@ describe.skipIf(!runRealM0)("ClaudeSessionHost real M0 gate", () => {
       permissionBroker,
       resume: true,
       settingSources: [],
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
     });
     resumedHost.onEvent((event) => resumedEvents.push(event));
     resumedHost.send("Reply with exactly BRIDGE_M0_RESUMED. Do not use tools.", "mobile");

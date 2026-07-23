@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { chromium } from "playwright-core";
 
 const endpoint = process.env.BRIDGE_DESKTOP_CDP ?? "http://127.0.0.1:9223";
 const artifacts = resolve("artifacts", "packaged-desktop");
+const desktopPackage = JSON.parse(await readFile(resolve("apps", "desktop", "package.json"), "utf8"));
 await mkdir(artifacts, { recursive: true });
 
 const browser = await chromium.connectOverCDP(endpoint);
@@ -23,6 +24,8 @@ try {
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForFunction(() => Boolean(window.bridgeDesktop));
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => Boolean(window.bridgeDesktop));
   await page.getByRole("button", { name: "会话", exact: true }).waitFor();
@@ -30,7 +33,7 @@ try {
     (await window.bridgeDesktop.getSnapshot()).connection === "connected"
   ));
   const snapshot = await page.evaluate(() => window.bridgeDesktop.getSnapshot());
-  assert.equal(snapshot.host.version, "0.2.0");
+  assert.equal(snapshot.host.version, desktopPackage.version);
   assert.ok(Array.isArray(snapshot.projects));
   assert.ok(Array.isArray(snapshot.sessions));
   assert.ok(Array.isArray(snapshot.devices));

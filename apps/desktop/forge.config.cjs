@@ -1,3 +1,4 @@
+const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 
 const platformIcon = process.platform === "darwin"
@@ -27,6 +28,21 @@ module.exports = {
     ],
   },
   rebuildConfig: {},
+  hooks: {
+    postPackage: async (_forgeConfig, result) => {
+      if (result.platform !== "darwin") return;
+      const identity = process.env.BRIDGE_MAC_SIGN_IDENTITY || "-";
+      for (const outputPath of result.outputPaths) {
+        execFileSync("codesign", [
+          "--force",
+          "--deep",
+          "--sign",
+          identity,
+          path.join(outputPath, "Bridge.app"),
+        ], { stdio: "inherit" });
+      }
+    },
+  },
   makers: [
     {
       name: "@electron-forge/maker-squirrel",

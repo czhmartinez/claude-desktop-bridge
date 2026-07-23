@@ -9,6 +9,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeAttachment } from "@bridge/protocol";
 import { AsyncInputQueue } from "./async-input-queue.js";
+import type { ClaudeSessionEffort } from "./claude-desktop-sessions.js";
 import type { PermissionBroker } from "./permission-broker.js";
 
 export type SessionHostOrigin = "desktop" | "mobile" | "system";
@@ -44,6 +45,8 @@ export interface ClaudeSessionHostOptions {
   environment: NodeJS.ProcessEnv;
   permissionBroker: PermissionBroker;
   resume: boolean;
+  model?: string;
+  effort?: ClaudeSessionEffort;
   settingSources?: Array<"user" | "project" | "local">;
   queryFactory?: typeof createQuery;
 }
@@ -140,6 +143,8 @@ export class ClaudeSessionHost extends EventEmitter {
         permissionMode: "default",
         canUseTool,
         persistSession: true,
+        ...(this.options.model ? { model: this.options.model } : {}),
+        ...(this.options.effort ? { effort: this.options.effort } : {}),
         ...(this.options.resume
           ? { resume: this.options.sessionId, forkSession: false }
           : { sessionId: this.options.sessionId }),
@@ -301,7 +306,11 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "result") {
-      if (message.subtype === "success") {
+      if (
+        message.subtype === "success" &&
+        !message.is_error &&
+        !/^API Error:/iu.test(message.result.trim())
+      ) {
         this.emitEvent({
           type: "turn.completed",
           sessionId: this.sessionIdValue,
@@ -314,7 +323,9 @@ export class ClaudeSessionHost extends EventEmitter {
           type: "turn.failed",
           sessionId: this.sessionIdValue,
           ...(turnId ? { turnId } : {}),
-          error: message.errors.join("\n") || message.subtype,
+          error: message.subtype === "success"
+            ? message.result
+            : message.errors.join("\n") || message.subtype,
           at: Date.now(),
         });
       }

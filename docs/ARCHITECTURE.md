@@ -72,5 +72,7 @@ FCM/APNs 只发送 `bridge-wake` 或 `content-available`，不包含会话 ID、
 
 Bridge 只使用 Claude Desktop 已经存在的第三方 Host 凭据路径，不提供官方 OAuth
 登录，也不回退到官方账户存储。实际执行由 `@anthropic-ai/claude-agent-sdk`
-驱动，设置 `resume`、准确 `cwd` 和 `forkSession:false`。如果 SDK 将来不兼容，
+驱动，设置 `resume`、准确 `cwd` 和 `forkSession:false`。Bridge 同时从 Claude
+Desktop 会话元数据继承精确 `model` 与 `effort`，包括 `[1m]` 上下文后缀，避免
+恢复自定义模型别名时静默退回默认上下文通道。如果 SDK 将来不兼容，
 唯一允许的降级是持久 `stream-json` 进程，不能退回单次 `-p`。

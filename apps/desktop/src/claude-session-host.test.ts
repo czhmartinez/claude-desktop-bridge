@@ -106,6 +106,8 @@ describe("ClaudeSessionHost", () => {
       environment: { PATH: "/usr/bin" },
       permissionBroker: new PermissionBroker(),
       resume: true,
+      model: "claude-fable-5[1m]",
+      effort: "high",
       queryFactory: ((params) => {
         queryCalls += 1;
         captured = params;
@@ -141,10 +143,52 @@ describe("ClaudeSessionHost", () => {
       cwd: "/tmp/bridge-project",
       includePartialMessages: true,
       permissionMode: "default",
+      model: "claude-fable-5[1m]",
+      effort: "high",
     });
 
     await host.interrupt();
     expect(fake.interrupted).toBe(true);
+    await host.close();
+  });
+
+  it("reports provider API errors as failed turns", async () => {
+    const fake = new FakeQuery();
+    const sessionId = randomUUID();
+    const host = new ClaudeSessionHost({
+      sessionId,
+      cwd: "/tmp/bridge-project",
+      executablePath: "/tmp/claude",
+      environment: { PATH: "/usr/bin" },
+      permissionBroker: new PermissionBroker(),
+      resume: true,
+      queryFactory: (() => fake as unknown as Query) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent((event) => events.push(event));
+
+    host.send("continue", "mobile");
+    fake.push({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: true,
+      num_turns: 1,
+      result: "API Error: request exceeded model token limit",
+      stop_reason: null,
+      total_cost_usd: 0,
+      usage: {} as never,
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: sessionId,
+    });
+
+    await expect(waitForEvent(events, "turn.failed")).resolves.toMatchObject({
+      type: "turn.failed",
+      error: "API Error: request exceeded model token limit",
+    });
     await host.close();
   });
 

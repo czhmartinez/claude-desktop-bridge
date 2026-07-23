@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
-import { listClaudeDesktopSessions } from "./claude-desktop-sessions.js";
+import {
+  listClaudeDesktopSessions,
+  type ClaudeSessionEffort,
+} from "./claude-desktop-sessions.js";
 import { findClaudeTranscriptFile } from "./claude-history.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
 
@@ -18,6 +21,8 @@ export interface ObservedClaudeSession extends BridgeSessionInfo {
   transcriptMtimeMs: number;
   processAlive: boolean;
   activeTask: boolean;
+  hostModel?: string;
+  hostEffort?: ClaudeSessionEffort;
 }
 
 export interface ClaudeCatalogSnapshot {
@@ -122,6 +127,8 @@ export async function scanClaudeCatalog(paths: ClaudeRuntimePaths): Promise<Clau
       transcriptMtimeMs,
       processAlive: active?.processAlive ?? false,
       activeTask,
+      ...(desktopSession.model ? { hostModel: desktopSession.model } : {}),
+      ...(desktopSession.effort ? { hostEffort: desktopSession.effort } : {}),
       ...(transcriptPath ? { transcriptPath } : {}),
     });
   }

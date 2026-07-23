@@ -28,10 +28,18 @@ describe("Claude Desktop session catalog", () => {
         cliSessionId: "cli-session",
         cwd: "/work/project",
         lastFocusedAt: 200,
+        model: "claude-fable-5[1m]",
+        effort: "high",
       })),
     ]);
 
     await expect(findClaudeDesktopSessionId([root], "cli-session")).resolves.toBe("local_current");
-    await expect(listClaudeDesktopSessions([root])).resolves.toHaveLength(2);
+    const sessions = await listClaudeDesktopSessions([root]);
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0]).toMatchObject({
+      sessionId: "local_current",
+      model: "claude-fable-5[1m]",
+      effort: "high",
+    });
   });
 });

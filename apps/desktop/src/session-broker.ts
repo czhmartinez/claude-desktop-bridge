@@ -519,6 +519,10 @@ export class SessionBroker extends EventEmitter {
       state.ownership = "ACQUIRING";
       await this.recordOwnership(turn.sessionId, state.ownership);
       const transcript = await findClaudeTranscriptFile(this.options.paths.projects, turn.sessionId, session.cwd);
+      const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
+      const projectProfile = observed?.hostModel ? observed : this.catalog.sessions.find((candidate) => (
+        candidate.cwd === session.cwd && Boolean(candidate.hostModel)
+      ));
       const host = this.hostFactory({
         sessionId: turn.sessionId,
         cwd: session.cwd,
@@ -526,6 +530,8 @@ export class SessionBroker extends EventEmitter {
         environment: this.runtime.environment,
         permissionBroker: this.permissionBroker,
         resume: Boolean(transcript),
+        ...(projectProfile?.hostModel ? { model: projectProfile.hostModel } : {}),
+        ...(projectProfile?.hostEffort ? { effort: projectProfile.hostEffort } : {}),
       });
       host.onEvent((event) => {
         this.eventQueue = this.eventQueue
