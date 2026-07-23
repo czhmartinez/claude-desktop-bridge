@@ -6,6 +6,7 @@ import {
   buildPairingUrl,
   type BridgeAttachment,
   type BridgeDeviceInfo,
+  type BridgeEffort,
   type BridgeEvent,
   type BridgeHostSnapshot,
   type BridgePayload,
@@ -43,6 +44,21 @@ function stringParam(params: Record<string, unknown>, key: string, required = tr
 function numberParam(params: Record<string, unknown>, key: string, fallback: number): number {
   const value = params[key];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function nullableStringParam(params: Record<string, unknown>, key: string): string | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(params, key)) return undefined;
+  const value = params[key];
+  if (value === null) return null;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  throw new Error(`${key} must be a non-empty string or null`);
+}
+
+function effortParam(params: Record<string, unknown>, key: string): BridgeEffort | null | undefined {
+  const value = nullableStringParam(params, key);
+  if (value === undefined || value === null) return value;
+  if (["low", "medium", "high", "xhigh", "max"].includes(value)) return value as BridgeEffort;
+  throw new Error("Invalid effort");
 }
 
 function attachmentsParam(params: Record<string, unknown>): BridgeAttachment[] {
@@ -412,6 +428,25 @@ export class DesktopController extends EventEmitter {
           numberParam(params, "limit", 50),
         ),
       };
+    }
+    if (request.method === "session.configuration") {
+      return {
+        configuration: await this.broker.configuration(stringParam(params, "sessionId")!),
+      };
+    }
+    if (request.method === "session.configure") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const input: Parameters<SessionBroker["configureSession"]>[0] = { sessionId };
+      if (Object.prototype.hasOwnProperty.call(params, "model")) {
+        const model = nullableStringParam(params, "model");
+        if (model !== undefined) input.model = model;
+      }
+      if (Object.prototype.hasOwnProperty.call(params, "effort")) {
+        const effort = effortParam(params, "effort");
+        if (effort !== undefined) input.effort = effort;
+      }
+      const configuration = await this.broker.configureSession(input);
+      return { configuration, session: this.broker.session(sessionId) };
     }
     if (request.method === "turn.start" || request.method === "turn.steer") {
       const input = {

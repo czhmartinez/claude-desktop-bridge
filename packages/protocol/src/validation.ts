@@ -16,6 +16,8 @@ const METHODS = new Set([
   "session.open",
   "session.create",
   "session.history",
+  "session.configuration",
+  "session.configure",
   "turn.start",
   "turn.steer",
   "turn.interrupt",

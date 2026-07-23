@@ -3,7 +3,9 @@ import { EventEmitter } from "node:events";
 import {
   query as createQuery,
   type CanUseTool,
+  type ModelInfo,
   type Query,
+  type SDKControlGetContextUsageResponse,
   type SDKMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -94,12 +96,16 @@ export class ClaudeSessionHost extends EventEmitter {
   private streamTask: Promise<void> | undefined;
   private sessionIdValue: string;
   private currentTurnId: string | undefined;
+  private modelValue: string | undefined;
+  private effortValue: ClaudeSessionEffort | undefined;
   private closed = false;
 
   constructor(private readonly options: ClaudeSessionHostOptions) {
     super();
     this.queryFactory = options.queryFactory ?? createQuery;
     this.sessionIdValue = options.sessionId;
+    this.modelValue = options.model;
+    this.effortValue = options.effort;
   }
 
   get sessionId(): string {
@@ -143,8 +149,8 @@ export class ClaudeSessionHost extends EventEmitter {
         permissionMode: "default",
         canUseTool,
         persistSession: true,
-        ...(this.options.model ? { model: this.options.model } : {}),
-        ...(this.options.effort ? { effort: this.options.effort } : {}),
+        ...(this.modelValue ? { model: this.modelValue } : {}),
+        ...(this.effortValue ? { effort: this.effortValue } : {}),
         ...(this.options.resume
           ? { resume: this.options.sessionId, forkSession: false }
           : { sessionId: this.options.sessionId }),
@@ -157,6 +163,28 @@ export class ClaudeSessionHost extends EventEmitter {
       at: Date.now(),
     });
     this.streamTask = this.consume();
+  }
+
+  async setModel(model?: string): Promise<void> {
+    if (this.modelValue === model) return;
+    const query = this.activeQuery();
+    await query.setModel(model);
+    this.modelValue = model;
+  }
+
+  async setEffort(effort?: ClaudeSessionEffort): Promise<void> {
+    if (this.effortValue === effort) return;
+    const query = this.activeQuery();
+    await query.applyFlagSettings({ effortLevel: effort ?? null });
+    this.effortValue = effort;
+  }
+
+  async supportedModels(): Promise<ModelInfo[]> {
+    return this.activeQuery().supportedModels();
+  }
+
+  async contextUsage(): Promise<SDKControlGetContextUsageResponse> {
+    return this.activeQuery().getContextUsage();
   }
 
   send(input: string | SessionHostInput, origin: SessionHostOrigin): { messageId: string; turnId: string } {
@@ -239,6 +267,13 @@ export class ClaudeSessionHost extends EventEmitter {
         });
       }
     }
+  }
+
+  private activeQuery(): Query {
+    if (this.closed) throw new Error("Session host is closed");
+    this.start();
+    if (!this.queryProcess) throw new Error("Session host failed to start");
+    return this.queryProcess;
   }
 
   private handleMessage(message: SDKMessage): void {

@@ -49,6 +49,8 @@ const sessions = [
     pendingCount: 1,
     activeTurnId: "turn-active",
     currentSummary: "验证手机与电脑共享同一条事件流",
+    model: "claude-fable-5[1m]",
+    effort: "high",
   },
   {
     sessionId: "session-idle",
@@ -61,6 +63,8 @@ const sessions = [
     turnState: "idle",
     lastActivityAt: now - 1_800_000,
     pendingCount: 0,
+    model: "claude-sonnet-5",
+    effort: "medium",
   },
   {
     sessionId: "session-pms",
@@ -73,6 +77,8 @@ const sessions = [
     turnState: "idle",
     lastActivityAt: now - 3_600_000,
     pendingCount: 0,
+    model: "claude-opus-4-8",
+    effort: "high",
   },
 ];
 const history = {
@@ -107,6 +113,30 @@ const history = {
   ],
   hasMore: true,
   nextCursor: "older-page",
+};
+let sessionConfiguration = {
+  sessionId: "session-running",
+  model: "claude-fable-5[1m]",
+  effort: "high",
+  inheritedModel: "claude-fable-5[1m]",
+  inheritedEffort: "high",
+  modelSource: "claude-desktop",
+  effortSource: "claude-desktop",
+  availableModels: [
+    { value: "claude-fable-5[1m]", displayName: "Fable 5 · 1M", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high", "xhigh"] },
+    { value: "claude-opus-4-8[1m]", displayName: "Opus 4.8 · 1M", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+    { value: "claude-sonnet-5[1m]", displayName: "Sonnet 5 · 1M", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high", "xhigh"] },
+  ],
+  availableEffortLevels: ["low", "medium", "high", "xhigh"],
+  modelsComplete: true,
+  appliesAfterTurn: true,
+  context: {
+    totalTokens: 301_611,
+    maxTokens: 1_000_000,
+    percentage: 30.1611,
+    model: "k3",
+    estimated: false,
+  },
 };
 
 function watch(page, name) {
@@ -155,7 +185,7 @@ const hostSnapshot = {
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.2.0",
+    version: "0.2.2",
   },
   projects: [project, secondaryProject],
   sessions,
@@ -243,6 +273,15 @@ desktopSocket.onMessage((message, encrypted) => {
       result = { session: sessions[0], history, latestSeq: eventSeq };
     } else if (request.method === "session.history") {
       result = { history: { ...history, items: history.items.slice(0, 1), hasMore: false } };
+    } else if (request.method === "session.configuration") {
+      result = { configuration: sessionConfiguration };
+    } else if (request.method === "session.configure") {
+      sessionConfiguration = {
+        ...sessionConfiguration,
+        ...(typeof request.params.model === "string" ? { model: request.params.model, overrideModel: request.params.model } : {}),
+        ...(typeof request.params.effort === "string" ? { effort: request.params.effort, overrideEffort: request.params.effort } : {}),
+      };
+      result = { configuration: sessionConfiguration, session: sessions[0] };
     } else if (request.method === "project.list") {
       result = { projects: hostSnapshot.projects };
     } else if (request.method === "session.list") {
@@ -328,6 +367,11 @@ try {
   await mobile.getByText("Bash 请求权限").waitFor();
   await checkPage(mobile, "mobile conversation");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-conversation-390x844.png"), fullPage: true });
+  await mobile.getByRole("button", { name: "模型与 Effort" }).click();
+  await mobile.getByText("Claude Host 实时用量").waitFor();
+  await checkPage(mobile, "mobile session configuration");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-session-configuration-390x844.png"), fullPage: true });
+  await mobile.getByRole("button", { name: "关闭" }).click();
 
   await mobile.getByLabel("给 Claude 发指令").fill("继续验证同一会话的手机消息。");
   await mobile.getByRole("button", { name: "发送", exact: true }).click();
@@ -355,8 +399,9 @@ try {
   });
   const desktop = await desktopContext.newPage();
   watch(desktop, "desktop");
-  await desktop.addInitScript(({ snapshot, pairingUrl, history }) => {
+  await desktop.addInitScript(({ snapshot, pairingUrl, history, sessionConfiguration }) => {
     let current = snapshot;
+    let currentConfiguration = sessionConfiguration;
     const snapshotListeners = new Set();
     const eventListeners = new Set();
     const response = (request, result) => ({
@@ -396,6 +441,17 @@ try {
         if (request.method === "session.create") {
           return response(request, { session: current.sessions[1] });
         }
+        if (request.method === "session.configuration") {
+          return response(request, { configuration: currentConfiguration });
+        }
+        if (request.method === "session.configure") {
+          currentConfiguration = {
+            ...currentConfiguration,
+            ...(typeof request.params.model === "string" ? { model: request.params.model, overrideModel: request.params.model } : {}),
+            ...(typeof request.params.effort === "string" ? { effort: request.params.effort, overrideEffort: request.params.effort } : {}),
+          };
+          return response(request, { configuration: currentConfiguration, session: current.sessions[0] });
+        }
         if (request.method === "turn.interrupt") return response(request, { interrupted: true });
         if (request.method === "permission.resolve") return response(request, { resolved: true });
         return response(request, { commandId: "desktop-command", state: "queued" });
@@ -410,12 +466,17 @@ try {
         return () => eventListeners.delete(listener);
       },
     };
-  }, { snapshot: desktopSnapshot, pairingUrl, history });
+  }, { snapshot: desktopSnapshot, pairingUrl, history, sessionConfiguration });
   await desktop.goto(baseUrl, { waitUntil: "networkidle" });
   await desktop.getByRole("heading", { name: "会话", exact: true }).waitFor();
   await desktop.getByText("会话内核已接管相同 sessionId，正在验证实时事件与审批。").waitFor();
   await checkPage(desktop, "desktop sessions");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-sessions-1200x800.png"), fullPage: true });
+  await desktop.getByRole("button", { name: "模型与 Effort" }).click();
+  await desktop.getByText("Claude Host 实时用量").waitFor();
+  await checkPage(desktop, "desktop session configuration");
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-session-configuration-1200x800.png"), fullPage: true });
+  await desktop.getByRole("button", { name: "关闭" }).click();
 
   await desktop.getByRole("button", { name: "设备", exact: true }).click();
   await desktop.getByRole("heading", { name: "设备", exact: true }).waitFor();

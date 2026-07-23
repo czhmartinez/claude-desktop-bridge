@@ -58,6 +58,8 @@ export function App() {
       onInterruptTurn={mobile.interruptTurn}
       onResolvePermission={mobile.resolvePermission}
       onCreateSession={mobile.createSession}
+      onLoadSessionConfiguration={mobile.loadSessionConfiguration}
+      onConfigureSession={mobile.configureSession}
       onRefresh={mobile.refresh}
       onBackToHosts={mobile.backToHosts}
       onRetry={mobile.retryConnection}

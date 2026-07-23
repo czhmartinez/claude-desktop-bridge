@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { BridgeEffort } from "@bridge/protocol";
 
 interface DesktopSessionFile {
   sessionId?: unknown;
@@ -14,7 +15,7 @@ interface DesktopSessionFile {
   effort?: unknown;
 }
 
-export type ClaudeSessionEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type ClaudeSessionEffort = BridgeEffort;
 
 export interface ClaudeDesktopSession {
   sessionId: string;

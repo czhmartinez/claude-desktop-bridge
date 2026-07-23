@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { BridgeEffort } from "@bridge/protocol";
+import type { ModelInfo, SDKControlGetContextUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-session-host.js";
 import type { ClaudeCatalogSnapshot, ObservedClaudeSession } from "./claude-session-catalog.js";
 import {
@@ -44,10 +46,60 @@ class FakeHost implements SessionHostRuntime {
   readonly events = new EventEmitter();
   sends = 0;
   current: { turnId: string; messageId: string } | undefined;
+  model: string | undefined;
+  effort: BridgeEffort | undefined;
+  closed = false;
 
-  constructor(readonly options: ClaudeSessionHostOptions) {}
+  constructor(readonly options: ClaudeSessionHostOptions) {
+    this.model = options.model;
+    this.effort = options.effort;
+  }
 
   start(): void {}
+
+  async setModel(model?: string): Promise<void> {
+    this.model = model;
+  }
+
+  async setEffort(effort?: BridgeEffort): Promise<void> {
+    this.effort = effort;
+  }
+
+  async supportedModels(): Promise<ModelInfo[]> {
+    return [
+      {
+        value: "claude-fable-5",
+        displayName: "Fable 5",
+        description: "Fast model",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh"],
+      },
+      {
+        value: "claude-fable-5[1m]",
+        displayName: "Fable 5 · 1M",
+        description: "Long context",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh"],
+      },
+    ];
+  }
+
+  async contextUsage(): Promise<SDKControlGetContextUsageResponse> {
+    return {
+      categories: [],
+      totalTokens: 120_000,
+      maxTokens: 1_000_000,
+      rawMaxTokens: 1_000_000,
+      percentage: 12,
+      gridRows: [],
+      model: this.model ?? "claude-fable-5[1m]",
+      memoryFiles: [],
+      mcpTools: [],
+      agents: [],
+      isAutoCompactEnabled: true,
+      apiUsage: null,
+    };
+  }
 
   send(input: Parameters<SessionHostRuntime["send"]>[0], origin: Parameters<SessionHostRuntime["send"]>[1]) {
     this.sends += 1;
@@ -80,7 +132,9 @@ class FakeHost implements SessionHostRuntime {
     this.current = undefined;
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    this.closed = true;
+  }
 
   onEvent(listener: (event: SessionHostEvent) => void): () => void {
     this.events.on("event", listener);
@@ -309,6 +363,146 @@ describe("SessionBroker", () => {
 
     expect(broker.runtimeStatus().activeTurns).toBe(2);
     expect(broker.listSessions().reduce((sum, session) => sum + session.pendingCount, 0)).toBe(1);
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("persists model and effort per session and blocks an unsafe context downgrade", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-config-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    const sessionId = randomUUID();
+    const projectDirectory = join(projects, cwd.replace(/[:\\/]/gu, "-"));
+    await Promise.all([mkdir(cwd, { recursive: true }), mkdir(projectDirectory, { recursive: true })]);
+    await writeFile(join(projectDirectory, `${sessionId}.jsonl`), JSON.stringify({
+      type: "assistant",
+      uuid: randomUUID(),
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "assistant",
+        model: "k3",
+        content: "done",
+        usage: {
+          input_tokens: 1_000,
+          cache_read_input_tokens: 300_000,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    }));
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd)],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const sessionsPath = join(root, "sessions.json");
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath,
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+
+    await expect(broker.configuration(sessionId)).resolves.toMatchObject({
+      model: "claude-fable-5[1m]",
+      effort: "high",
+      modelsComplete: true,
+    });
+    await expect(broker.configureSession({
+      sessionId,
+      effort: "xhigh",
+    })).resolves.toMatchObject({
+      model: "claude-fable-5[1m]",
+      effort: "xhigh",
+      effortSource: "bridge",
+    });
+    expect(hosts[0]?.options.sessionId).not.toBe(sessionId);
+    expect(hosts[0]?.closed).toBe(true);
+    expect(broker.session(sessionId)).toMatchObject({
+      model: "claude-fable-5[1m]",
+      effort: "xhigh",
+    });
+    await expect(broker.configureSession({
+      sessionId,
+      model: "claude-fable-5",
+    })).rejects.toThrow(/301,000 tokens/u);
+    const saved = JSON.parse(await readFile(sessionsPath, "utf8")) as {
+      configurations: Array<{ sessionId: string; model?: string; effort?: BridgeEffort; updatedAt: number }>;
+    };
+    expect(saved.configurations).toEqual([
+      expect.objectContaining({ sessionId, effort: "xhigh" }),
+    ]);
+
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("discovers provider models without attaching to the desktop session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-discovery-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    await mkdir(cwd, { recursive: true });
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd)],
+      observedAt: Date.now(),
+    });
+    observer.busy = true;
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+
+    await expect(broker.configuration(sessionId)).resolves.toMatchObject({
+      model: "claude-fable-5[1m]",
+      modelsComplete: true,
+    });
+    expect(hosts).toHaveLength(1);
+    expect(hosts[0]?.options.sessionId).not.toBe(sessionId);
+    expect(hosts[0]?.closed).toBe(true);
+    expect(broker.session(sessionId)?.ownership).toBe("DESKTOP_OBSERVED");
+
     await broker.close();
     await eventLog.close();
   });

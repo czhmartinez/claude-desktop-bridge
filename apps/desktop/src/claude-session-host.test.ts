@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ModelInfo, Query, SDKControlGetContextUsageResponse, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ClaudeSessionHost, type SessionHostEvent } from "./claude-session-host.js";
 import { PermissionBroker } from "./permission-broker.js";
 
@@ -9,6 +9,8 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
   private resolveNext: (() => void) | undefined;
   interrupted = false;
   closed = false;
+  selectedModel: string | undefined;
+  selectedEffort: string | null | undefined;
 
   push(message: SDKMessage): void {
     this.messages.push(message);
@@ -47,7 +49,7 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
   }
 
   async setPermissionMode(): Promise<void> {}
-  async setModel(): Promise<void> {}
+  async setModel(model?: string): Promise<void> { this.selectedModel = model; }
   async setMaxThinkingTokens(): Promise<void> {}
   async setThinking(): Promise<void> {}
   async setEffort(): Promise<void> {}
@@ -59,8 +61,32 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
   async setPlugins(): Promise<void> {}
   async setTools(): Promise<void> {}
   async setSkills(): Promise<void> {}
-  async applyFlagSettings(): Promise<Record<string, unknown>> { return {}; }
-  async supportedModels(): Promise<never[]> { return []; }
+  async applyFlagSettings(settings: { effortLevel?: string | null }): Promise<void> {
+    this.selectedEffort = settings.effortLevel;
+  }
+  async supportedModels(): Promise<ModelInfo[]> {
+    return [{
+      value: "claude-fable-5[1m]",
+      displayName: "Fable 5 · 1M",
+      description: "Long context",
+    }];
+  }
+  async getContextUsage(): Promise<SDKControlGetContextUsageResponse> {
+    return {
+      categories: [],
+      totalTokens: 300_000,
+      maxTokens: 1_000_000,
+      rawMaxTokens: 1_000_000,
+      percentage: 30,
+      gridRows: [],
+      model: "claude-fable-5[1m]",
+      memoryFiles: [],
+      mcpTools: [],
+      agents: [],
+      isAutoCompactEnabled: true,
+      apiUsage: null,
+    };
+  }
   async supportedCommands(): Promise<never[]> { return []; }
   async mcpServerStatus(): Promise<never[]> { return []; }
   async accountInfo(): Promise<undefined> { return undefined; }
@@ -135,6 +161,17 @@ describe("ClaudeSessionHost", () => {
       session_id: sessionId,
     });
     await waitForEvent(events, "turn.completed");
+    await host.setModel("claude-opus-4-8[1m]");
+    await host.setEffort("xhigh");
+    expect(fake.selectedModel).toBe("claude-opus-4-8[1m]");
+    expect(fake.selectedEffort).toBe("xhigh");
+    await expect(host.supportedModels()).resolves.toEqual([
+      expect.objectContaining({ value: "claude-fable-5[1m]" }),
+    ]);
+    await expect(host.contextUsage()).resolves.toMatchObject({
+      totalTokens: 300_000,
+      maxTokens: 1_000_000,
+    });
     host.send("second", "desktop");
     expect(queryCalls).toBe(1);
     expect(captured?.options).toMatchObject({

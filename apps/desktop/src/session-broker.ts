@@ -4,16 +4,25 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute } from "node:path";
 import type {
   BridgeAttachment,
+  BridgeConfigurationSource,
+  BridgeEffort,
   BridgeHistoryItem,
   BridgeHistoryPage,
+  BridgeModelInfo,
   BridgeOwnershipState,
   BridgeProjectInfo,
   BridgeRuntimeStatus,
+  BridgeSessionConfiguration,
+  BridgeSessionContextUsage,
   BridgeSessionInfo,
   BridgeTurnState,
 } from "@bridge/protocol";
 import { ClaudeSessionHost, type ClaudeSessionHostOptions, type SessionHostEvent } from "./claude-session-host.js";
-import { findClaudeTranscriptFile, readClaudeSessionHistory } from "./claude-history.js";
+import {
+  findClaudeTranscriptFile,
+  readClaudeSessionContextEstimate,
+  readClaudeSessionHistory,
+} from "./claude-history.js";
 import { projectIdForCwd, type ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
 import { PermissionBroker, type PermissionDecision } from "./permission-broker.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
@@ -27,9 +36,17 @@ interface StoredBridgeSession {
   createdAt: number;
 }
 
+interface StoredSessionConfiguration {
+  sessionId: string;
+  model?: string;
+  effort?: BridgeEffort;
+  updatedAt: number;
+}
+
 interface BridgeSessionsFile {
   version: 2;
   sessions: StoredBridgeSession[];
+  configurations?: StoredSessionConfiguration[];
 }
 
 export interface QueuedTurn {
@@ -79,6 +96,7 @@ interface SessionRuntimeState {
   turnState: BridgeTurnState;
   host?: SessionHostRuntime;
   active?: QueuedTurn;
+  configurationPending?: boolean;
   releaseTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -88,6 +106,10 @@ export interface SessionHostRuntime {
     input: Parameters<ClaudeSessionHost["send"]>[0],
     origin: Parameters<ClaudeSessionHost["send"]>[1],
   ): ReturnType<ClaudeSessionHost["send"]>;
+  setModel(model?: string): Promise<void>;
+  setEffort(effort?: BridgeEffort): Promise<void>;
+  supportedModels(): ReturnType<ClaudeSessionHost["supportedModels"]>;
+  contextUsage(): ReturnType<ClaudeSessionHost["contextUsage"]>;
   interrupt(): Promise<void>;
   close(): Promise<void>;
   onEvent(listener: (event: SessionHostEvent) => void): () => void;
@@ -121,6 +143,26 @@ export interface StartTurnInput {
   priority?: number;
 }
 
+export interface ConfigureSessionInput {
+  sessionId: string;
+  model?: string | null;
+  effort?: BridgeEffort | null;
+}
+
+interface EffectiveSessionProfile {
+  model?: string;
+  effort?: BridgeEffort;
+  inheritedModel?: string;
+  inheritedEffort?: BridgeEffort;
+  modelSource: BridgeConfigurationSource;
+  effortSource: BridgeConfigurationSource;
+}
+
+const EFFORT_LEVELS: BridgeEffort[] = ["low", "medium", "high", "xhigh", "max"];
+const DEFAULT_CONTEXT_TOKENS = 262_144;
+const LONG_CONTEXT_TOKENS = 1_000_000;
+const MODEL_DISCOVERY_TIMEOUT_MS = 8_000;
+
 function compact(value: string, max = 160): string {
   const normalized = value.replace(/\s+/gu, " ").trim();
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
@@ -152,11 +194,16 @@ export class SessionBroker extends EventEmitter {
   private readonly runtimeFactory: typeof prepareClaudeRuntime;
   private readonly runtimeStates = new Map<string, SessionRuntimeState>();
   private readonly bridgeSessions = new Map<string, StoredBridgeSession>();
+  private readonly sessionConfigurations = new Map<string, StoredSessionConfiguration>();
+  private readonly modelCache = new Map<string, BridgeModelInfo>();
+  private readonly hostStarts = new Map<string, Promise<SessionHostRuntime>>();
   private readonly pending: QueuedTurn[] = [];
   private readonly completedKeys = new Set<string>();
   private readonly terminalTurns = new Map<string, TerminalTurnReceipt>();
   private catalog: ClaudeCatalogSnapshot = { projects: [], sessions: [], observedAt: 0 };
   private runtime: Awaited<ReturnType<typeof prepareClaudeRuntime>> | undefined;
+  private modelCatalogComplete = false;
+  private modelCatalogDiscoveryAttempted = false;
   private activeTurns = 0;
   private initialized = false;
   private closed = false;
@@ -181,8 +228,10 @@ export class SessionBroker extends EventEmitter {
       this.loadQueue(),
     ]);
     this.catalog = this.options.observer.catalog;
+    this.rememberCatalogModels();
     this.options.observer.onCatalog((catalog) => {
       this.catalog = catalog;
+      this.rememberCatalogModels();
       this.refreshObservedOwnership();
       this.emit("changed");
       void this.pump();
@@ -290,6 +339,7 @@ export class SessionBroker extends EventEmitter {
       const ownership = state?.ownership ?? "DESKTOP_OBSERVED";
       const turnState = state?.turnState
         ?? (source && this.options.observer.isDesktopBusy(sessionId) ? "running" : "idle");
+      const profile = this.effectiveProfile(sessionId, cwd);
       const item: BridgeSessionInfo = {
         sessionId,
         ...(source?.desktopSessionId ? { desktopSessionId: source.desktopSessionId } : {}),
@@ -304,6 +354,9 @@ export class SessionBroker extends EventEmitter {
         pendingCount,
         ...(state?.active?.turnId ? { activeTurnId: state.active.turnId } : {}),
         ...(state?.active?.text ? { currentSummary: compact(state.active.text) } : {}),
+        ...(profile.model ? { model: profile.model } : {}),
+        ...(profile.effort ? { effort: profile.effort } : {}),
+        ...(state?.configurationPending ? { configurationPending: true } : {}),
       };
       if (projectId && item.projectId !== projectId) continue;
       if (search) {
@@ -320,6 +373,149 @@ export class SessionBroker extends EventEmitter {
 
   session(sessionId: string): BridgeSessionInfo | undefined {
     return this.listSessions().find((candidate) => candidate.sessionId === sessionId);
+  }
+
+  async configuration(sessionId: string, discoverModels = true): Promise<BridgeSessionConfiguration> {
+    await this.initialize();
+    const session = this.session(sessionId);
+    if (!session) throw new Error("Session not found");
+    const state = this.runtimeStates.get(sessionId);
+    let host = state?.host;
+    let modelsComplete = this.modelCatalogComplete;
+    let context: BridgeSessionContextUsage | undefined;
+
+    if (
+      discoverModels &&
+      !host &&
+      !this.modelCatalogComplete &&
+      !this.modelCatalogDiscoveryAttempted
+    ) {
+      this.modelCatalogDiscoveryAttempted = true;
+      const models = await this.discoverModelsWithoutAttaching(session).catch(() => undefined);
+      if (models?.length) {
+        modelsComplete = true;
+        this.modelCatalogComplete = true;
+        this.rememberModels(models);
+      }
+    }
+    if (host && discoverModels) {
+      const [modelsResult, contextResult] = await Promise.allSettled([
+        host.supportedModels(),
+        host.contextUsage(),
+      ]);
+      if (modelsResult.status === "fulfilled" && modelsResult.value.length > 0) {
+        modelsComplete = true;
+        this.modelCatalogComplete = true;
+        this.rememberModels(modelsResult.value);
+      }
+      if (contextResult.status === "fulfilled") {
+        const usage = contextResult.value;
+        context = {
+          totalTokens: usage.totalTokens,
+          maxTokens: usage.maxTokens,
+          percentage: usage.percentage,
+          model: usage.model,
+          estimated: false,
+        };
+      }
+      this.scheduleRelease(sessionId);
+    }
+    context ??= await this.estimatedContext(session);
+
+    const profile = this.effectiveProfile(sessionId, session.cwd);
+    const stored = this.sessionConfigurations.get(sessionId);
+    const availableModels = this.availableModels(profile.model);
+    const selectedModel = this.findModelInfo(profile.model, availableModels);
+    return {
+      sessionId,
+      ...(profile.model ? { model: profile.model } : {}),
+      ...(profile.effort ? { effort: profile.effort } : {}),
+      ...(profile.inheritedModel ? { inheritedModel: profile.inheritedModel } : {}),
+      ...(profile.inheritedEffort ? { inheritedEffort: profile.inheritedEffort } : {}),
+      ...(stored?.model ? { overrideModel: stored.model } : {}),
+      ...(stored?.effort ? { overrideEffort: stored.effort } : {}),
+      modelSource: profile.modelSource,
+      effortSource: profile.effortSource,
+      availableModels,
+      availableEffortLevels: selectedModel?.supportedEffortLevels?.length
+        ? [...selectedModel.supportedEffortLevels]
+        : [...EFFORT_LEVELS],
+      modelsComplete,
+      appliesAfterTurn: Boolean(state?.configurationPending),
+      ...(context ? { context } : {}),
+    };
+  }
+
+  async configureSession(input: ConfigureSessionInput): Promise<BridgeSessionConfiguration> {
+    await this.initialize();
+    const session = this.session(input.sessionId);
+    if (!session) throw new Error("Session not found");
+    const changesModel = Object.prototype.hasOwnProperty.call(input, "model");
+    const changesEffort = Object.prototype.hasOwnProperty.call(input, "effort");
+    if (!changesModel && !changesEffort) throw new Error("No configuration changes were provided");
+    if (typeof input.model === "string") {
+      if (
+        input.model.length > 160 ||
+        !input.model.trim() ||
+        /[\u0000-\u001f\u007f]/u.test(input.model)
+      ) throw new Error("Invalid model");
+    }
+    if (input.effort !== undefined && input.effort !== null && !EFFORT_LEVELS.includes(input.effort)) {
+      throw new Error("Invalid effort");
+    }
+
+    const previous = this.sessionConfigurations.get(input.sessionId);
+    const proposed: StoredSessionConfiguration = {
+      sessionId: input.sessionId,
+      ...(previous?.model ? { model: previous.model } : {}),
+      ...(previous?.effort ? { effort: previous.effort } : {}),
+      updatedAt: Date.now(),
+    };
+    if (changesModel) {
+      if (typeof input.model === "string") proposed.model = input.model.trim();
+      else delete proposed.model;
+    }
+    if (changesEffort) {
+      if (input.effort) proposed.effort = input.effort;
+      else delete proposed.effort;
+    }
+    const profile = this.effectiveProfile(input.sessionId, session.cwd, proposed);
+    const modelInfo = this.findModelInfo(profile.model, this.availableModels(profile.model));
+    if (
+      profile.effort &&
+      modelInfo?.supportedEffortLevels?.length &&
+      !modelInfo.supportedEffortLevels.includes(profile.effort)
+    ) {
+      throw new Error(`${modelInfo.displayName} 不支持 ${profile.effort} effort`);
+    }
+    if (profile.effort && modelInfo?.supportsEffort === false) {
+      throw new Error(`${modelInfo.displayName} 不支持 effort 调节`);
+    }
+    if (changesModel && profile.model) await this.assertContextFits(session, profile.model);
+
+    const state = this.runtimeStates.get(input.sessionId);
+    if (state?.host && !state.active) {
+      await this.applyHostConfiguration(state.host, profile);
+      delete state.configurationPending;
+    } else if (state?.active) {
+      state.configurationPending = true;
+    }
+
+    if (proposed.model || proposed.effort) this.sessionConfigurations.set(input.sessionId, proposed);
+    else this.sessionConfigurations.delete(input.sessionId);
+    await this.saveSessions();
+    await this.record({
+      sessionId: input.sessionId,
+      origin: "system",
+      type: "session.configuration",
+      data: {
+        ...(profile.model ? { model: profile.model } : {}),
+        ...(profile.effort ? { effort: profile.effort } : {}),
+        appliesAfterTurn: Boolean(state?.active),
+      },
+    });
+    this.emit("changed");
+    return this.configuration(input.sessionId, false);
   }
 
   async createSession(cwd: string, title?: string): Promise<BridgeSessionInfo> {
@@ -515,43 +711,18 @@ export class SessionBroker extends EventEmitter {
       clearTimeout(state.releaseTimer);
       delete state.releaseTimer;
     }
-    if (!state.host) {
-      state.ownership = "ACQUIRING";
-      await this.recordOwnership(turn.sessionId, state.ownership);
-      const transcript = await findClaudeTranscriptFile(this.options.paths.projects, turn.sessionId, session.cwd);
-      const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
-      const projectProfile = observed?.hostModel ? observed : this.catalog.sessions.find((candidate) => (
-        candidate.cwd === session.cwd && Boolean(candidate.hostModel)
-      ));
-      const host = this.hostFactory({
-        sessionId: turn.sessionId,
-        cwd: session.cwd,
-        executablePath: this.runtime.executablePath,
-        environment: this.runtime.environment,
-        permissionBroker: this.permissionBroker,
-        resume: Boolean(transcript),
-        ...(projectProfile?.hostModel ? { model: projectProfile.hostModel } : {}),
-        ...(projectProfile?.hostEffort ? { effort: projectProfile.hostEffort } : {}),
-      });
-      host.onEvent((event) => {
-        this.eventQueue = this.eventQueue
-          .catch(() => undefined)
-          .then(() => this.handleHostEvent(event));
-      });
-      state.host = host;
-      host.start();
-      state.ownership = "BRIDGE_IDLE";
-      await this.recordOwnership(turn.sessionId, state.ownership);
-    }
-    turn.state = "running";
     let accepted: ReturnType<SessionHostRuntime["send"]>;
     try {
-      accepted = state.host.send({
+      const host = await this.ensureHost(turn.sessionId);
+      await this.applyHostConfiguration(host, this.effectiveProfile(turn.sessionId, session.cwd));
+      delete state.configurationPending;
+      turn.state = "running";
+      accepted = host.send({
         text: turn.text,
         attachments: turn.attachments,
       }, turn.origin);
     } catch (error) {
-      await state.host.close().catch(() => undefined);
+      await state.host?.close().catch(() => undefined);
       delete state.host;
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = "queued";
@@ -579,6 +750,280 @@ export class SessionBroker extends EventEmitter {
     this.activeTurns += 1;
     await this.saveQueue();
     this.emit("changed");
+  }
+
+  private async ensureHost(sessionId: string): Promise<SessionHostRuntime> {
+    const existing = this.runtimeStates.get(sessionId)?.host;
+    if (existing) return existing;
+    const starting = this.hostStarts.get(sessionId);
+    if (starting) return starting;
+    const promise = this.createHost(sessionId);
+    this.hostStarts.set(sessionId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.hostStarts.delete(sessionId);
+    }
+  }
+
+  private async createHost(sessionId: string): Promise<SessionHostRuntime> {
+    const session = this.session(sessionId);
+    if (!session) throw new Error("Session not found");
+    if (!this.runtime?.executablePath || !this.runtime.credentialPath) {
+      throw new Error("Claude Host runtime is unavailable");
+    }
+    const state = this.runtimeStates.get(sessionId) ?? {
+      ownership: "DESKTOP_OBSERVED" as const,
+      turnState: "idle" as const,
+    };
+    this.runtimeStates.set(sessionId, state);
+    if (state.host) return state.host;
+    if (state.releaseTimer) {
+      clearTimeout(state.releaseTimer);
+      delete state.releaseTimer;
+    }
+    state.ownership = "ACQUIRING";
+    await this.recordOwnership(sessionId, state.ownership);
+    try {
+      const transcript = await findClaudeTranscriptFile(this.options.paths.projects, sessionId, session.cwd);
+      const profile = this.effectiveProfile(sessionId, session.cwd);
+      const host = this.hostFactory({
+        sessionId,
+        cwd: session.cwd,
+        executablePath: this.runtime.executablePath,
+        environment: this.runtime.environment,
+        permissionBroker: this.permissionBroker,
+        resume: Boolean(transcript),
+        ...(profile.model ? { model: profile.model } : {}),
+        ...(profile.effort ? { effort: profile.effort } : {}),
+      });
+      host.onEvent((event) => {
+        this.eventQueue = this.eventQueue
+          .catch(() => undefined)
+          .then(() => this.handleHostEvent(event));
+      });
+      state.host = host;
+      host.start();
+      state.ownership = "BRIDGE_IDLE";
+      state.turnState = "idle";
+      await this.recordOwnership(sessionId, state.ownership);
+      this.emit("changed");
+      return host;
+    } catch (error) {
+      await state.host?.close().catch(() => undefined);
+      delete state.host;
+      state.ownership = this.catalog.sessions.some((candidate) => candidate.sessionId === sessionId)
+        ? "DESKTOP_OBSERVED"
+        : "BRIDGE_IDLE";
+      await this.recordOwnership(sessionId, state.ownership);
+      this.emit("changed");
+      throw error;
+    }
+  }
+
+  private effectiveProfile(
+    sessionId: string,
+    cwd: string,
+    configuration = this.sessionConfigurations.get(sessionId),
+  ): EffectiveSessionProfile {
+    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
+    const projectModel = this.catalog.sessions.find((candidate) => (
+      candidate.cwd === cwd && Boolean(candidate.hostModel)
+    ));
+    const projectEffort = this.catalog.sessions.find((candidate) => (
+      candidate.cwd === cwd && Boolean(candidate.hostEffort)
+    ));
+    const inheritedModel = observed?.hostModel ?? projectModel?.hostModel;
+    const inheritedEffort = observed?.hostEffort ?? projectEffort?.hostEffort;
+    const inheritedModelSource: BridgeConfigurationSource = observed?.hostModel
+      ? "claude-desktop"
+      : projectModel?.hostModel
+        ? "project"
+        : "default";
+    const inheritedEffortSource: BridgeConfigurationSource = observed?.hostEffort
+      ? "claude-desktop"
+      : projectEffort?.hostEffort
+        ? "project"
+        : "default";
+    return {
+      ...(configuration?.model ? { model: configuration.model } : inheritedModel ? { model: inheritedModel } : {}),
+      ...(configuration?.effort ? { effort: configuration.effort } : inheritedEffort ? { effort: inheritedEffort } : {}),
+      ...(inheritedModel ? { inheritedModel } : {}),
+      ...(inheritedEffort ? { inheritedEffort } : {}),
+      modelSource: configuration?.model ? "bridge" : inheritedModelSource,
+      effortSource: configuration?.effort ? "bridge" : inheritedEffortSource,
+    };
+  }
+
+  private async applyHostConfiguration(
+    host: SessionHostRuntime,
+    profile: Pick<EffectiveSessionProfile, "model" | "effort">,
+  ): Promise<void> {
+    await host.setModel(profile.model);
+    await host.setEffort(profile.effort);
+  }
+
+  private rememberCatalogModels(): void {
+    if (this.modelCatalogComplete) return;
+    for (const session of this.catalog.sessions) {
+      if (!session.hostModel) continue;
+      this.modelCache.set(session.hostModel, {
+        value: session.hostModel,
+        displayName: this.modelDisplayName(session.hostModel),
+      });
+    }
+  }
+
+  private rememberModels(models: Awaited<ReturnType<SessionHostRuntime["supportedModels"]>>): void {
+    if (models.length > 0) this.modelCache.clear();
+    for (const model of models) {
+      if (!model.value) continue;
+      this.modelCache.set(model.value, {
+        value: model.value,
+        displayName: model.displayName || this.modelDisplayName(model.value),
+        ...(model.description ? { description: model.description } : {}),
+        ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+        ...(model.supportsEffort !== undefined ? { supportsEffort: model.supportsEffort } : {}),
+        ...(model.supportedEffortLevels?.length
+          ? { supportedEffortLevels: [...model.supportedEffortLevels] }
+          : {}),
+      });
+    }
+  }
+
+  private async discoverModelsWithoutAttaching(
+    session: BridgeSessionInfo,
+  ): ReturnType<SessionHostRuntime["supportedModels"]> {
+    if (!this.runtime?.executablePath || !this.runtime.credentialPath) return [];
+    const profile = this.effectiveProfile(session.sessionId, session.cwd);
+    const host = this.hostFactory({
+      sessionId: randomUUID(),
+      cwd: session.cwd,
+      executablePath: this.runtime.executablePath,
+      environment: this.runtime.environment,
+      permissionBroker: this.permissionBroker,
+      resume: false,
+      ...(profile.model ? { model: profile.model } : {}),
+      ...(profile.effort ? { effort: profile.effort } : {}),
+      settingSources: [],
+    });
+    let discoveryTimer: NodeJS.Timeout | undefined;
+    try {
+      host.start();
+      return await Promise.race([
+        host.supportedModels(),
+        new Promise<never>((_resolve, reject) => {
+          discoveryTimer = setTimeout(
+            () => reject(new Error("Claude model discovery timed out")),
+            MODEL_DISCOVERY_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      if (discoveryTimer) clearTimeout(discoveryTimer);
+      await host.close().catch(() => undefined);
+    }
+  }
+
+  private availableModels(selected?: string): BridgeModelInfo[] {
+    const models = new Map(this.modelCache);
+    if (selected && !models.has(selected)) {
+      models.set(selected, {
+        value: selected,
+        displayName: this.modelDisplayName(selected),
+      });
+    }
+    const longContextAvailable = [...models.keys()].some((value) => /\[1m\]/iu.test(value));
+    if (longContextAvailable) {
+      for (const model of [...models.values()]) {
+        if (
+          /\[1m\]/iu.test(model.value) ||
+          !/^claude-(?:fable|sonnet|opus)-/iu.test(model.value)
+        ) continue;
+        const value = `${model.value}[1m]`;
+        if (models.has(value)) continue;
+        models.set(value, {
+          ...model,
+          value,
+          displayName: `${model.displayName} · 1M`,
+          ...(model.resolvedModel ? { resolvedModel: `${model.resolvedModel}[1m]` } : {}),
+        });
+      }
+    }
+    return [...models.values()].sort((left, right) => (
+      Number(right.value === selected) - Number(left.value === selected)
+      || left.displayName.localeCompare(right.displayName, "zh-CN")
+    ));
+  }
+
+  private findModelInfo(model: string | undefined, models: BridgeModelInfo[]): BridgeModelInfo | undefined {
+    if (!model) return undefined;
+    return models.find((candidate) => candidate.value === model)
+      ?? models.find((candidate) => candidate.resolvedModel === model);
+  }
+
+  private modelDisplayName(value: string): string {
+    const longContext = /\[1m\]/iu.test(value);
+    const normalized = value
+      .replace(/\[1m\]/giu, "")
+      .replace(/^claude-/iu, "")
+      .split("-")
+      .filter(Boolean)
+      .map((part) => part.length <= 2 ? part.toLocaleUpperCase() : `${part[0]!.toLocaleUpperCase()}${part.slice(1)}`)
+      .join(" ");
+    return `${normalized || value}${longContext ? " · 1M" : ""}`;
+  }
+
+  private modelContextLimit(model: string): number {
+    return /\[1m\]|(?:^|[-_])1m(?:$|[-_])/iu.test(model)
+      ? LONG_CONTEXT_TOKENS
+      : DEFAULT_CONTEXT_TOKENS;
+  }
+
+  private async estimatedContext(session: BridgeSessionInfo): Promise<BridgeSessionContextUsage | undefined> {
+    const estimate = await readClaudeSessionContextEstimate(
+      this.options.paths.projects,
+      session.sessionId,
+      session.cwd,
+    );
+    if (!estimate) return undefined;
+    const profile = this.effectiveProfile(session.sessionId, session.cwd);
+    const maxTokens = profile.model ? this.modelContextLimit(profile.model) : DEFAULT_CONTEXT_TOKENS;
+    return {
+      totalTokens: estimate.totalTokens,
+      maxTokens,
+      percentage: Math.min(100, (estimate.totalTokens / maxTokens) * 100),
+      ...(estimate.model ? { model: estimate.model } : {}),
+      estimated: true,
+    };
+  }
+
+  private async assertContextFits(session: BridgeSessionInfo, model: string): Promise<void> {
+    const estimate = await readClaudeSessionContextEstimate(
+      this.options.paths.projects,
+      session.sessionId,
+      session.cwd,
+    );
+    if (!estimate) return;
+    const maxTokens = this.modelContextLimit(model);
+    if (estimate.totalTokens <= maxTokens) return;
+    throw new Error(
+      `当前会话约 ${estimate.totalTokens.toLocaleString("zh-CN")} tokens，所选模型仅提供约 `
+      + `${maxTokens.toLocaleString("zh-CN")} tokens 上下文。请先压缩或新建会话，或选择 1M 模型。`,
+    );
+  }
+
+  private scheduleRelease(sessionId: string): void {
+    const state = this.runtimeStates.get(sessionId);
+    if (
+      !state?.host ||
+      state.active ||
+      state.releaseTimer ||
+      this.pending.some((turn) => turn.sessionId === sessionId)
+    ) return;
+    state.releaseTimer = setTimeout(() => {
+      void this.releaseSession(sessionId);
+    }, 10 * 60_000);
   }
 
   private async handleHostEvent(event: SessionHostEvent): Promise<void> {
@@ -943,6 +1388,16 @@ export class SessionBroker extends EventEmitter {
       const parsed = JSON.parse(await readFile(this.options.sessionsPath, "utf8")) as Partial<BridgeSessionsFile>;
       if (parsed.version !== 2 || !Array.isArray(parsed.sessions)) throw new Error("Unsupported Bridge session file");
       for (const session of parsed.sessions) this.bridgeSessions.set(session.sessionId, session);
+      for (const configuration of parsed.configurations ?? []) {
+        if (
+          !configuration ||
+          typeof configuration.sessionId !== "string" ||
+          typeof configuration.updatedAt !== "number" ||
+          (configuration.model !== undefined && typeof configuration.model !== "string") ||
+          (configuration.effort !== undefined && !EFFORT_LEVELS.includes(configuration.effort))
+        ) continue;
+        this.sessionConfigurations.set(configuration.sessionId, configuration);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       await rename(this.options.sessionsPath, `${this.options.sessionsPath}.archive-${Date.now()}`).catch(() => undefined);
@@ -953,6 +1408,7 @@ export class SessionBroker extends EventEmitter {
     const contents = `${JSON.stringify({
       version: 2,
       sessions: [...this.bridgeSessions.values()],
+      configurations: [...this.sessionConfigurations.values()],
     } satisfies BridgeSessionsFile, null, 2)}\n`;
     await this.atomicWrite(this.options.sessionsPath, contents);
   }

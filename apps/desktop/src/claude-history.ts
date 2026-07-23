@@ -31,6 +31,11 @@ export interface ClaudeHistoryReadOptions {
   limit?: number;
 }
 
+export interface ClaudeSessionContextEstimate {
+  totalTokens: number;
+  model?: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -260,6 +265,48 @@ export async function readClaudeSessionHistory(
   const path = await findClaudeTranscriptFile(projectsRoot, sessionId, cwd);
   if (!path) return { available: false, messages: [], truncated: false };
   return parseClaudeTranscript(path, options);
+}
+
+export async function readClaudeSessionContextEstimate(
+  projectsRoot: string,
+  sessionId: string,
+  cwd?: string,
+): Promise<ClaudeSessionContextEstimate | undefined> {
+  const path = await findClaudeTranscriptFile(projectsRoot, sessionId, cwd);
+  if (!path) return undefined;
+  let latest: ClaudeSessionContextEstimate | undefined;
+  try {
+    const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
+    for await (const line of lines) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line) as unknown;
+      } catch {
+        continue;
+      }
+      if (!isRecord(value) || value.type !== "assistant" || !isRecord(value.message)) continue;
+      const usage = value.message.usage;
+      if (!isRecord(usage)) continue;
+      const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+      const cacheReadTokens = typeof usage.cache_read_input_tokens === "number"
+        ? usage.cache_read_input_tokens
+        : 0;
+      const cacheCreationTokens = typeof usage.cache_creation_input_tokens === "number"
+        ? usage.cache_creation_input_tokens
+        : 0;
+      const totalTokens = inputTokens + cacheReadTokens + cacheCreationTokens;
+      if (!Number.isFinite(totalTokens) || totalTokens <= 0) continue;
+      latest = {
+        totalTokens,
+        ...(typeof value.message.model === "string" && value.message.model
+          ? { model: value.message.model }
+          : {}),
+      };
+    }
+  } catch {
+    return undefined;
+  }
+  return latest;
 }
 
 export async function readClaudeSessionHistoryPage(

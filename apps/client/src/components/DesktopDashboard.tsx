@@ -3,6 +3,7 @@ import type {
   BridgeEvent,
   BridgeHistoryPage,
   BridgeResponse,
+  BridgeSessionConfiguration,
   BridgeSessionInfo,
   DesktopControlSnapshot,
 } from "@bridge/protocol";
@@ -33,6 +34,10 @@ import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
 import { conversationItems, fileToAttachment, PermissionPrompt } from "./MobileWorkspace.js";
+import {
+  SessionConfigurationDialog,
+  type SessionConfigurationChange,
+} from "./SessionConfigurationDialog.js";
 
 type DesktopTab = "sessions" | "devices" | "status";
 
@@ -58,6 +63,14 @@ function sessionState(session: BridgeSessionInfo): string {
   return "待机";
 }
 
+function sessionProfile(session: BridgeSessionInfo): string {
+  const model = session.model
+    ?.replace(/^claude-/iu, "")
+    .replace(/\[1m\]/giu, " 1M")
+    .replaceAll("-", " ");
+  return [model || "默认模型", session.effort?.toLocaleUpperCase()].filter(Boolean).join(" · ");
+}
+
 function DesktopSessions({
   snapshot,
   events,
@@ -74,6 +87,7 @@ function DesktopSessions({
   const [steer, setSteer] = useState(false);
   const [sending, setSending] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [configurationOpen, setConfigurationOpen] = useState(false);
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
   const [title, setTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -96,6 +110,7 @@ function DesktopSessions({
   useEffect(() => {
     if (!selectedId) return;
     setSteer(false);
+    setConfigurationOpen(false);
     void openSession(selectedId);
   }, [selectedId]);
 
@@ -192,6 +207,22 @@ function DesktopSessions({
     }));
   }
 
+  async function loadConfiguration(): Promise<BridgeSessionConfiguration> {
+    if (!selected) throw new Error("Session not found");
+    return unwrap<{ configuration: BridgeSessionConfiguration }>(await apiRequest({
+      method: "session.configuration",
+      params: { sessionId: selected.sessionId },
+    })).configuration;
+  }
+
+  async function saveConfiguration(change: SessionConfigurationChange): Promise<BridgeSessionConfiguration> {
+    if (!selected) throw new Error("Session not found");
+    return unwrap<{ configuration: BridgeSessionConfiguration }>(await apiRequest({
+      method: "session.configure",
+      params: { sessionId: selected.sessionId, ...change },
+    })).configuration;
+  }
+
   return (
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
@@ -231,11 +262,17 @@ function DesktopSessions({
           <>
             <header className="desktop-conversation-heading">
               <div><h2>{selected.title}</h2><span>{selected.projectName} · {sessionState(selected)}</span></div>
-              {bridgeRunning && (
-                <button type="button" className="secondary-button" onClick={() => void apiRequest({ method: "turn.interrupt", params: { sessionId: selected.sessionId } })}>
-                  <CircleStop size={16} />停止
+              <div className="desktop-conversation-heading-actions">
+                <button type="button" className="session-profile-trigger" aria-label="模型与 Effort" onClick={() => setConfigurationOpen(true)}>
+                  <Settings2 size={15} />
+                  <span>{sessionProfile(selected)}</span>
                 </button>
-              )}
+                {bridgeRunning && (
+                  <button type="button" className="secondary-button" onClick={() => void apiRequest({ method: "turn.interrupt", params: { sessionId: selected.sessionId } })}>
+                    <CircleStop size={16} />停止
+                  </button>
+                )}
+              </div>
             </header>
             <div className="desktop-conversation-stream" ref={streamRef}>
               {history[selected.sessionId]?.status === "loading" && items.length === 0 && <div className="desktop-conversation-empty">正在读取会话</div>}
@@ -285,6 +322,14 @@ function DesktopSessions({
             <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>取消</button><button type="button" className="primary-button" onClick={() => void createSession()}>创建</button></div>
           </section>
         </div>
+      )}
+      {configurationOpen && selected && (
+        <SessionConfigurationDialog
+          session={selected}
+          onLoad={loadConfiguration}
+          onSave={saveConfiguration}
+          onClose={() => setConfigurationOpen(false)}
+        />
       )}
     </section>
   );

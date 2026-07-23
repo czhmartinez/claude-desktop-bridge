@@ -33,6 +33,8 @@ export type BridgeOwnershipState =
   | "BRIDGE_RUNNING"
   | "RELEASING";
 export type BridgeTurnState = "idle" | "queued" | "running" | "waiting" | "completed" | "failed" | "interrupted";
+export type BridgeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type BridgeConfigurationSource = "bridge" | "claude-desktop" | "project" | "default";
 export type BridgeDeliveryState =
   | "local-saved"
   | "relay-received"
@@ -75,6 +77,43 @@ export interface BridgeSessionInfo {
   pendingCount: number;
   activeTurnId?: string;
   currentSummary?: string;
+  model?: string;
+  effort?: BridgeEffort;
+  configurationPending?: boolean;
+}
+
+export interface BridgeModelInfo {
+  value: string;
+  displayName: string;
+  description?: string;
+  resolvedModel?: string;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: BridgeEffort[];
+}
+
+export interface BridgeSessionContextUsage {
+  totalTokens: number;
+  maxTokens: number;
+  percentage: number;
+  model?: string;
+  estimated: boolean;
+}
+
+export interface BridgeSessionConfiguration {
+  sessionId: string;
+  model?: string;
+  effort?: BridgeEffort;
+  inheritedModel?: string;
+  inheritedEffort?: BridgeEffort;
+  overrideModel?: string;
+  overrideEffort?: BridgeEffort;
+  modelSource: BridgeConfigurationSource;
+  effortSource: BridgeConfigurationSource;
+  availableModels: BridgeModelInfo[];
+  availableEffortLevels: BridgeEffort[];
+  modelsComplete: boolean;
+  appliesAfterTurn: boolean;
+  context?: BridgeSessionContextUsage;
 }
 
 export interface BridgeHistoryItem {
@@ -166,6 +205,8 @@ export type BridgeMethod =
   | "session.open"
   | "session.create"
   | "session.history"
+  | "session.configuration"
+  | "session.configure"
   | "turn.start"
   | "turn.steer"
   | "turn.interrupt"
@@ -199,6 +240,7 @@ export type BridgeEventType =
   | "session.created"
   | "session.observed"
   | "session.ownership"
+  | "session.configuration"
   | "user.message.accepted"
   | "message.delivery"
   | "assistant.delta"

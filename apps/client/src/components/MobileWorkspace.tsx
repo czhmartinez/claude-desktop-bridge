@@ -4,6 +4,7 @@ import type {
   BridgeEvent,
   BridgeHistoryItem,
   BridgePermissionInfo,
+  BridgeSessionConfiguration,
   BridgeSessionInfo,
   SocketState,
 } from "@bridge/protocol";
@@ -18,6 +19,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  Settings2,
   Sun,
   Wrench,
   X,
@@ -30,6 +32,10 @@ import type {
 } from "../hooks/useMobileBridge.js";
 import type { Theme } from "../hooks/useTheme.js";
 import { IconButton } from "./IconButton.js";
+import {
+  SessionConfigurationDialog,
+  type SessionConfigurationChange,
+} from "./SessionConfigurationDialog.js";
 
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
@@ -346,6 +352,8 @@ export function MobileWorkspace({
   onInterruptTurn,
   onResolvePermission,
   onCreateSession,
+  onLoadSessionConfiguration,
+  onConfigureSession,
   onRefresh,
   onBackToHosts,
   onRetry,
@@ -376,6 +384,11 @@ export function MobileWorkspace({
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
   onCreateSession(cwd: string, title?: string): Promise<BridgeSessionInfo | undefined>;
+  onLoadSessionConfiguration(sessionId: string): Promise<BridgeSessionConfiguration>;
+  onConfigureSession(
+    sessionId: string,
+    change: SessionConfigurationChange,
+  ): Promise<BridgeSessionConfiguration>;
   onRefresh(): Promise<void>;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
@@ -390,6 +403,7 @@ export function MobileWorkspace({
   const [createProjectId, setCreateProjectId] = useState("");
   const [createTitle, setCreateTitle] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
+  const [configurationOpen, setConfigurationOpen] = useState(false);
   const [imageError, setImageError] = useState<string>();
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -426,6 +440,7 @@ export function MobileWorkspace({
   }, [items.length, selectedSessionId]);
 
   async function selectSession(sessionId: string): Promise<void> {
+    setConfigurationOpen(false);
     setSelectedSessionId(sessionId);
     await onOpenSession(sessionId);
   }
@@ -499,15 +514,20 @@ export function MobileWorkspace({
               <i />{ownershipLabel(selectedSession)}
             </span>
           </div>
-          {bridgeRunning ? (
-            <IconButton label="停止任务" onClick={() => void onInterruptTurn(selectedSession.sessionId, activeTurn?.commandId)}>
-              <CircleStop size={20} />
+          <div className="topbar-actions">
+            <IconButton label="模型与 Effort" onClick={() => setConfigurationOpen(true)}>
+              <Settings2 size={19} />
             </IconButton>
-          ) : (
-            <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
-              {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
-            </IconButton>
-          )}
+            {bridgeRunning ? (
+              <IconButton label="停止任务" onClick={() => void onInterruptTurn(selectedSession.sessionId, activeTurn?.commandId)}>
+                <CircleStop size={20} />
+              </IconButton>
+            ) : (
+              <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
+                {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
+              </IconButton>
+            )}
+          </div>
         </header>
 
         <section className="conversation-stream" aria-live="polite">
@@ -605,6 +625,14 @@ export function MobileWorkspace({
             </button>
           </form>
         </section>
+        {configurationOpen && (
+          <SessionConfigurationDialog
+            session={selectedSession}
+            onLoad={() => onLoadSessionConfiguration(selectedSession.sessionId)}
+            onSave={(change) => onConfigureSession(selectedSession.sessionId, change)}
+            onClose={() => setConfigurationOpen(false)}
+          />
+        )}
       </main>
     );
   }

@@ -39,8 +39,55 @@ try {
   assert.ok(Array.isArray(snapshot.devices));
   assert.equal(snapshot.connection, "connected");
   assert.ok(["ready", "working", "auth-required", "unavailable"].includes(snapshot.runtime.state));
+
+  let configurationProof;
+  const longContextSession = snapshot.sessions.find((session) => session.model?.includes("[1m]"));
+  if (longContextSession) {
+    const configurationResponse = await page.evaluate(async (sessionId) => (
+      window.bridgeDesktop.request({
+        method: "session.configuration",
+        params: { sessionId },
+      })
+    ), longContextSession.sessionId);
+    assert.equal(configurationResponse.ok, true, configurationResponse.error?.message);
+    const configuration = configurationResponse.result.configuration;
+    assert.equal(configuration.sessionId, longContextSession.sessionId);
+    assert.ok(Array.isArray(configuration.availableModels));
+    assert.ok(configuration.availableModels.length > 0);
+    assert.ok(Array.isArray(configuration.availableEffortLevels));
+    assert.ok(configuration.availableEffortLevels.includes("high"));
+
+    const context = configuration.context;
+    if (context?.totalTokens > 262_144) {
+      assert.ok(context.maxTokens >= 1_000_000);
+      const downgrade = configuration.availableModels.find((model) => !model.value.includes("[1m]"));
+      if (downgrade) {
+        const downgradeResponse = await page.evaluate(async ({ sessionId, model }) => (
+          window.bridgeDesktop.request({
+            method: "session.configure",
+            params: { sessionId, model },
+          })
+        ), { sessionId: longContextSession.sessionId, model: downgrade.value });
+        assert.equal(downgradeResponse.ok, false, "Unsafe context downgrade should be rejected");
+        assert.match(downgradeResponse.error?.message ?? "", /上下文|context/i);
+      }
+    }
+    configurationProof = {
+      sessionId: configuration.sessionId,
+      model: configuration.model,
+      effort: configuration.effort,
+      models: configuration.availableModels.length,
+      context,
+    };
+  }
+
+  const configurationButton = page.getByRole("button", { name: "模型与 Effort" });
+  await configurationButton.click();
+  const configurationDialog = page.getByRole("dialog");
+  await configurationDialog.waitFor();
+  await configurationDialog.getByText("上下文", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
-  await page.screenshot({ path: resolve(artifacts, "desktop.png"), fullPage: true });
+  await page.screenshot({ path: resolve(artifacts, "desktop-configuration.png"), fullPage: true });
   process.stdout.write(`${JSON.stringify({
     ok: true,
     url: page.url(),
@@ -49,7 +96,8 @@ try {
     sessions: snapshot.sessions.length,
     devices: snapshot.devices.length,
     runtime: snapshot.runtime.state,
-    screenshot: resolve(artifacts, "desktop.png"),
+    configuration: configurationProof,
+    screenshot: resolve(artifacts, "desktop-configuration.png"),
   }, null, 2)}\n`);
 } finally {
   await browser.close();

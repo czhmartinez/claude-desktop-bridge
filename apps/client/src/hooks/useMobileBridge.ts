@@ -4,12 +4,14 @@ import {
   randomId,
   type BridgeAttachment,
   type BridgeDeliveryState,
+  type BridgeEffort,
   type BridgeEvent,
   type BridgeHistoryPage,
   type BridgeHostSnapshot,
   type BridgePayload,
   type BridgeRequest,
   type BridgeResponse,
+  type BridgeSessionConfiguration,
   type BridgeSessionInfo,
   type DecryptedEnvelope,
   type EncryptedEnvelope,
@@ -395,7 +397,7 @@ export function useMobileBridge() {
   const sendRequest = useCallback(async (
     method: BridgeRequest["method"],
     params: Record<string, unknown>,
-    options: { wait?: boolean; allowOffline?: boolean; idempotencyKey?: string } = {},
+    options: { wait?: boolean; allowOffline?: boolean; idempotencyKey?: string; timeoutMs?: number } = {},
   ): Promise<BridgeResponse | undefined> => {
     const crypto = cryptoRef.current;
     if (!crypto) throw new Error("No host selected");
@@ -442,7 +444,7 @@ export function useMobileBridge() {
       const timer = setTimeout(() => {
         pendingResponsesRef.current.delete(request.requestId);
         reject(new Error("电脑响应超时"));
-      }, 20_000);
+      }, options.timeoutMs ?? 20_000);
       pendingResponsesRef.current.set(request.requestId, { resolve, timer });
     }) : undefined;
     try {
@@ -883,6 +885,45 @@ export function useMobileBridge() {
     return result.session;
   }, [sendRequest]);
 
+  const loadSessionConfiguration = useCallback(async (sessionId: string): Promise<BridgeSessionConfiguration> => {
+    const response = await sendRequest("session.configuration", { sessionId }, {
+      wait: true,
+      timeoutMs: 45_000,
+    });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "会话配置读取失败");
+    const result = response.result as { configuration?: BridgeSessionConfiguration };
+    if (!result.configuration) throw new Error("电脑未返回会话配置");
+    return result.configuration;
+  }, [sendRequest]);
+
+  const configureSession = useCallback(async (
+    sessionId: string,
+    change: { model?: string | null; effort?: BridgeEffort | null },
+  ): Promise<BridgeSessionConfiguration> => {
+    const response = await sendRequest("session.configure", { sessionId, ...change }, {
+      wait: true,
+      timeoutMs: 45_000,
+    });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "会话配置保存失败");
+    const result = response.result as {
+      configuration?: BridgeSessionConfiguration;
+      session?: BridgeSessionInfo;
+    };
+    if (!result.configuration) throw new Error("电脑未返回会话配置");
+    if (result.session) {
+      setState((current) => current.snapshot ? {
+        ...current,
+        snapshot: {
+          ...current.snapshot,
+          sessions: current.snapshot.sessions.map((session) => (
+            session.sessionId === result.session!.sessionId ? result.session! : session
+          )),
+        },
+      } : current);
+    }
+    return result.configuration;
+  }, [sendRequest]);
+
   const refresh = useCallback(async () => {
     await resumeEvents();
     const response = await sendRequest("session.list", {}, { wait: true }).catch(() => undefined);
@@ -944,6 +985,8 @@ export function useMobileBridge() {
     interruptTurn,
     resolvePermission,
     createSession,
+    loadSessionConfiguration,
+    configureSession,
     refresh,
     forgetHost,
     retryConnection,

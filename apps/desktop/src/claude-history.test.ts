@@ -2,7 +2,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findClaudeTranscriptFile, parseClaudeTranscript, readClaudeSessionHistory } from "./claude-history.js";
+import {
+  findClaudeTranscriptFile,
+  parseClaudeTranscript,
+  readClaudeSessionContextEstimate,
+  readClaudeSessionHistory,
+} from "./claude-history.js";
 
 const directories: string[] = [];
 
@@ -105,5 +110,49 @@ describe("Claude transcript history", () => {
     });
     expect(older.messages.map((message) => message.id))
       .toEqual(["message-0", "message-1", "message-2", "message-3"]);
+  });
+
+  it("reads the latest context usage without loading message bodies into memory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-context-"));
+    directories.push(root);
+    const projects = join(root, "projects");
+    const project = join(projects, "-work-demo");
+    const transcript = join(project, "session-1.jsonl");
+    await mkdir(project, { recursive: true });
+    await writeFile(transcript, [
+      line({
+        type: "assistant",
+        uuid: "assistant-1",
+        message: {
+          role: "assistant",
+          model: "wire-model",
+          content: "first",
+          usage: {
+            input_tokens: 100,
+            cache_read_input_tokens: 270_000,
+            cache_creation_input_tokens: 1_000,
+          },
+        },
+      }),
+      line({
+        type: "assistant",
+        uuid: "assistant-2",
+        message: {
+          role: "assistant",
+          model: "wire-model",
+          content: "after compact",
+          usage: {
+            input_tokens: 500,
+            cache_read_input_tokens: 80_000,
+            cache_creation_input_tokens: 500,
+          },
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    await expect(readClaudeSessionContextEstimate(projects, "session-1", "/work/demo")).resolves.toEqual({
+      totalTokens: 81_000,
+      model: "wire-model",
+    });
   });
 });
