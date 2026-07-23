@@ -18,6 +18,8 @@ const METHODS = new Set([
   "session.history",
   "session.configuration",
   "session.configure",
+  "session.fallback.confirm",
+  "message.delivery.resolve",
   "turn.start",
   "turn.steer",
   "turn.interrupt",

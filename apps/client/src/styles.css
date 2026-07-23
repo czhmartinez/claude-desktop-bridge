@@ -2178,11 +2178,123 @@ button:disabled {
 }
 
 .conversation-workspace {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.conversation-workspace:has(.session-channel-warning) {
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.session-channel-warning,
+.desktop-channel-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warm) 35%, var(--line));
+  background: var(--warm-soft);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.session-channel-warning svg,
+.desktop-channel-banner svg {
+  flex: 0 0 auto;
+  color: var(--warm);
+}
+
+.session-channel-warning strong,
+.desktop-channel-banner strong {
+  display: block;
+  color: var(--text);
+}
+
+.session-channel-warning.danger,
+.desktop-channel-banner.danger {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+}
+
+.session-channel-warning.danger svg,
+.desktop-channel-banner.danger svg {
+  color: var(--danger);
 }
 
 .conversation-topbar {
   grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.permission-dock-slot {
+  min-height: 0;
+  background: var(--surface);
+}
+
+.permission-dock-slot.has-attention {
+  padding: 8px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+  border-bottom: 1px solid color-mix(in srgb, var(--warm) 30%, var(--line));
+}
+
+.permission-dock,
+.host-permission-alert {
+  display: grid;
+  width: 100%;
+  min-height: 52px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warm) 36%, var(--line));
+  border-radius: 7px;
+  background: var(--warm-soft);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.permission-dock-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warm) 16%, transparent);
+  color: var(--warm);
+}
+
+.permission-dock > span:nth-child(2),
+.host-permission-alert > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.permission-dock strong,
+.host-permission-alert strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-dock small,
+.host-permission-alert small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-dock b,
+.host-permission-alert b {
+  color: var(--warm);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.host-permission-alert {
+  margin: 0 0 18px;
 }
 
 .conversation-stream {
@@ -2345,10 +2457,27 @@ button:disabled {
   color: var(--danger);
 }
 
+.delivery-state.uncertain {
+  color: var(--warm);
+}
+
 .delivery-state.completed,
 .delivery-state.session-received,
 .delivery-state.running {
   color: var(--accent);
+}
+
+.uncertain-delivery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.uncertain-delivery-actions .secondary-button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 10px;
 }
 
 .stream-caret {
@@ -2372,6 +2501,154 @@ button:disabled {
   border: 1px solid color-mix(in srgb, var(--warm) 44%, var(--line));
   border-radius: 8px;
   background: var(--warm-soft);
+}
+
+.permission-risk {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.permission-risk.mutating {
+  border-color: color-mix(in srgb, var(--warm) 30%, var(--line));
+  color: var(--warm);
+}
+
+.permission-facts {
+  display: grid;
+  gap: 1px;
+  margin: 12px 0 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--line);
+}
+
+.permission-facts > div {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 9px;
+  padding: 8px 9px;
+  background: var(--surface);
+}
+
+.permission-facts dt {
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.permission-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.permission-facts dd.is-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.permission-details {
+  margin-top: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.permission-details summary {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.permission-details pre {
+  max-height: 190px;
+  margin: 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+}
+
+.permission-error {
+  margin-top: 10px;
+  padding: 8px 9px;
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.permission-sheet-backdrop {
+  position: fixed;
+  z-index: 95;
+  inset: 0;
+  display: grid;
+  padding: 18px;
+  place-items: center;
+  background: rgba(8, 10, 11, 0.56);
+  backdrop-filter: blur(5px);
+}
+
+.permission-sheet {
+  width: min(100%, 620px);
+  max-height: min(86dvh, 760px);
+  padding: 18px;
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+}
+
+.permission-sheet > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.permission-sheet > header span {
+  color: var(--warm);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.permission-sheet > header h2 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.permission-sheet .permission-prompt {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.permission-queue-count {
+  margin-bottom: 12px;
+  padding: 8px 9px;
+  border-left: 3px solid var(--warm);
+  background: var(--warm-soft);
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .permission-title {
@@ -2780,6 +3057,25 @@ button:disabled {
   background: var(--bg);
 }
 
+.desktop-conversation:has(.desktop-channel-banner) {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.desktop-channel-banner {
+  justify-content: flex-start;
+  padding-right: 20px;
+  padding-left: 20px;
+}
+
+.desktop-channel-banner > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.desktop-channel-banner .secondary-button {
+  flex: 0 0 auto;
+}
+
 .desktop-conversation-heading {
   display: flex;
   min-height: 78px;
@@ -2838,6 +3134,12 @@ button:disabled {
 
 .desktop-conversation-stream .conversation-item {
   width: min(78%, 720px);
+}
+
+.desktop-conversation-stream .conversation-item.uncertain-delivery {
+  width: min(88%, 760px);
+  border-color: color-mix(in srgb, var(--warm) 38%, var(--line));
+  background: var(--warm-soft);
 }
 
 .desktop-conversation-empty {
@@ -3011,7 +3313,7 @@ button:disabled {
   border-right: 0;
 }
 
-.status-grid-v2 > section:nth-last-child(-n + 2) {
+.status-grid-v2 > section:last-child {
   border-bottom: 0;
 }
 
@@ -3036,6 +3338,33 @@ button:disabled {
 
 .status-grid-v2 small {
   color: var(--faint);
+}
+
+.status-grid-v2 .managed-status-card {
+  position: relative;
+  min-height: 184px;
+}
+
+.managed-status-card.ready strong {
+  color: var(--accent);
+}
+
+.managed-status-card.incompatible strong {
+  color: var(--danger);
+}
+
+.managed-status-card code {
+  display: block;
+  max-height: 42px;
+  margin-top: 8px;
+  overflow: auto;
+  color: var(--danger);
+  font-size: 9px;
+  white-space: pre-wrap;
+}
+
+.managed-status-card .secondary-button {
+  margin-top: 12px;
 }
 
 .status-settings {
@@ -3080,8 +3409,23 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .permission-actions .primary-button:last-child {
+  .permission-actions > button:last-child:nth-child(3) {
     grid-column: 1 / -1;
+  }
+
+  .permission-sheet-backdrop {
+    padding: 0;
+    place-items: end center;
+  }
+
+  .permission-sheet {
+    width: 100%;
+    max-height: 88dvh;
+    padding: 18px max(16px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 8px 8px 0 0;
   }
 
   .session-configuration-backdrop {

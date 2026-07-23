@@ -26,12 +26,24 @@ import {
 } from "./config.js";
 import type { SessionBroker } from "./session-broker.js";
 import type { SessionEventLog } from "./session-event-log.js";
+import type { ClaudeDesktopManager } from "./claude-desktop-manager.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
 
 export interface LocalBridgeRequest {
   method: BridgeRequest["method"];
   params?: Record<string, unknown>;
   idempotencyKey?: string;
+}
+
+class BridgeRequestError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryable = false,
+  ) {
+    super(message);
+    this.name = "BridgeRequestError";
+  }
 }
 
 function stringParam(params: Record<string, unknown>, key: string, required = true): string | undefined {
@@ -100,6 +112,18 @@ function pairingForDevice(config: LoadedDesktopConfig, device: LoadedDeviceConfi
 
 function errorResponse(requestId: string, error: unknown): BridgeResponse {
   const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof BridgeRequestError) {
+    return {
+      kind: "response",
+      requestId,
+      ok: false,
+      error: {
+        code: error.code,
+        message,
+        retryable: error.retryable,
+      },
+    };
+  }
   const retryable = /unavailable|busy|offline|connect|runtime/iu.test(message);
   return {
     kind: "response",
@@ -130,12 +154,14 @@ export class DesktopController extends EventEmitter {
     private readonly pairingBaseUrl: string,
     private readonly broker: SessionBroker,
     private readonly eventLog: SessionEventLog,
+    private readonly managedDesktop: ClaudeDesktopManager,
   ) {
     super();
   }
 
   async initialize(): Promise<void> {
     this.config = await this.repository.loadOrCreate();
+    await this.managedDesktop.setEnabled(this.config.managedDesktopEnabled);
     this.config.launchAtLogin = await isLaunchAtLoginEnabled(this.app);
     await this.repository.save(this.config);
     this.hostCrypto = await BridgeCrypto.fromHostSecret({
@@ -190,10 +216,12 @@ export class DesktopController extends EventEmitter {
         ...(request.title ? { title: request.title } : {}),
         ...(request.displayName ? { displayName: request.displayName } : {}),
         ...(request.description ? { description: request.description } : {}),
+        canAllowAlways: request.suggestions.some((suggestion) => suggestion.destination === "localSettings"),
       })),
       latestSeq: this.eventLog.latestSeq(),
       connection: this.connection,
       launchAtLogin: this.config.launchAtLogin,
+      managedDesktopEnabled: this.config.managedDesktopEnabled,
       ...(currentPairing ? {
         pairingUrl: buildPairingUrl(this.pairingBaseUrl, pairingForDevice(this.config, currentPairing)),
         pairingExpiresAt: currentPairing.expiresAt,
@@ -251,6 +279,22 @@ export class DesktopController extends EventEmitter {
     await setLaunchAtLogin(this.app, enabled);
     this.config.launchAtLogin = enabled;
     await this.repository.save(this.config);
+    return this.publish();
+  }
+
+  async setManagedDesktopEnabled(enabled: boolean): Promise<DesktopControlSnapshot> {
+    if (!this.config) throw new Error("Desktop controller is not initialized");
+    this.config.managedDesktopEnabled = enabled;
+    await this.repository.save(this.config);
+    await this.managedDesktop.setEnabled(enabled);
+    return this.publish();
+  }
+
+  async restartManagedClaude(): Promise<DesktopControlSnapshot> {
+    const integration = await this.managedDesktop.restartManaged();
+    if (integration.state === "ready") {
+      await this.broker.activateManagedTransport();
+    }
     return this.publish();
   }
 
@@ -448,6 +492,26 @@ export class DesktopController extends EventEmitter {
       const configuration = await this.broker.configureSession(input);
       return { configuration, session: this.broker.session(sessionId) };
     }
+    if (request.method === "session.fallback.confirm") {
+      if (origin !== "desktop") {
+        throw new BridgeRequestError(
+          "LOCAL_CONFIRMATION_REQUIRED",
+          "切换为 Bridge 独立会话必须在电脑端确认。",
+        );
+      }
+      return {
+        session: await this.broker.confirmFallback(stringParam(params, "sessionId")!),
+      };
+    }
+    if (request.method === "message.delivery.resolve") {
+      const action = stringParam(params, "action")!;
+      if (action !== "confirm" && action !== "retry") throw new Error("Invalid uncertain delivery action");
+      const turn = await this.broker.resolveUncertainDelivery(
+        stringParam(params, "commandId")!,
+        action,
+      );
+      return { commandId: turn.commandId, state: turn.state };
+    }
     if (request.method === "turn.start" || request.method === "turn.steer") {
       const input = {
         requestId: request.requestId,
@@ -474,15 +538,32 @@ export class DesktopController extends EventEmitter {
     if (request.method === "permission.resolve") {
       const decision = stringParam(params, "decision")!;
       if (!["allow-once", "allow-always", "deny"].includes(decision)) throw new Error("Invalid permission decision");
+      const resolver = origin === "mobile"
+        ? {
+            deviceId: sourceDeviceId ?? "mobile",
+            name: this.config?.devices.find((device) => device.deviceId === sourceDeviceId)?.name ?? "手机 Bridge",
+          }
+        : {
+            deviceId: this.config?.hostDeviceId ?? "desktop",
+            name: this.config?.desktopName ?? "电脑端 Bridge",
+          };
+      const resolved = this.broker.resolvePermission(
+        stringParam(params, "requestId")!,
+        decision as "allow-once" | "allow-always" | "deny",
+        stringParam(params, "message", false),
+        params.updatedInput && typeof params.updatedInput === "object" && !Array.isArray(params.updatedInput)
+          ? params.updatedInput as Record<string, unknown>
+          : undefined,
+        resolver,
+      );
+      if (!resolved) {
+        throw new BridgeRequestError(
+          "ALREADY_RESOLVED",
+          "这项授权已由其他设备处理。",
+        );
+      }
       return {
-        resolved: this.broker.resolvePermission(
-          stringParam(params, "requestId")!,
-          decision as "allow-once" | "allow-always" | "deny",
-          stringParam(params, "message", false),
-          params.updatedInput && typeof params.updatedInput === "object" && !Array.isArray(params.updatedInput)
-            ? params.updatedInput as Record<string, unknown>
-            : undefined,
-        ),
+        resolved: true,
       };
     }
     if (request.method === "events.resume") {

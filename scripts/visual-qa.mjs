@@ -214,6 +214,7 @@ const hostSnapshot = {
     description: "在 Claude Bridge 项目中运行完整测试。",
     input: { command: "npm run verify" },
     createdAt: now - 5_000,
+    canAllowAlways: true,
   }],
   latestSeq: 42,
 };
@@ -358,15 +359,50 @@ try {
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
-  await mobile.getByText("Bridge 0.2 同会话联调").waitFor();
+  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.2 同会话联调" });
+  await waitingSessionRow.waitFor();
   await checkPage(mobile, "mobile catalog");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-catalog-390x844.png"), fullPage: true });
 
-  await mobile.getByRole("button", { name: /Bridge 0\.2 同会话联调/u }).click();
+  await waitingSessionRow.click();
   await mobile.getByText("会话内核已接管相同 sessionId，正在验证实时事件与审批。").waitFor();
   await mobile.getByText("Bash 请求权限").waitFor();
+  await mobile.getByText("npm run verify", { exact: true }).waitFor();
   await checkPage(mobile, "mobile conversation");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-permission-390x844.png"), fullPage: true });
+  await mobile.getByRole("button", { name: "允许一次" }).click();
+  await mobile.getByText("Bash 请求权限").waitFor({ state: "detached" });
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-conversation-390x844.png"), fullPage: true });
+
+  await sendToMobile({
+    kind: "event",
+    event: event("permission.requested", {
+      requestId: "permission-write-live",
+      toolUseId: "tool-write-live",
+      toolName: "Write",
+      title: "Write 请求权限",
+      description: "写入会话内核的状态测试文件。",
+      input: {
+        file_path: "/Users/martinez/Documents/Claude Bridge/tmp/permission-event.ts",
+        content: "export const permissionEvent = true;\n".repeat(120),
+      },
+      createdAt: Date.now(),
+      canAllowAlways: false,
+    }, { itemId: "permission-write-live" }),
+  });
+  const livePermissionSheet = mobile.getByRole("dialog", { name: "Claude 等待授权" });
+  await livePermissionSheet.getByText("Write 请求权限", { exact: true }).waitFor();
+  await livePermissionSheet.locator(".permission-facts").getByText(
+    "/Users/martinez/Documents/Claude Bridge/tmp/permission-event.ts",
+    { exact: true },
+  ).waitFor();
+  if (await mobile.getByRole("button", { name: "始终允许" }).count()) {
+    errors.push("mobile permission: always-allow shown without an SDK persistence suggestion");
+  }
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-live-permission-390x844.png"), fullPage: true });
+  await mobile.getByRole("button", { name: "允许一次" }).click();
+  await livePermissionSheet.waitFor({ state: "detached" });
+
   await mobile.getByRole("button", { name: "模型与 Effort" }).click();
   await mobile.getByText("Claude Host 实时用量").waitFor();
   await checkPage(mobile, "mobile session configuration");

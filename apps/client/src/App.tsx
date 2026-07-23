@@ -46,6 +46,8 @@ export function App() {
       connection={mobile.state.connection}
       desktopOnline={mobile.state.desktopOnline}
       snapshot={mobile.state.snapshot}
+      permissions={mobile.state.permissions}
+      focusSessionId={mobile.state.focusSessionId}
       histories={mobile.state.histories}
       events={mobile.state.events}
       localTurns={mobile.state.localTurns}
@@ -56,6 +58,7 @@ export function App() {
       onLoadOlderHistory={mobile.loadOlderHistory}
       onSendTurn={mobile.sendTurn}
       onInterruptTurn={mobile.interruptTurn}
+      onResolveUncertain={mobile.resolveUncertainDelivery}
       onResolvePermission={mobile.resolvePermission}
       onCreateSession={mobile.createSession}
       onLoadSessionConfiguration={mobile.loadSessionConfiguration}

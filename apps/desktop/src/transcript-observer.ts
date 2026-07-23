@@ -60,6 +60,12 @@ export class TranscriptObserver extends EventEmitter {
     return session.activeTask || (session.processAlive && now - changedAt < this.idleGraceMs);
   }
 
+  hasDesktopWriter(sessionId: string): boolean {
+    return this.catalogValue.sessions.some((candidate) => (
+      candidate.sessionId === sessionId && candidate.desktopProcessAlive
+    ));
+  }
+
   session(sessionId: string): ObservedClaudeSession | undefined {
     return this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
   }

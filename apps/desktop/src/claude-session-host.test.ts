@@ -232,14 +232,28 @@ describe("ClaudeSessionHost", () => {
   it("uses first-writer-wins permission resolution", async () => {
     const broker = new PermissionBroker();
     const controller = new AbortController();
+    let resolution: { decision?: string; resolvedByDeviceId?: string } | undefined;
+    broker.on("resolved", (_request, _result, resolved) => {
+      resolution = resolved;
+    });
     const pending = broker.request("session", "Bash", { command: "npm test" }, {
       signal: controller.signal,
       toolUseId: "tool-1",
     });
     const [request] = broker.list();
     expect(request?.toolName).toBe("Bash");
-    expect(broker.resolveRequest(request!.requestId, "allow-once")).toBe(true);
+    expect(broker.resolveRequest(
+      request!.requestId,
+      "allow-always",
+      undefined,
+      undefined,
+      { deviceId: "phone-1", name: "Android 手机" },
+    )).toBe(true);
     expect(broker.resolveRequest(request!.requestId, "deny")).toBe(false);
     await expect(pending).resolves.toMatchObject({ behavior: "allow" });
+    expect(resolution).toMatchObject({
+      decision: "allow-once",
+      resolvedByDeviceId: "phone-1",
+    });
   });
 });

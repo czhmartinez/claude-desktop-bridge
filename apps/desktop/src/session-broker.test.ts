@@ -10,6 +10,8 @@ import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-sessio
 import type { ClaudeCatalogSnapshot, ObservedClaudeSession } from "./claude-session-catalog.js";
 import {
   SessionBroker,
+  type ManagedDesktopRuntime,
+  type ManagedDesktopTransportRuntime,
   type SessionHostRuntime,
   type TranscriptObserverRuntime,
 } from "./session-broker.js";
@@ -23,6 +25,7 @@ afterEach(async () => {
 
 class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
   busy = false;
+  writer: boolean | undefined;
 
   constructor(readonly catalog: ClaudeCatalogSnapshot) {
     super();
@@ -30,6 +33,10 @@ class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
 
   isDesktopBusy(): boolean {
     return this.busy;
+  }
+
+  hasDesktopWriter(): boolean {
+    return this.writer ?? this.busy;
   }
 
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void {
@@ -166,6 +173,74 @@ class FakeHost implements SessionHostRuntime {
   }
 }
 
+class FakeManagedDesktop extends EventEmitter implements ManagedDesktopRuntime {
+  ready = true;
+  enabled = true;
+  stopped = false;
+
+  status() {
+    return {
+      state: this.ready ? "ready" as const : "disconnected" as const,
+      detail: this.ready ? "Ready" : "Disconnected",
+      enabled: this.enabled,
+      canRestart: true,
+    };
+  }
+
+  applyToRuntimeStatus(status: Parameters<ManagedDesktopRuntime["applyToRuntimeStatus"]>[0]) {
+    return { ...status, desktopIntegration: this.status() };
+  }
+
+  async stopClaudeForFallback(): Promise<void> {
+    this.stopped = true;
+    this.ready = false;
+  }
+}
+
+class FakeManagedTransport extends EventEmitter implements ManagedDesktopTransportRuntime {
+  ready = true;
+  sends: Array<Parameters<ManagedDesktopTransportRuntime["send"]>[0]> = [];
+
+  updateCatalog(): void {}
+
+  desktopSessionId(sessionId: string): string {
+    return `desktop-${sessionId}`;
+  }
+
+  async send(input: Parameters<ManagedDesktopTransportRuntime["send"]>[0]) {
+    this.sends.push(input);
+    return {
+      messageId: input.messageId ?? randomUUID(),
+      turnId: input.turnId ?? randomUUID(),
+      desktopSessionId: input.session.desktopSessionId ?? `desktop-${input.session.sessionId}`,
+    };
+  }
+
+  async interrupt(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setEffort(): Promise<void> {}
+  async getContextUsage(): Promise<undefined> { return undefined; }
+  clearIntent(): void {}
+
+  onEvent(listener: (event: SessionHostEvent) => void): () => void {
+    this.on("host-event", listener);
+    return () => this.off("host-event", listener);
+  }
+
+  onDeliveryUncertain(listener: Parameters<ManagedDesktopTransportRuntime["onDeliveryUncertain"]>[0]): () => void {
+    this.on("uncertain", listener);
+    return () => this.off("uncertain", listener);
+  }
+
+  close(): void {
+    this.removeAllListeners();
+  }
+
+  emitHost(event: SessionHostEvent): void {
+    this.emit("host-event", event);
+  }
+}
+
 function observed(sessionId: string, cwd: string): ObservedClaudeSession {
   return {
     sessionId,
@@ -175,12 +250,17 @@ function observed(sessionId: string, cwd: string): ObservedClaudeSession {
     cwd,
     title: `Session ${sessionId}`,
     source: "desktop",
+    transport: "bridge-host",
     ownership: "DESKTOP_OBSERVED",
     turnState: "idle",
     lastActivityAt: Date.now(),
     pendingCount: 0,
     transcriptMtimeMs: Date.now(),
     processAlive: true,
+    desktopProcessAlive: false,
+    bridgeProcessAlive: false,
+    processConflict: false,
+    activeProcesses: [],
     activeTask: false,
     hostModel: "claude-fable-5[1m]",
     hostEffort: "high",
@@ -319,6 +399,193 @@ describe("SessionBroker", () => {
     await reopenedLog.close();
   });
 
+  it("never starts a second host while a Claude Desktop writer remains alive after transcript silence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-writer-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    await mkdir(cwd, { recursive: true });
+    const desktopSession = observed(sessionId, cwd);
+    desktopSession.desktopProcessAlive = true;
+    desktopSession.processAlive = true;
+    desktopSession.activeProcesses = [{
+      pid: process.pid,
+      cwd,
+      startedAt: Date.now(),
+      processAlive: true,
+      entrypoint: "claude-desktop-3p",
+      peerProtocol: "stream-json",
+      source: "registration",
+    }];
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [desktopSession],
+      observedAt: Date.now(),
+    });
+    observer.busy = false;
+    observer.writer = true;
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "request-writer",
+      idempotencyKey: "command-writer",
+      sessionId,
+      text: "Do not fork this session",
+      origin: "mobile",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    observer.publish();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(hosts).toHaveLength(0);
+    expect(broker.session(sessionId)).toMatchObject({
+      ownership: "DESKTOP_OBSERVED",
+      turnState: "queued",
+      pendingCount: 1,
+    });
+
+    observer.writer = false;
+    desktopSession.desktopProcessAlive = false;
+    desktopSession.processAlive = false;
+    desktopSession.activeProcesses = [];
+    observer.publish();
+    await waitFor(() => hosts[0]?.sends === 1);
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("uses the managed Desktop transport as the only writer and preserves its event order", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-managed-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    await mkdir(cwd, { recursive: true });
+    const desktopSession = observed(sessionId, cwd);
+    desktopSession.desktopProcessAlive = true;
+    desktopSession.processAlive = true;
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [desktopSession],
+      observedAt: Date.now(),
+    });
+    observer.writer = true;
+    const hosts: FakeHost[] = [];
+    const managedDesktop = new FakeManagedDesktop();
+    const managedTransport = new FakeManagedTransport();
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      managedDesktop,
+      managedTransport,
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    const receipt = await broker.startTurn({
+      requestId: "request-managed",
+      idempotencyKey: "command-managed",
+      sessionId,
+      text: "Run in Claude Desktop",
+      origin: "mobile",
+    });
+    await waitFor(() => managedTransport.sends.length === 1);
+    expect(hosts).toHaveLength(0);
+    expect(managedTransport.sends[0]).toMatchObject({
+      session: { sessionId },
+      text: "Run in Claude Desktop",
+      messageId: receipt.commandId,
+      mode: "start",
+    });
+    const turnId = managedTransport.sends[0]?.turnId;
+    if (!turnId) throw new Error("Managed turn did not receive an id");
+    managedTransport.emitHost({
+      type: "turn.started",
+      sessionId,
+      turnId,
+      at: 10,
+    });
+    managedTransport.emitHost({
+      type: "user.accepted",
+      sessionId,
+      turnId,
+      messageId: receipt.commandId,
+      text: "Run in Claude Desktop",
+      attachments: [],
+      origin: "mobile",
+      at: 11,
+    });
+    managedTransport.emitHost({
+      type: "assistant.completed",
+      sessionId,
+      turnId,
+      itemId: "assistant-1",
+      text: "Done",
+      at: 12,
+    });
+    managedTransport.emitHost({
+      type: "turn.completed",
+      sessionId,
+      turnId,
+      result: "Done",
+      at: 13,
+    });
+    await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+    expect(broker.session(sessionId)).toMatchObject({
+      transport: "claude-desktop-managed",
+      ownership: "DESKTOP_MANAGED_IDLE",
+    });
+    expect(eventLog.replay().filter((event) => event.sessionId === sessionId).map((event) => event.type))
+      .toEqual(expect.arrayContaining([
+        "session.transport",
+        "turn.started",
+        "user.message.accepted",
+        "assistant.completed",
+        "turn.completed",
+      ]));
+    await broker.close();
+    await eventLog.close();
+  });
+
   it("runs at most two turns and leaves the third durably queued", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-"));
     directories.push(root);
@@ -363,6 +630,102 @@ describe("SessionBroker", () => {
 
     expect(broker.runtimeStatus().activeTurns).toBe(2);
     expect(broker.listSessions().reduce((sum, session) => sum + session.pendingCount, 0)).toBe(1);
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("marks a running session as waiting and records the first permission resolver", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-permission-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    await mkdir(cwd, { recursive: true });
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd)],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "request-permission",
+      idempotencyKey: "command-permission",
+      sessionId,
+      text: "Update the file",
+      origin: "mobile",
+    });
+    await waitFor(() => hosts[0]?.sends === 1);
+
+    const controller = new AbortController();
+    const pending = broker.permissionBroker.request(sessionId, "Write", {
+      file_path: join(cwd, "demo.ts"),
+      content: "export const ready = true;",
+    }, {
+      signal: controller.signal,
+      toolUseId: "tool-write",
+      suggestions: [{
+        type: "addDirectories",
+        directories: [cwd],
+        destination: "localSettings",
+      }],
+    });
+    await waitFor(() => broker.session(sessionId)?.turnState === "waiting");
+    await waitFor(() => eventLog.replay().some((event) => event.type === "permission.requested"));
+    const [request] = broker.permissionBroker.list(sessionId);
+    expect(eventLog.replay().find((event) => event.type === "permission.requested")?.data)
+      .toMatchObject({
+        requestId: request!.requestId,
+        toolName: "Write",
+        canAllowAlways: true,
+      });
+
+    expect(broker.resolvePermission(
+      request!.requestId,
+      "allow-always",
+      undefined,
+      undefined,
+      { deviceId: "phone-1", name: "Android 手机" },
+    )).toBe(true);
+    expect(broker.resolvePermission(request!.requestId, "deny")).toBe(false);
+    await expect(pending).resolves.toMatchObject({
+      behavior: "allow",
+      updatedPermissions: [expect.objectContaining({ destination: "localSettings" })],
+    });
+    await waitFor(() => eventLog.replay().some((event) => event.type === "permission.resolved"));
+    expect(eventLog.replay().find((event) => event.type === "permission.resolved")?.data)
+      .toMatchObject({
+        requestId: request!.requestId,
+        decision: "allow-always",
+        resolvedByDeviceId: "phone-1",
+        resolvedByName: "Android 手机",
+      });
+    expect(broker.session(sessionId)?.turnState).toBe("running");
+
+    hosts[0]!.complete();
+    await waitFor(() => broker.session(sessionId)?.turnState === "idle");
     await broker.close();
     await eventLog.close();
   });

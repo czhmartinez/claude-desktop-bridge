@@ -48,6 +48,17 @@ await Promise.all([
     alias,
     define: sharedDefine,
   }),
+  build({
+    entryPoints: [resolve(root, "src/claude-desktop-helper.ts")],
+    outfile: resolve(dist, "claude-desktop-helper.cjs"),
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node22",
+    sourcemap: true,
+    alias,
+    define: sharedDefine,
+  }),
 ]);
 
 if (!mainOnly) {

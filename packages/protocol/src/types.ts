@@ -26,14 +26,26 @@ export interface StoredIdentity {
 }
 
 export type BridgeOrigin = "desktop" | "mobile" | "claude-desktop" | "claude-host" | "system";
+export type BridgeSessionTransport = "claude-desktop-managed" | "bridge-host";
+export type ClaudeDesktopIntegrationState =
+  | "not-managed"
+  | "starting"
+  | "ready"
+  | "incompatible"
+  | "disconnected";
 export type BridgeOwnershipState =
   | "DESKTOP_OBSERVED"
+  | "DESKTOP_MANAGED_IDLE"
+  | "DESKTOP_MANAGED_RUNNING"
+  | "FALLBACK_CONFIRMATION_REQUIRED"
+  | "OWNERSHIP_CONFLICT"
   | "ACQUIRING"
   | "BRIDGE_IDLE"
   | "BRIDGE_RUNNING"
   | "RELEASING";
 export type BridgeTurnState = "idle" | "queued" | "running" | "waiting" | "completed" | "failed" | "interrupted";
 export type BridgeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type BridgePermissionDecision = "allow-once" | "allow-always" | "deny";
 export type BridgeConfigurationSource = "bridge" | "claude-desktop" | "project" | "default";
 export type BridgeDeliveryState =
   | "local-saved"
@@ -43,7 +55,8 @@ export type BridgeDeliveryState =
   | "running"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "uncertain";
 
 export interface BridgeAttachment {
   id: string;
@@ -71,6 +84,7 @@ export interface BridgeSessionInfo {
   cwd: string;
   title: string;
   source: "desktop" | "bridge";
+  transport: BridgeSessionTransport;
   ownership: BridgeOwnershipState;
   turnState: BridgeTurnState;
   lastActivityAt: number;
@@ -80,6 +94,7 @@ export interface BridgeSessionInfo {
   model?: string;
   effort?: BridgeEffort;
   configurationPending?: boolean;
+  fallbackConfirmed?: boolean;
 }
 
 export interface BridgeModelInfo {
@@ -164,6 +179,15 @@ export interface BridgePermissionInfo {
   description?: string;
   input: Record<string, unknown>;
   createdAt: number;
+  canAllowAlways: boolean;
+}
+
+export interface BridgePermissionResolution {
+  requestId: string;
+  decision: BridgePermissionDecision;
+  resolvedByDeviceId: string;
+  resolvedByName: string;
+  resolvedAt: number;
 }
 
 export interface BridgeRuntimeStatus {
@@ -173,6 +197,15 @@ export interface BridgeRuntimeStatus {
   credentialSource?: "third-party-host";
   activeTurns: number;
   maxParallelTurns: number;
+  desktopIntegration: {
+    state: ClaudeDesktopIntegrationState;
+    detail: string;
+    enabled: boolean;
+    canRestart: boolean;
+    appVersion?: string;
+    buildFingerprint?: string;
+    lastError?: string;
+  };
 }
 
 export interface BridgeHostSnapshot {
@@ -195,6 +228,7 @@ export interface BridgeHostSnapshot {
 export interface DesktopControlSnapshot extends BridgeHostSnapshot {
   connection: "idle" | "connecting" | "connected" | "reconnecting" | "closed";
   launchAtLogin: boolean;
+  managedDesktopEnabled: boolean;
   pairingUrl?: string;
   pairingExpiresAt?: number;
 }
@@ -207,6 +241,8 @@ export type BridgeMethod =
   | "session.history"
   | "session.configuration"
   | "session.configure"
+  | "session.fallback.confirm"
+  | "message.delivery.resolve"
   | "turn.start"
   | "turn.steer"
   | "turn.interrupt"
@@ -241,6 +277,8 @@ export type BridgeEventType =
   | "session.observed"
   | "session.ownership"
   | "session.configuration"
+  | "session.transport"
+  | "session.ownership-conflict"
   | "user.message.accepted"
   | "message.delivery"
   | "assistant.delta"
@@ -259,6 +297,7 @@ export type BridgeEventType =
   | "turn.interrupted"
   | "device.paired"
   | "device.revoked"
+  | "runtime.compatibility"
   | "runtime.error";
 
 export interface BridgeEvent {

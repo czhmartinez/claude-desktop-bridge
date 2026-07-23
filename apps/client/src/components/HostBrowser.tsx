@@ -37,7 +37,7 @@ export function HostBrowser({
   error?: string | undefined;
   theme: Theme;
   onToggleTheme(): void;
-  onSelect(roomId: string): Promise<void>;
+  onSelect(roomId: string, focusSessionId?: string): Promise<void>;
   onRemove(roomId: string): Promise<void>;
   onAdd(): void;
 }) {
@@ -49,7 +49,8 @@ export function HostBrowser({
     if (openingHostId) return;
     setOpeningHostId(roomId);
     try {
-      await onSelect(roomId);
+      const host = hosts.find((candidate) => candidate.roomId === roomId);
+      await onSelect(roomId, host?.attentionSessionId);
     } finally {
       setOpeningHostId(undefined);
     }

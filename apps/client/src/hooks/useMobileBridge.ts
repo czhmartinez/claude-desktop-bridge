@@ -9,6 +9,7 @@ import {
   type BridgeHistoryPage,
   type BridgeHostSnapshot,
   type BridgePayload,
+  type BridgePermissionInfo,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeSessionConfiguration,
@@ -31,6 +32,7 @@ export interface PairedHost {
   status: "standby" | "running" | "attention" | "offline";
   lastSeenAt?: number;
   activeTurns: number;
+  attentionSessionId?: string;
 }
 
 export interface MobileConnectionIssue {
@@ -70,6 +72,8 @@ interface MobileBridgeState {
   connection: SocketState;
   desktopOnline: boolean;
   snapshot: BridgeHostSnapshot | undefined;
+  permissions: BridgePermissionInfo[];
+  focusSessionId: string | undefined;
   histories: Record<string, SessionHistoryState>;
   events: BridgeEvent[];
   localTurns: LocalTurn[];
@@ -86,6 +90,8 @@ const INITIAL_STATE: MobileBridgeState = {
   connection: "idle",
   desktopOnline: false,
   snapshot: undefined,
+  permissions: [],
+  focusSessionId: undefined,
   histories: {},
   events: [],
   localTurns: [],
@@ -121,22 +127,54 @@ function relayIssue(code: string, fallback: string): MobileConnectionIssue {
   return { code: "unreachable", message: fallback };
 }
 
-function hostStatus(snapshot: BridgeHostSnapshot | undefined): PairedHost["status"] {
+function hostStatus(
+  snapshot: BridgeHostSnapshot | undefined,
+  permissions: BridgePermissionInfo[] = snapshot?.permissions ?? [],
+): PairedHost["status"] {
+  if (permissions.length > 0) return "attention";
   if (!snapshot) return "offline";
-  if (snapshot.permissions.length > 0) return "attention";
-  if (snapshot.runtime.activeTurns > 0) return "running";
+  if (
+    snapshot.runtime.activeTurns > 0 ||
+    snapshot.sessions.some((session) => session.turnState === "running")
+  ) return "running";
   return "standby";
 }
 
-function hostSummary(host: StoredBridgeHost, snapshot?: BridgeHostSnapshot): PairedHost {
+function hostSummary(
+  host: StoredBridgeHost,
+  snapshot?: BridgeHostSnapshot,
+  permissions: BridgePermissionInfo[] = snapshot?.permissions ?? [],
+): PairedHost {
   return {
     roomId: host.roomId,
     desktopName: host.desktopName,
     relayUrl: host.relayUrl,
     needsRepair: Capacitor.isNativePlatform() && isLoopbackRelay(host.relayUrl),
-    status: hostStatus(snapshot),
+    status: hostStatus(snapshot, permissions),
     activeTurns: snapshot?.runtime.activeTurns ?? 0,
     ...(snapshot ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
+    ...(permissions[0] ? { attentionSessionId: permissions[0].sessionId } : {}),
+  };
+}
+
+function hostWithRuntimeState(
+  host: PairedHost,
+  snapshot: BridgeHostSnapshot | undefined,
+  permissions: BridgePermissionInfo[],
+): PairedHost {
+  const { attentionSessionId: _attentionSessionId, ...base } = host;
+  const visibleActiveTurns = snapshot
+    ? Math.max(
+        snapshot.runtime.activeTurns,
+        snapshot.sessions.filter((session) => session.turnState === "running" || session.turnState === "waiting").length,
+      )
+    : host.activeTurns;
+  return {
+    ...base,
+    status: hostStatus(snapshot, permissions),
+    activeTurns: visibleActiveTurns,
+    ...(snapshot ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
+    ...(permissions[0] ? { attentionSessionId: permissions[0].sessionId } : {}),
   };
 }
 
@@ -157,6 +195,29 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
       return { ...turn, delivery: "host-received", ...(commandId ? { commandId } : {}) };
     }
     if (event.type === "user.message.accepted") return { ...turn, delivery: "session-received" };
+    if (event.type === "message.delivery" && typeof event.data.delivery === "string") {
+      const delivery = event.data.delivery as BridgeDeliveryState;
+      if (
+        [
+          "local-saved",
+          "relay-received",
+          "host-received",
+          "session-received",
+          "running",
+          "completed",
+          "failed",
+          "cancelled",
+          "uncertain",
+        ].includes(delivery)
+      ) {
+        return {
+          ...turn,
+          delivery,
+          ...(typeof event.data.error === "string" ? { error: event.data.error } : {}),
+          ...(commandId ? { commandId } : {}),
+        };
+      }
+    }
     if (event.type === "turn.started") return { ...turn, delivery: "running" };
     if (event.type === "turn.completed") return { ...turn, delivery: "completed" };
     if (event.type === "turn.failed") {
@@ -179,8 +240,155 @@ export function mergeBridgeEvents(current: BridgeEvent[], incoming: BridgeEvent[
     .slice(-2_000);
 }
 
+function permissionFromEvent(event: BridgeEvent): BridgePermissionInfo | undefined {
+  if (event.type !== "permission.requested" && event.type !== "question.requested") return undefined;
+  if (
+    !event.sessionId ||
+    typeof event.data.requestId !== "string" ||
+    typeof event.data.toolUseId !== "string" ||
+    typeof event.data.toolName !== "string" ||
+    !event.data.input ||
+    typeof event.data.input !== "object" ||
+    Array.isArray(event.data.input)
+  ) return undefined;
+  return {
+    requestId: event.data.requestId,
+    sessionId: event.sessionId,
+    toolUseId: event.data.toolUseId,
+    toolName: event.data.toolName,
+    input: event.data.input as Record<string, unknown>,
+    createdAt: typeof event.data.createdAt === "number" ? event.data.createdAt : event.timestamp,
+    canAllowAlways: event.data.canAllowAlways === true,
+    ...(typeof event.data.title === "string" && event.data.title ? { title: event.data.title } : {}),
+    ...(typeof event.data.displayName === "string" && event.data.displayName
+      ? { displayName: event.data.displayName }
+      : {}),
+    ...(typeof event.data.description === "string" && event.data.description
+      ? { description: event.data.description }
+      : {}),
+  };
+}
+
+export function applyPermissionEvent(
+  current: BridgePermissionInfo[],
+  event: BridgeEvent,
+): BridgePermissionInfo[] {
+  const requested = permissionFromEvent(event);
+  if (requested) {
+    return [
+      ...current.filter((permission) => permission.requestId !== requested.requestId),
+      requested,
+    ].sort((left, right) => left.createdAt - right.createdAt);
+  }
+  if (
+    (event.type === "permission.resolved" || event.type === "question.resolved") &&
+    typeof event.data.requestId === "string"
+  ) {
+    return current.filter((permission) => permission.requestId !== event.data.requestId);
+  }
+  return current;
+}
+
+function snapshotWithPermissions(
+  snapshot: BridgeHostSnapshot | undefined,
+  permissions: BridgePermissionInfo[],
+): BridgeHostSnapshot | undefined {
+  if (!snapshot) return undefined;
+  const waitingSessions = new Set(permissions.map((permission) => permission.sessionId));
+  return {
+    ...snapshot,
+    permissions,
+    sessions: snapshot.sessions.map((session) => {
+      if (waitingSessions.has(session.sessionId)) return { ...session, turnState: "waiting" };
+      if (session.turnState !== "waiting") return session;
+      return {
+        ...session,
+        turnState: session.ownership === "BRIDGE_RUNNING"
+          ? "running"
+          : session.pendingCount > 0
+            ? "queued"
+            : "idle",
+      };
+    }),
+  };
+}
+
+export function applyEventToSnapshot(
+  snapshot: BridgeHostSnapshot | undefined,
+  event: BridgeEvent,
+  permissions: BridgePermissionInfo[],
+): BridgeHostSnapshot | undefined {
+  const current = snapshotWithPermissions(snapshot, permissions);
+  if (!current || !event.sessionId) return current;
+  const hasPendingPermission = permissions.some((permission) => permission.sessionId === event.sessionId);
+  return {
+    ...current,
+    sessions: current.sessions.map((session) => {
+      if (session.sessionId !== event.sessionId) return session;
+      if (hasPendingPermission) return { ...session, turnState: "waiting" };
+      if (event.type === "session.ownership" && typeof event.data.ownership === "string") {
+        return {
+          ...session,
+          ownership: event.data.ownership as BridgeSessionInfo["ownership"],
+        };
+      }
+      if (event.type === "session.transport" && typeof event.data.transport === "string") {
+        return {
+          ...session,
+          transport: event.data.transport as BridgeSessionInfo["transport"],
+        };
+      }
+      if (event.type === "session.ownership-conflict") {
+        return {
+          ...session,
+          ownership: "OWNERSHIP_CONFLICT",
+          turnState: "waiting",
+        };
+      }
+      if (event.type === "turn.queued") {
+        return {
+          ...session,
+          turnState: "queued",
+          pendingCount: Math.max(1, session.pendingCount),
+        };
+      }
+      if (event.type === "turn.started") {
+        return {
+          ...session,
+          ownership: session.transport === "claude-desktop-managed"
+            ? "DESKTOP_MANAGED_RUNNING"
+            : "BRIDGE_RUNNING",
+          turnState: "running",
+          pendingCount: Math.max(0, session.pendingCount - 1),
+          ...(event.turnId ? { activeTurnId: event.turnId } : {}),
+        };
+      }
+      if (
+        event.type === "turn.completed" ||
+        event.type === "turn.failed" ||
+        event.type === "turn.interrupted"
+      ) {
+        const {
+          activeTurnId: _activeTurnId,
+          currentSummary: _currentSummary,
+          ...rest
+        } = session;
+        return {
+          ...rest,
+          ownership: session.transport === "claude-desktop-managed"
+            ? "DESKTOP_MANAGED_IDLE"
+            : "BRIDGE_IDLE",
+          turnState: session.pendingCount > 0 ? "queued" : "idle",
+        };
+      }
+      return session;
+    }),
+  };
+}
+
 async function readStoredHostState(crypto: BridgeCrypto): Promise<{
   snapshot?: BridgeHostSnapshot;
+  permissions: BridgePermissionInfo[];
   events: BridgeEvent[];
   localTurns: LocalTurn[];
   latestSeq: number;
@@ -196,6 +404,13 @@ async function readStoredHostState(crypto: BridgeCrypto): Promise<{
     [],
     messages.flatMap((message) => message.payload.kind === "event" ? [message.payload.event] : []),
   );
+  let permissions = snapshot?.kind === "snapshot" ? snapshot.snapshot.permissions : [];
+  const snapshotSeq = snapshot?.kind === "snapshot" ? snapshot.snapshot.latestSeq : 0;
+  let replayedSnapshot = snapshot?.kind === "snapshot" ? snapshot.snapshot : undefined;
+  for (const event of events.filter((candidate) => candidate.seq > snapshotSeq)) {
+    permissions = applyPermissionEvent(permissions, event);
+    replayedSnapshot = applyEventToSnapshot(replayedSnapshot, event, permissions);
+  }
   const localTurns: LocalTurn[] = messages.flatMap((message) => {
     if (
       message.header.from !== "mobile" ||
@@ -250,11 +465,13 @@ async function readStoredHostState(crypto: BridgeCrypto): Promise<{
       };
     }
   }
+  const storedSnapshot = snapshotWithPermissions(replayedSnapshot, permissions);
   return {
-    ...(snapshot?.kind === "snapshot" ? { snapshot: snapshot.snapshot } : {}),
+    ...(storedSnapshot ? { snapshot: storedSnapshot } : {}),
+    permissions,
     events,
     localTurns: appliedTurns,
-    latestSeq: Math.max(0, ...events.map((event) => event.seq)),
+    latestSeq: Math.max(snapshotSeq, ...events.map((event) => event.seq), 0),
   };
 }
 
@@ -315,16 +532,15 @@ export function useMobileBridge() {
   const pendingResponsesRef = useRef(new Map<string, PendingResponse>());
   const envelopeRequestsRef = useRef(new Map<string, string>());
 
-  const updateHostCache = useCallback((roomId: string, snapshot: BridgeHostSnapshot) => {
+  const updateHostCache = useCallback((
+    roomId: string,
+    snapshot: BridgeHostSnapshot,
+    permissions: BridgePermissionInfo[] = snapshot.permissions,
+  ) => {
     setState((current) => ({
       ...current,
       hosts: current.hosts.map((host) => host.roomId === roomId
-        ? {
-            ...host,
-            status: hostStatus(snapshot),
-            lastSeenAt: snapshot.host.lastSeenAt,
-            activeTurns: snapshot.runtime.activeTurns,
-          }
+        ? hostWithRuntimeState(host, snapshot, permissions)
         : host),
     }));
   }, []);
@@ -335,21 +551,38 @@ export function useMobileBridge() {
     crypto: BridgeCrypto,
   ) => {
     if (payload.kind === "snapshot") {
+      let permissions = payload.snapshot.permissions;
+      let snapshot: BridgeHostSnapshot | undefined = payload.snapshot;
+      for (const event of stateRef.current.events.filter((candidate) => candidate.seq > payload.snapshot.latestSeq)) {
+        permissions = applyPermissionEvent(permissions, event);
+        snapshot = applyEventToSnapshot(snapshot, event, permissions);
+      }
+      snapshot = snapshotWithPermissions(snapshot, permissions) ?? payload.snapshot;
       setState((current) => ({
         ...current,
-        snapshot: payload.snapshot,
-        desktopName: payload.snapshot.host.name,
+        snapshot,
+        permissions,
+        desktopName: snapshot.host.name,
       }));
-      updateHostCache(crypto.identity.roomId, payload.snapshot);
+      updateHostCache(crypto.identity.roomId, snapshot, permissions);
       return;
     }
     if (payload.kind === "event") {
-      setState((current) => ({
-        ...current,
-        events: mergeBridgeEvents(current.events, [payload.event]),
-        localTurns: applyEventToTurns(current.localTurns, payload.event),
-        latestSeq: Math.max(current.latestSeq, payload.event.seq),
-      }));
+      setState((current) => {
+        const permissions = applyPermissionEvent(current.permissions, payload.event);
+        const snapshot = applyEventToSnapshot(current.snapshot, payload.event, permissions);
+        return {
+          ...current,
+          snapshot,
+          permissions,
+          events: mergeBridgeEvents(current.events, [payload.event]),
+          localTurns: applyEventToTurns(current.localTurns, payload.event),
+          latestSeq: Math.max(current.latestSeq, payload.event.seq),
+          hosts: current.hosts.map((host) => host.roomId === crypto.identity.roomId
+            ? hostWithRuntimeState(host, snapshot, permissions)
+            : host),
+        };
+      });
       return;
     }
     if (payload.kind !== "response") return;
@@ -488,12 +721,23 @@ export function useMobileBridge() {
       }
       setState((current) => {
         let turns = current.localTurns;
-        for (const event of events) turns = applyEventToTurns(turns, event);
+        let permissions = current.permissions;
+        let snapshot = current.snapshot;
+        for (const event of events) {
+          turns = applyEventToTurns(turns, event);
+          permissions = applyPermissionEvent(permissions, event);
+          snapshot = applyEventToSnapshot(snapshot, event, permissions);
+        }
         return {
           ...current,
+          snapshot,
+          permissions,
           events: mergeBridgeEvents(current.events, events),
           localTurns: turns,
           latestSeq: Math.max(current.latestSeq, cursor),
+          hosts: current.hosts.map((host) => host.roomId === current.activeHostId
+            ? hostWithRuntimeState(host, snapshot, permissions)
+            : host),
         };
       });
     } catch {
@@ -501,7 +745,11 @@ export function useMobileBridge() {
     }
   }, [sendRequest]);
 
-  const start = useCallback(async (crypto: BridgeCrypto, bootstrap = false) => {
+  const start = useCallback(async (
+    crypto: BridgeCrypto,
+    bootstrap = false,
+    focusSessionId?: string,
+  ) => {
     if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
     socketRef.current?.close();
     socketRef.current = undefined;
@@ -515,6 +763,8 @@ export function useMobileBridge() {
       connection: "connecting",
       desktopOnline: false,
       snapshot: undefined,
+      permissions: [],
+      focusSessionId,
       histories: {},
       events: [],
       localTurns: [],
@@ -528,11 +778,12 @@ export function useMobileBridge() {
     setState((current) => ({
       ...current,
       snapshot: stored.snapshot,
+      permissions: stored.permissions,
       events: stored.events,
       localTurns: stored.localTurns,
       latestSeq: stored.latestSeq,
     }));
-    if (stored.snapshot) updateHostCache(roomId, stored.snapshot);
+    if (stored.snapshot) updateHostCache(roomId, stored.snapshot, stored.permissions);
 
     if (Capacitor.isNativePlatform() && isLoopbackRelay(crypto.identity.relayUrl)) {
       setState((current) => ({
@@ -617,20 +868,34 @@ export function useMobileBridge() {
       void (async () => {
         await bridgeVault.saveMessage(encrypted);
         socket.ack([encrypted.id]);
+        const event = message.payload.kind === "event" ? message.payload.event : undefined;
+        const isNewPermission = Boolean(
+          event &&
+          (event.type === "permission.requested" || event.type === "question.requested") &&
+          !stateRef.current.events.some((candidate) => candidate.eventId === event.eventId),
+        );
         handlePayload(message.payload, encrypted, crypto);
-        if (document.visibilityState !== "visible" && Notification.permission === "granted") {
-          if (message.payload.kind === "event" && (
-            message.payload.event.type === "assistant.completed" ||
-            message.payload.event.type === "permission.requested" ||
-            message.payload.event.type === "question.requested" ||
-            message.payload.event.type === "turn.failed"
-          )) {
+        if (isNewPermission && document.visibilityState === "visible") {
+          navigator.vibrate?.([120, 60, 120]);
+        }
+        if (
+          document.visibilityState !== "visible" &&
+          typeof Notification !== "undefined" &&
+          Notification.permission === "granted" &&
+          event && (
+            event.type === "assistant.completed" ||
+            event.type === "permission.requested" ||
+            event.type === "question.requested" ||
+            event.type === "turn.failed"
+          )
+        ) {
             new Notification(crypto.identity.desktopName, {
-              body: "Bridge 有新的会话动态",
+              body: event.type === "permission.requested" || event.type === "question.requested"
+                ? "Claude 正在等待你处理"
+                : "Bridge 有新的会话动态",
               icon: "/icon-192.png",
               tag: encrypted.id,
             });
-          }
         }
       })().catch(() => setState((current) => ({ ...current, error: "新消息暂时无法保存" })));
     });
@@ -655,7 +920,7 @@ export function useMobileBridge() {
       cryptoByRoomRef.current = new Map(hosts.map((host) => [host.roomId, host.crypto]));
       const summaries = await Promise.all(hosts.map(async (host) => {
         const stored = await readStoredHostState(host.crypto);
-        return hostSummary(host, stored.snapshot);
+        return hostSummary(host, stored.snapshot, stored.permissions);
       }));
       if (!active) return;
       setState((current) => ({ ...current, loading: false, hosts: summaries }));
@@ -717,7 +982,7 @@ export function useMobileBridge() {
     }
   }, [start]);
 
-  const selectHost = useCallback(async (roomId: string) => {
+  const selectHost = useCallback(async (roomId: string, focusSessionId?: string) => {
     let crypto = cryptoByRoomRef.current.get(roomId);
     if (!crypto) {
       const hosts = await bridgeVault.listHosts();
@@ -726,7 +991,7 @@ export function useMobileBridge() {
     }
     if (!crypto) throw new Error("Paired host not found");
     await bridgeVault.touchHost(crypto).catch(() => undefined);
-    await start(crypto);
+    await start(crypto, false, focusSessionId);
   }, [start]);
 
   const backToHosts = useCallback(() => {
@@ -741,6 +1006,8 @@ export function useMobileBridge() {
       connection: "idle",
       desktopOnline: false,
       snapshot: undefined,
+      permissions: [],
+      focusSessionId: undefined,
       histories: {},
       events: [],
       localTurns: [],
@@ -861,19 +1128,61 @@ export function useMobileBridge() {
     }, { allowOffline: false });
   }, [sendRequest]);
 
+  const resolveUncertainDelivery = useCallback(async (
+    commandId: string,
+    action: "confirm" | "retry",
+  ) => {
+    const response = await sendRequest("message.delivery.resolve", {
+      commandId,
+      action,
+    }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "投递状态处理失败");
+    await resumeEvents();
+  }, [resumeEvents, sendRequest]);
+
   const resolvePermission = useCallback(async (
     requestId: string,
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
   ) => {
-    await sendRequest("permission.resolve", {
+    const response = await sendRequest("permission.resolve", {
       requestId,
       decision,
       ...(message ? { message } : {}),
       ...(updatedInput ? { updatedInput } : {}),
-    }, { allowOffline: false });
-  }, [sendRequest]);
+    }, { allowOffline: false, wait: true });
+    if (!response?.ok) {
+      if (response?.error?.code === "ALREADY_RESOLVED") {
+        setState((current) => {
+          const permissions = current.permissions.filter((permission) => permission.requestId !== requestId);
+          const snapshot = snapshotWithPermissions(current.snapshot, permissions);
+          return {
+            ...current,
+            snapshot,
+            permissions,
+            hosts: current.hosts.map((host) => host.roomId === current.activeHostId
+              ? hostWithRuntimeState(host, snapshot, permissions)
+              : host),
+          };
+        });
+        await resumeEvents();
+      }
+      throw new Error(response?.error?.message ?? "授权处理失败");
+    }
+    setState((current) => {
+      const permissions = current.permissions.filter((permission) => permission.requestId !== requestId);
+      const snapshot = snapshotWithPermissions(current.snapshot, permissions);
+      return {
+        ...current,
+        snapshot,
+        permissions,
+        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
+          ? hostWithRuntimeState(host, snapshot, permissions)
+          : host),
+      };
+    });
+  }, [resumeEvents, sendRequest]);
 
   const createSession = useCallback(async (cwd: string, title?: string): Promise<BridgeSessionInfo | undefined> => {
     const response = await sendRequest("session.create", {
@@ -960,6 +1269,8 @@ export function useMobileBridge() {
         connection: "idle" as const,
         desktopOnline: false,
         snapshot: undefined,
+        permissions: [],
+        focusSessionId: undefined,
         histories: {},
         events: [],
         localTurns: [],
@@ -983,6 +1294,7 @@ export function useMobileBridge() {
     loadOlderHistory,
     sendTurn,
     interruptTurn,
+    resolveUncertainDelivery,
     resolvePermission,
     createSession,
     loadSessionConfiguration,

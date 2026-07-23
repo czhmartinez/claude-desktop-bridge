@@ -42,6 +42,7 @@ interface DesktopConfigFile {
   protectedHostSecret: string;
   createdAt: number;
   launchAtLogin: boolean;
+  managedDesktopEnabled?: boolean;
   devices: StoredDeviceConfig[];
 }
 
@@ -66,6 +67,7 @@ export interface LoadedDesktopConfig {
   hostSecret: string;
   createdAt: number;
   launchAtLogin: boolean;
+  managedDesktopEnabled: boolean;
   devices: LoadedDeviceConfig[];
 }
 
@@ -144,6 +146,7 @@ export class DesktopConfigRepository {
       hostSecret: this.protector.unprotect(config.protectedHostSecret),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
+      managedDesktopEnabled: config.managedDesktopEnabled === true,
       devices: config.devices.map((device) => ({
         deviceId: device.deviceId,
         name: device.name,
@@ -179,6 +182,7 @@ export class DesktopConfigRepository {
       hostSecret: secret,
       createdAt: Date.now(),
       launchAtLogin,
+      managedDesktopEnabled: false,
       devices: [],
     };
     await this.save(loaded);
@@ -196,6 +200,7 @@ export class DesktopConfigRepository {
       protectedHostSecret: this.protector.protect(config.hostSecret),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
+      managedDesktopEnabled: config.managedDesktopEnabled,
       devices: config.devices.map((device) => ({
         deviceId: device.deviceId,
         name: device.name,

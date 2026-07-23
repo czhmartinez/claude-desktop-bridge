@@ -9,9 +9,11 @@ import type {
   SocketState,
 } from "@bridge/protocol";
 import {
+  AlertTriangle,
   ArrowLeft,
   ChevronRight,
   CircleStop,
+  FilePenLine,
   ImagePlus,
   LoaderCircle,
   Moon,
@@ -21,6 +23,7 @@ import {
   Send,
   Settings2,
   Sun,
+  Terminal,
   Wrench,
   X,
 } from "lucide-react";
@@ -40,6 +43,7 @@ import {
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
   requestId?: string;
+  commandId?: string;
   live?: boolean;
 }
 
@@ -56,10 +60,13 @@ function relativeTime(value: number): string {
 }
 
 function ownershipLabel(session: BridgeSessionInfo): string {
+  if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
+  if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待电脑确认";
   if (session.turnState === "running") return "运行中";
   if (session.turnState === "queued") return `${session.pendingCount} 条排队`;
   if (session.turnState === "waiting") return "需处理";
-  if (session.ownership === "DESKTOP_OBSERVED") return "桌面会话";
+  if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
+  if (session.ownership === "DESKTOP_OBSERVED") return "桌面只读";
   return "待机";
 }
 
@@ -71,6 +78,7 @@ function deliveryLabel(state: BridgeDeliveryState): string {
   if (state === "running") return "Claude 处理中";
   if (state === "completed") return "已完成";
   if (state === "failed") return "发送失败";
+  if (state === "uncertain") return "发送结果待确认";
   return "已取消";
 }
 
@@ -107,6 +115,7 @@ export function conversationItems(
       attachments: turn.attachments,
       delivery: turn.delivery,
       requestId: turn.requestId,
+      ...(turn.commandId ? { commandId: turn.commandId } : {}),
     });
   }
   const completedTurns = new Set(
@@ -209,6 +218,27 @@ export function conversationItems(
         state: event.type === "turn.failed" ? "failed" : "interrupted",
       });
     }
+    if (event.type === "permission.resolved" || event.type === "question.resolved") {
+      const resolver = typeof event.data.resolvedByName === "string"
+        ? event.data.resolvedByName
+        : "另一台设备";
+      const decision = event.data.decision;
+      const outcome = event.type === "question.resolved"
+        ? decision === "deny" ? "取消了回答" : "提交了回答"
+        : decision === "deny"
+          ? "拒绝了授权"
+          : decision === "allow-always"
+            ? "设为始终允许"
+            : "允许了这一次操作";
+      items.set(event.eventId, {
+        id: event.eventId,
+        sessionId,
+        role: "system",
+        text: `${resolver}${outcome}`,
+        createdAt: event.timestamp,
+        origin: "system",
+      });
+    }
   }
   for (const item of deltaByItem.values()) items.set(item.id, item);
   for (const item of toolByItem.values()) items.set(item.id, item);
@@ -232,6 +262,93 @@ export async function fileToAttachment(file: File): Promise<BridgeAttachment> {
   };
 }
 
+interface PermissionFact {
+  label: string;
+  value: string;
+  code?: boolean;
+}
+
+export interface PermissionPresentation {
+  summary: string;
+  facts: PermissionFact[];
+  preview?: {
+    label: string;
+    value: string;
+  };
+  raw: string;
+  mutating: boolean;
+}
+
+function inputText(input: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function truncate(value: string, max: number): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}\n… 已省略 ${value.length - max} 个字符`;
+}
+
+export function permissionPresentation(permission: BridgePermissionInfo): PermissionPresentation {
+  const tool = permission.toolName.toLocaleLowerCase();
+  const mutating = /(write|edit|bash|delete|remove|move|notebook)/u.test(tool);
+  const facts: PermissionFact[] = [];
+  const path = inputText(permission.input, "file_path", "path", "notebook_path");
+  const command = inputText(permission.input, "command");
+  const cwd = inputText(permission.input, "cwd", "working_directory");
+  const url = inputText(permission.input, "url");
+  const query = inputText(permission.input, "query", "pattern");
+  if (path) facts.push({ label: "目标", value: path, code: true });
+  if (command) facts.push({ label: "命令", value: truncate(command, 600), code: true });
+  if (cwd) facts.push({ label: "目录", value: cwd, code: true });
+  if (url) facts.push({ label: "地址", value: url, code: true });
+  if (query) facts.push({ label: "查询", value: truncate(query, 300) });
+
+  const ignored = new Set([
+    "file_path",
+    "path",
+    "notebook_path",
+    "command",
+    "cwd",
+    "working_directory",
+    "url",
+    "query",
+    "pattern",
+    "content",
+    "old_string",
+    "new_string",
+  ]);
+  for (const [key, value] of Object.entries(permission.input)) {
+    if (facts.length >= 5 || ignored.has(key)) continue;
+    if (typeof value === "string" && value.trim()) {
+      facts.push({ label: key, value: truncate(value.trim(), 240) });
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      facts.push({ label: key, value: String(value) });
+    }
+  }
+
+  const content = inputText(permission.input, "content", "new_string");
+  const oldContent = inputText(permission.input, "old_string");
+  const preview = content
+    ? { label: oldContent ? "变更后预览" : "内容预览", value: truncate(content, 1_200) }
+    : oldContent
+      ? { label: "待替换内容", value: truncate(oldContent, 1_200) }
+      : undefined;
+  const serialized = JSON.stringify(permission.input, null, 2);
+  return {
+    summary: permission.description
+      || permission.displayName
+      || (mutating ? "这项操作会修改电脑上的项目内容" : "Claude 需要确认后才能继续"),
+    facts,
+    ...(preview ? { preview } : {}),
+    raw: truncate(serialized, 4_000),
+    mutating,
+  };
+}
+
 function QuestionPrompt({
   permission,
   onResolve,
@@ -250,15 +367,33 @@ function QuestionPrompt({
       ))
     : [];
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
   const complete = questions.every((question) => (
     typeof question.question === "string" && Boolean(answers[question.question])
   ));
+  async function resolveQuestion(
+    decision: "allow-once" | "deny",
+    updatedInput?: Record<string, unknown>,
+  ): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await onResolve(permission.requestId, decision, undefined, updatedInput);
+    } catch (resolveError) {
+      setError(resolveError instanceof Error ? resolveError.message : "回答提交失败");
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <section className="permission-prompt question-prompt">
       <div className="permission-title">
         <strong>{permission.title || "Claude 需要你的选择"}</strong>
         <span>任一已授权设备的首次回答生效</span>
       </div>
+      {error && <div className="permission-error" role="alert">{error}</div>}
       {questions.map((question, index) => {
         const prompt = typeof question.question === "string" ? question.question : `问题 ${index + 1}`;
         const options = Array.isArray(question.options)
@@ -285,20 +420,91 @@ function QuestionPrompt({
         );
       })}
       <div className="permission-actions">
-        <button type="button" className="secondary-button" onClick={() => void onResolve(permission.requestId, "deny")}>取消</button>
+        <button type="button" className="secondary-button" disabled={busy} onClick={() => void resolveQuestion("deny")}>取消</button>
         <button
           type="button"
           className="primary-button"
-          disabled={!complete}
-          onClick={() => void onResolve(
-            permission.requestId,
+          disabled={!complete || busy}
+          onClick={() => void resolveQuestion(
             "allow-once",
-            undefined,
             { ...permission.input, answers },
           )}
         >
-          提交回答
+          {busy && <LoaderCircle className="is-spinning" size={15} />}提交回答
         </button>
+      </div>
+    </section>
+  );
+}
+
+function ToolPermissionPrompt({
+  permission,
+  onResolve,
+}: {
+  permission: BridgePermissionInfo;
+  onResolve(
+    requestId: string,
+    decision: "allow-once" | "allow-always" | "deny",
+    message?: string,
+    updatedInput?: Record<string, unknown>,
+  ): Promise<void>;
+}) {
+  const presentation = permissionPresentation(permission);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  async function decide(decision: "allow-once" | "allow-always" | "deny"): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await onResolve(permission.requestId, decision);
+    } catch (resolveError) {
+      setError(resolveError instanceof Error ? resolveError.message : "授权处理失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="permission-prompt">
+      <div className="permission-title">
+        <strong>{permission.title || `${permission.toolName} 请求权限`}</strong>
+        <span>{presentation.summary}</span>
+      </div>
+      <div className={`permission-risk ${presentation.mutating ? "mutating" : ""}`}>
+        {presentation.mutating ? <AlertTriangle size={16} /> : <Wrench size={16} />}
+        <span>{presentation.mutating ? "操作前请核对目标与内容" : "Claude 正在等待你的确认"}</span>
+      </div>
+      {presentation.facts.length > 0 && (
+        <dl className="permission-facts">
+          {presentation.facts.map((fact) => (
+            <div key={`${fact.label}:${fact.value}`}>
+              <dt>{fact.label}</dt>
+              <dd className={fact.code ? "is-code" : ""}>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {presentation.preview && (
+        <details className="permission-details">
+          <summary><FilePenLine size={15} />{presentation.preview.label}</summary>
+          <pre>{presentation.preview.value}</pre>
+        </details>
+      )}
+      <details className="permission-details raw-details">
+        <summary><Terminal size={15} />查看完整参数</summary>
+        <pre>{presentation.raw}</pre>
+      </details>
+      {error && <div className="permission-error" role="alert">{error}</div>}
+      <div className="permission-actions">
+        <button type="button" className="secondary-button danger-text" disabled={busy} onClick={() => void decide("deny")}>拒绝</button>
+        <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once")}>
+          {busy && <LoaderCircle className="is-spinning" size={15} />}允许一次
+        </button>
+        {permission.canAllowAlways && (
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
+        )}
       </div>
     </section>
   );
@@ -316,23 +522,9 @@ export function PermissionPrompt({
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
 }) {
-  if (permission.toolName === "AskUserQuestion") {
-    return <QuestionPrompt permission={permission} onResolve={onResolve} />;
-  }
-  return (
-    <section className="permission-prompt">
-      <div className="permission-title">
-        <strong>{permission.title || `${permission.toolName} 请求权限`}</strong>
-        <span>{permission.description || permission.displayName || "Claude 等待确认后继续"}</span>
-      </div>
-      <pre>{JSON.stringify(permission.input, null, 2)}</pre>
-      <div className="permission-actions">
-        <button type="button" className="secondary-button danger-text" onClick={() => void onResolve(permission.requestId, "deny")}>拒绝</button>
-        <button type="button" className="secondary-button" onClick={() => void onResolve(permission.requestId, "allow-once")}>允许一次</button>
-        <button type="button" className="primary-button" onClick={() => void onResolve(permission.requestId, "allow-always")}>始终允许</button>
-      </div>
-    </section>
-  );
+  return permission.toolName === "AskUserQuestion"
+    ? <QuestionPrompt permission={permission} onResolve={onResolve} />
+    : <ToolPermissionPrompt permission={permission} onResolve={onResolve} />;
 }
 
 export function MobileWorkspace({
@@ -340,6 +532,8 @@ export function MobileWorkspace({
   connection,
   desktopOnline,
   snapshot,
+  permissions,
+  focusSessionId,
   histories,
   events,
   localTurns,
@@ -350,6 +544,7 @@ export function MobileWorkspace({
   onLoadOlderHistory,
   onSendTurn,
   onInterruptTurn,
+  onResolveUncertain,
   onResolvePermission,
   onCreateSession,
   onLoadSessionConfiguration,
@@ -364,9 +559,10 @@ export function MobileWorkspace({
   snapshot: {
     projects: Array<{ projectId: string; name: string; cwd: string }>;
     sessions: BridgeSessionInfo[];
-    permissions: BridgePermissionInfo[];
     runtime: { state: string; activeTurns: number };
   } | undefined;
+  permissions: BridgePermissionInfo[];
+  focusSessionId?: string | undefined;
   histories: Record<string, SessionHistoryState>;
   events: BridgeEvent[];
   localTurns: LocalTurn[];
@@ -377,6 +573,7 @@ export function MobileWorkspace({
   onLoadOlderHistory(sessionId: string): Promise<void>;
   onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
+  onResolveUncertain(commandId: string, action: "confirm" | "retry"): Promise<void>;
   onResolvePermission(
     requestId: string,
     decision: "allow-once" | "allow-always" | "deny",
@@ -405,8 +602,11 @@ export function MobileWorkspace({
   const [createBusy, setCreateBusy] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [imageError, setImageError] = useState<string>();
+  const [permissionOpen, setPermissionOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const handledFocusRef = useRef<string | undefined>(undefined);
+  const announcedPermissionsRef = useRef(new Set<string>());
 
   const sessions = snapshot?.sessions ?? [];
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
@@ -438,6 +638,37 @@ export function MobileWorkspace({
     if (!selectedSessionId) return;
     endRef.current?.scrollIntoView({ block: "end" });
   }, [items.length, selectedSessionId]);
+
+  useEffect(() => {
+    if (
+      !focusSessionId ||
+      handledFocusRef.current === focusSessionId ||
+      !sessions.some((session) => session.sessionId === focusSessionId)
+    ) return;
+    handledFocusRef.current = focusSessionId;
+    void selectSession(focusSessionId).then(() => setPermissionOpen(true));
+  }, [focusSessionId, sessions]);
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    const next = permissions.find((permission) => (
+      permission.sessionId === selectedSessionId &&
+      !announcedPermissionsRef.current.has(permission.requestId)
+    ));
+    if (!next) return;
+    announcedPermissionsRef.current.add(next.requestId);
+    setPermissionOpen(true);
+  }, [permissions, selectedSessionId]);
+
+  useEffect(() => {
+    if (
+      permissionOpen &&
+      selectedSessionId &&
+      !permissions.some((permission) => permission.sessionId === selectedSessionId)
+    ) {
+      setPermissionOpen(false);
+    }
+  }, [permissionOpen, permissions, selectedSessionId]);
 
   async function selectSession(sessionId: string): Promise<void> {
     setConfigurationOpen(false);
@@ -499,11 +730,19 @@ export function MobileWorkspace({
 
   if (selectedSession) {
     const bridgeRunning = selectedSession.turnState === "running"
-      && selectedSession.ownership === "BRIDGE_RUNNING";
+      && (
+        selectedSession.ownership === "BRIDGE_RUNNING" ||
+        selectedSession.ownership === "DESKTOP_MANAGED_RUNNING"
+      );
     const activeTurn = localTurns
       .filter((turn) => turn.sessionId === selectedSession.sessionId && turn.delivery === "running")
       .at(-1);
-    const permissions = snapshot?.permissions.filter((permission) => permission.sessionId === selectedSession.sessionId) ?? [];
+    const sessionPermissions = permissions.filter((permission) => permission.sessionId === selectedSession.sessionId);
+    const activePermission = sessionPermissions[0];
+    const otherPermission = permissions.find((permission) => permission.sessionId !== selectedSession.sessionId);
+    const otherPermissionSession = otherPermission
+      ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
+      : undefined;
     return (
       <main className="mobile-workspace conversation-workspace">
         <header className="mobile-topbar conversation-topbar">
@@ -529,6 +768,35 @@ export function MobileWorkspace({
             )}
           </div>
         </header>
+
+        {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
+          <div className="session-channel-warning">
+            <AlertTriangle size={17} />
+            <span><strong>需要在电脑端确认通道</strong>启用同步控制，或在电脑端确认切换为 Bridge 独立会话。</span>
+          </div>
+        )}
+        {selectedSession.ownership === "OWNERSHIP_CONFLICT" && (
+          <div className="session-channel-warning danger">
+            <AlertTriangle size={17} />
+            <span><strong>检测到两个写入进程</strong>Bridge 已停止继续写入，请回到电脑端处理所有权冲突。</span>
+          </div>
+        )}
+
+        <div className={`permission-dock-slot ${activePermission || otherPermission ? "has-attention" : ""}`}>
+          {activePermission ? (
+            <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>Claude 正在等待授权</strong><small>{activePermission.title || activePermission.displayName || activePermission.toolName}</small></span>
+              <b>{sessionPermissions.length > 1 ? `${sessionPermissions.length} 项` : "处理"}</b>
+            </button>
+          ) : otherPermission && otherPermissionSession ? (
+            <button type="button" className="permission-dock" onClick={() => void selectSession(otherPermission.sessionId)}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>另一会话需要处理</strong><small>{otherPermissionSession.title}</small></span>
+              <b>前往</b>
+            </button>
+          ) : null}
+        </div>
 
         <section className="conversation-stream" aria-live="polite">
           {selectedHistory?.hasMore && (
@@ -569,11 +837,14 @@ export function MobileWorkspace({
                 <div className="attachment-summary">{item.attachments.map((attachment) => <span key={attachment.id}>{attachment.name}</span>)}</div>
               ) : null}
               {item.delivery && <div className={`delivery-state ${item.delivery}`}>{deliveryLabel(item.delivery)}</div>}
+              {item.delivery === "uncertain" && item.commandId && (
+                <div className="uncertain-delivery-actions">
+                  <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "confirm")}>确认已发送</button>
+                  <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "retry")}>检查后重发</button>
+                </div>
+              )}
               {item.live && <span className="stream-caret" aria-label="正在生成" />}
             </article>
-          ))}
-          {permissions.map((permission) => (
-            <PermissionPrompt key={permission.requestId} permission={permission} onResolve={onResolvePermission} />
           ))}
           <div ref={endRef} />
         </section>
@@ -600,7 +871,7 @@ export function MobileWorkspace({
           {bridgeRunning && (
             <div className="composer-mode" role="group" aria-label="发送方式">
               <button type="button" className={!steer ? "active" : ""} onClick={() => setSteer(false)}>排到下一轮</button>
-              <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>停止并调整</button>
+                  <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
             </div>
           )}
           <form onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
@@ -632,6 +903,23 @@ export function MobileWorkspace({
             onSave={(change) => onConfigureSession(selectedSession.sessionId, change)}
             onClose={() => setConfigurationOpen(false)}
           />
+        )}
+        {permissionOpen && activePermission && (
+          <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setPermissionOpen(false);
+          }}>
+            <section className="permission-sheet" role="dialog" aria-modal="true" aria-labelledby="permission-sheet-title">
+              <header>
+                <div>
+                  <span>需要处理</span>
+                  <h2 id="permission-sheet-title">Claude 等待授权</h2>
+                </div>
+                <IconButton label="暂时关闭" onClick={() => setPermissionOpen(false)}><X size={19} /></IconButton>
+              </header>
+              {sessionPermissions.length > 1 && <div className="permission-queue-count">还有 {sessionPermissions.length} 项待处理，提交后自动显示下一项。</div>}
+              <PermissionPrompt permission={activePermission} onResolve={onResolvePermission} />
+            </section>
+          </div>
         )}
       </main>
     );
@@ -673,6 +961,16 @@ export function MobileWorkspace({
           <Search size={17} />
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
         </label>
+        {permissions[0] && (
+          <button type="button" className="host-permission-alert" onClick={() => void selectSession(permissions[0]!.sessionId)}>
+            <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+            <span>
+              <strong>Claude 正在等待处理</strong>
+              <small>{sessions.find((session) => session.sessionId === permissions[0]!.sessionId)?.title ?? permissions[0]!.toolName}</small>
+            </span>
+            <b>{permissions.length > 1 ? `${permissions.length} 项` : "查看"}</b>
+          </button>
+        )}
         {connectionIssue && (
           <button type="button" className="host-connection-issue" onClick={() => void onRetry()}>
             {connectionIssue.message}
