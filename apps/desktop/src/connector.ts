@@ -1,49 +1,23 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-export interface ConnectorLaunchSpec {
-  command: string;
-  args: string[];
-  env?: Record<string, string>;
-}
-
 export interface ConnectorPaths {
   claudeDesktop: string[];
   claudeCode: string;
   claudeSettings: string;
 }
 
-export interface ConnectorHookSpec {
-  url: string;
-  authorization: string;
-}
-
-interface McpConfig {
+interface ClaudeConfig {
   mcpServers?: Record<string, unknown>;
   hooks?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
-export type ConnectorInstallationState = "not-installed" | "installed" | "needs-repair";
-export const BRIDGE_LOCAL_BASE_URL = "http://127.0.0.1:8790";
-export const BRIDGE_HOOK_URL = `${BRIDGE_LOCAL_BASE_URL}/hooks/claude`;
+export const BRIDGE_HOOK_URL = "http://127.0.0.1:8790/hooks/claude";
 
-export const BRIDGE_HOOK_EVENTS = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Notification",
-  "Stop",
-  "SessionEnd",
-  "TaskCreated",
-  "TaskCompleted",
-] as const;
-
-async function readJson(path: string): Promise<McpConfig> {
+async function readJson(path: string): Promise<ClaudeConfig> {
   try {
-    const raw = await readFile(path, "utf8");
-    return JSON.parse(raw) as McpConfig;
+    return JSON.parse(await readFile(path, "utf8")) as ClaudeConfig;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw error;
@@ -63,102 +37,52 @@ async function writeJsonSafely(path: string, value: unknown): Promise<void> {
   await rename(temporary, path);
 }
 
-function hasMcpConnector(config: McpConfig, spec: ConnectorLaunchSpec): boolean {
-  return JSON.stringify(config.mcpServers?.["claude-bridge"]) === JSON.stringify(spec);
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function containsBridgeHook(value: unknown, hook: ConnectorHookSpec): boolean {
-  if (!isRecord(value) || !Array.isArray(value.hooks)) return false;
-  return value.hooks.some((candidate) => (
-    isRecord(candidate) &&
-    candidate.type === "http" &&
-    candidate.url === hook.url &&
-    isRecord(candidate.headers) &&
-    candidate.headers.Authorization === hook.authorization
-  ));
-}
-
-function hasAllBridgeHooks(config: McpConfig, hook: ConnectorHookSpec): boolean {
-  return BRIDGE_HOOK_EVENTS.every((event) => {
-    const handlers = config.hooks?.[event];
-    return Array.isArray(handlers) && handlers.some((handler) => containsBridgeHook(handler, hook));
-  });
-}
-
-function referencesBridgeHook(config: McpConfig, hook: ConnectorHookSpec): boolean {
-  return Object.values(config.hooks ?? {}).some((handlers) => (
-    Array.isArray(handlers) && handlers.some((handler) => {
-      if (!isRecord(handler) || !Array.isArray(handler.hooks)) return false;
-      return handler.hooks.some((candidate) => isRecord(candidate) && candidate.type === "http" && candidate.url === hook.url);
-    })
-  ));
-}
-
-export async function connectorInstallationState(
-  paths: ConnectorPaths,
-  spec: ConnectorLaunchSpec,
-  hook: ConnectorHookSpec,
-): Promise<ConnectorInstallationState> {
-  const mcpConfigs = await Promise.all([...paths.claudeDesktop, paths.claudeCode].map(readJson));
-  const settings = await readJson(paths.claudeSettings);
-  if (mcpConfigs.every((config) => hasMcpConnector(config, spec)) && hasAllBridgeHooks(settings, hook)) {
-    return "installed";
+function removeBridgeHooks(config: ClaudeConfig): boolean {
+  let changed = false;
+  const nextHooks: Record<string, unknown> = {};
+  for (const [event, handlersValue] of Object.entries(config.hooks ?? {})) {
+    if (!Array.isArray(handlersValue)) {
+      nextHooks[event] = handlersValue;
+      continue;
+    }
+    const handlers = handlersValue.flatMap((handler) => {
+      if (!isRecord(handler) || !Array.isArray(handler.hooks)) return [handler];
+      const hooks = handler.hooks.filter((candidate) => !(
+        isRecord(candidate)
+        && candidate.type === "http"
+        && candidate.url === BRIDGE_HOOK_URL
+      ));
+      if (hooks.length === handler.hooks.length) return [handler];
+      changed = true;
+      return hooks.length > 0 ? [{ ...handler, hooks }] : [];
+    });
+    if (handlers.length > 0) nextHooks[event] = handlers;
+    else if (handlersValue.length > 0) changed = true;
   }
-  if (mcpConfigs.some((config) => config.mcpServers?.["claude-bridge"] !== undefined) || referencesBridgeHook(settings, hook)) {
-    return "needs-repair";
-  }
-  return "not-installed";
+  if (changed) config.hooks = nextHooks;
+  return changed;
 }
 
-export async function connectorInstalled(
-  paths: ConnectorPaths,
-  spec: ConnectorLaunchSpec,
-  hook: ConnectorHookSpec,
-): Promise<boolean> {
-  return await connectorInstallationState(paths, spec, hook) === "installed";
-}
-
-function bridgeHookGroup(hook: ConnectorHookSpec): Record<string, unknown> {
-  return {
-    hooks: [{
-      type: "http",
-      url: hook.url,
-      headers: { Authorization: hook.authorization },
-      timeout: 5,
-    }],
-  };
-}
-
-function mergeBridgeHooks(config: McpConfig, hook: ConnectorHookSpec): void {
-  const hooks = { ...config.hooks };
-  for (const event of BRIDGE_HOOK_EVENTS) {
-    const existing = Array.isArray(hooks[event]) ? hooks[event] : [];
-    hooks[event] = [
-      ...existing.filter((handler) => {
-        if (!isRecord(handler) || !Array.isArray(handler.hooks)) return true;
-        return !handler.hooks.some((candidate) => isRecord(candidate) && candidate.type === "http" && candidate.url === hook.url);
-      }),
-      bridgeHookGroup(hook),
-    ];
-  }
-  config.hooks = hooks;
-}
-
-export async function installConnector(
-  paths: ConnectorPaths,
-  spec: ConnectorLaunchSpec,
-  hook: ConnectorHookSpec,
-): Promise<void> {
+export async function removeLegacyConnector(paths: ConnectorPaths): Promise<boolean> {
+  let changed = false;
   for (const path of [...paths.claudeDesktop, paths.claudeCode]) {
     const config = await readJson(path);
-    config.mcpServers = { ...config.mcpServers, "claude-bridge": spec };
+    if (config.mcpServers?.["claude-bridge"] === undefined) continue;
+    const mcpServers = { ...config.mcpServers };
+    delete mcpServers["claude-bridge"];
+    if (Object.keys(mcpServers).length > 0) config.mcpServers = mcpServers;
+    else delete config.mcpServers;
     await writeJsonSafely(path, config);
+    changed = true;
   }
   const settings = await readJson(paths.claudeSettings);
-  mergeBridgeHooks(settings, hook);
-  await writeJsonSafely(paths.claudeSettings, settings);
+  if (removeBridgeHooks(settings)) {
+    await writeJsonSafely(paths.claudeSettings, settings);
+    changed = true;
+  }
+  return changed;
 }

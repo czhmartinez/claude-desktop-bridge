@@ -72,4 +72,38 @@ describe("Claude transcript history", () => {
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(60 * 1024);
     expect(result.messages.at(-1)?.text).toContain("已省略中间部分");
   });
+
+  it("pages backward by the visible message cursor", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-pages-"));
+    directories.push(root);
+    const transcript = join(root, "pages.jsonl");
+    const rows: string[] = [];
+    let parentUuid: string | null = null;
+    for (let index = 0; index < 8; index += 1) {
+      const uuid = `message-${index}`;
+      const role = index % 2 === 0 ? "user" : "assistant";
+      rows.push(line({
+        type: role,
+        uuid,
+        parentUuid,
+        timestamp: new Date(Date.UTC(2026, 6, 22, 10, 0, index)).toISOString(),
+        message: { role, content: `Message ${index}` },
+      }));
+      parentUuid = uuid;
+    }
+    await writeFile(transcript, rows.join("\n"), "utf8");
+
+    const newest = await parseClaudeTranscript(transcript, { limit: 4 });
+    expect(newest.messages.map((message) => message.id))
+      .toEqual(["message-4", "message-5", "message-6", "message-7"]);
+    const older = await parseClaudeTranscript(transcript, {
+      limit: 4,
+      before: {
+        createdAt: newest.messages[0]!.createdAt,
+        id: newest.messages[0]!.id,
+      },
+    });
+    expect(older.messages.map((message) => message.id))
+      .toEqual(["message-0", "message-1", "message-2", "message-3"]);
+  });
 });

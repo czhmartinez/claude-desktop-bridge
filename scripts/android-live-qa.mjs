@@ -1,8 +1,9 @@
 import { chromium } from "playwright-core";
 import { WebSocket } from "ws";
 
-const desktopCdp = process.env.BRIDGE_DESKTOP_CDP ?? "http://127.0.0.1:9333";
-const androidCdp = process.env.BRIDGE_ANDROID_CDP ?? "http://127.0.0.1:9334";
+const desktopCdp = process.env.BRIDGE_DESKTOP_CDP ?? "http://127.0.0.1:9223";
+const androidCdp = process.env.BRIDGE_ANDROID_CDP ?? "http://127.0.0.1:9224";
+const expectedSession = process.env.BRIDGE_E2E_SESSION_TITLE?.trim();
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -56,7 +57,11 @@ class CdpClient {
 const desktopBrowser = await chromium.connectOverCDP(desktopCdp);
 const desktopPage = desktopBrowser.contexts().flatMap((context) => context.pages()).find((page) => page.url().startsWith("file:"));
 if (!desktopPage) throw new Error("Desktop Bridge renderer was not found");
-const pairingUrl = await desktopPage.evaluate(async () => (await window.bridgeDesktop.getSnapshot()).pairingUrl);
+const pairingUrl = await desktopPage.evaluate(async () => {
+  const snapshot = await window.bridgeDesktop.getSnapshot();
+  return snapshot.pairingUrl ?? (await window.bridgeDesktop.createPairing()).pairingUrl;
+});
+if (!pairingUrl) throw new Error("Desktop did not create a pairing URL");
 await desktopBrowser.close();
 
 const android = await CdpClient.connect(androidCdp);
@@ -77,15 +82,19 @@ try {
     try {
       result = await android.evaluate(`({
         status: document.querySelector('.mobile-device span')?.textContent ?? '',
-        sessions: document.querySelectorAll('.session-row').length,
-        hasLiveSession: document.body.textContent?.includes('ega-pms-2c') ?? false
+        sessions: document.querySelectorAll('.session-row-v2').length,
+        hasExpectedSession: ${JSON.stringify(expectedSession ?? "")}
+          ? (document.body.textContent?.includes(${JSON.stringify(expectedSession ?? "")}) ?? false)
+          : document.querySelectorAll('.session-row-v2').length > 0
       })`);
     } catch {
       continue;
     }
-    if (result.sessions > 0 && result.hasLiveSession) break;
+    if (result.sessions > 0 && result.hasExpectedSession) break;
   }
-  if (!result?.hasLiveSession || result.sessions < 1) throw new Error("Android did not receive the live Claude session catalog");
+  if (!result?.hasExpectedSession || result.sessions < 1) {
+    throw new Error("Android did not receive the Claude project and session catalog");
+  }
   process.stdout.write(`${JSON.stringify({ ...result, pairedAndSynced: true })}\n`);
 } finally {
   android.close();

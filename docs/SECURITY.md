@@ -1,34 +1,54 @@
-# 安全模型
+# Bridge 0.2 安全模型
 
 ## 已保护
 
-- 消息正文使用 AES-256-GCM 端到端加密。
-- 配对根密钥不发送给 Relay。
-- Relay 只持久化鉴权令牌的 SHA-256 摘要和加密信封。
-- 信封元数据参与认证，不能被静默篡改。
-- Bridge 配对密钥写入权限为 `0600` 的用户目录配置文件。它不是 Claude 登录令牌；不用系统钥匙串可避免本地临时签名升级时反复授权或阻塞后台启动。
-- Electron 渲染进程启用 sandbox、context isolation，关闭 Node integration，并限制导航和 IPC 来源。
-- Claude 配置采用结构化 JSON 合并，写入前保留备份，不覆盖其他连接器与偏好。
-- Bridge 不申请辅助功能权限，不发送系统键鼠事件，不读写系统剪贴板，也不会激活或定位 Claude/Codex 窗口。
-- 常驻 worker 只发现 Claude Desktop Host 凭据文件的路径并校验文件元数据，文件内容由 Claude CLI 自己读取；找不到时不会调用官方 OAuth 登录，也不会回退到 CLI 的官方 OAuth 存储。MCP 补充 worker 只继承 Claude 已授予连接器的第三方运行环境。所有路径的凭据都不经 Relay、不写入 Bridge 配置，也不会出现在状态接口或日志中。
+- 正文与事件使用每设备独立的 AES-256-GCM 密钥端到端加密。
+- 房间、发送设备、目标设备、时间和过期时间属于认证数据，Relay 不能静默改写。
+- Relay 只保存鉴权摘要和密文；设备 ACK、离线队列和撤销均按 `deviceId` 隔离。
+- 二维码十分钟内单次有效，并由 Relay 绑定到首次使用它的移动实例。
+- 在线撤销会立即移除 Relay 权限；手机删除主机时同时删除本地密钥和缓存。
+- 主机与设备密钥保存在权限为 `0600` 的本地配置中，不调用系统钥匙串，避免临时
+  签名或升级时弹出系统密码框。
+- Electron 渲染进程启用 sandbox、context isolation，关闭 Node integration，
+  并限制导航和 IPC 来源。
+- Bridge 不申请辅助功能权限，不发送键鼠事件，不激活 Claude/Codex，不读写剪贴板。
+- 第三方 Claude Host 凭据不写入 Bridge 配置，不经 Relay，不出现在诊断或日志中。
+- 0.2 首次启动只备份并移除 Bridge 自己写入的 `claude-bridge` MCP 与 HTTP Hooks；
+  其他 Claude 配置保持不变。
+- 诊断导出只包含版本、平台、连接状态和数量统计，不包含正文、密钥或凭据路径。
 
-## Relay 可以看到
+## Relay 可见内容
 
-Relay 必须知道房间 ID、发送角色、目标角色、时间、密文长度和在线状态，才能路由与清理消息。Relay 看不到正文，但恶意 Relay 仍可丢弃、延迟或重放密文；客户端通过消息 ID去重，无法阻止服务端拒绝服务。
+Relay 必须看到房间 ID、设备 ID、时间、密文长度、在线状态和推送平台，才能路由、
+限流和清理。它看不到消息正文、项目路径、会话标题、审批内容或工具结果。
 
-配对密钥放在二维码 URL 的 fragment（`#` 后）中，因此不会进入 HTTP 请求、服务器访问日志或 Referer。不过，正在运行的网页代码可以读取 fragment。需要抵抗恶意或被入侵的 Web 托管方时，应使用签名后的原生移动应用，或把 PWA 部署在自己控制且不可被第三方改写的静态站点上。
+恶意 Relay 仍可丢弃、延迟或重放密文。客户端通过事件 ID、请求幂等键和单调
+`seq` 去重并发现缺口，但无法阻止服务端拒绝服务。
 
-## 操作要求
+FCM/APNs 请求只包含无正文唤醒标记。推送服务不会收到会话 ID、标题、摘要或消息
+文本。
 
-- 公网部署必须使用 HTTPS/WSS。
-- Relay 数据目录不得公开。
-- 生产环境应设置 `BRIDGE_ALLOWED_ORIGINS`。
-- 不要通过聊天、工单或截图公开配对二维码；泄露后在桌面点击“更换配对二维码”。
-- 发布安装包前完成 macOS notarization、Windows code signing 与移动商店签名。
+## 本机边界
 
-## 尚未包含
+`TranscriptObserver` 需要只读访问当前用户的 Claude 会话 JSONL 与元数据。
+`ClaudeSessionHost` 以当前用户身份运行，并继承第三方 Host 环境，因此它拥有与
+本机 Claude 工具相同的文件和命令权限。危险工具必须经过 `PermissionBroker`；
+电脑或任一已授权手机的首次有效答复生效。
 
-- 多手机设备撤销列表。目前“更换配对二维码”会整体换钥。
-- APNs/FCM 后台推送。手机重新打开后会收到离线队列，应用完全挂起时不会即时弹系统推送。
-- 后台分支不会强行写入一个仍在运行的 Claude Desktop 会话；这是为避免 transcript 交错而保留的隔离边界。
-- 多租户横向扩展存储。当前 JSON 持久化适合单节点个人/小团队部署。
+Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会并发写 transcript，
+手机消息会排队等待接管。
+
+## 生产要求
+
+- 公网只允许 HTTPS/WSS，并设置严格的 `BRIDGE_ALLOWED_ORIGINS`。
+- Relay 数据目录、FCM 服务账号和 APNs 私钥不得进入镜像或源码。
+- 配置 macOS notarization、Windows code signing、Android keystore 和 iOS
+  provisioning profile。
+- 为桌面安装包建立签名自动更新源；升级必须保留设备配置与事件日志。
+- 丢失手机时，从另一台已授权设备或电脑“设备”页立即撤销。
+
+## 仍需外部条件
+
+仓库已实现 FCM/APNs 通道，但真实后台推送需要 Firebase 项目、
+`google-services.json`、APNs Key、应用商店标识和已签名安装包。未提供这些外部
+凭据时，App 前台与重新打开后的离线恢复可用，但不能宣称锁屏即时唤醒已发布。

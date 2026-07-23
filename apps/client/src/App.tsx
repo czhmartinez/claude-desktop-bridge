@@ -45,17 +45,21 @@ export function App() {
       desktopName={mobile.state.desktopName ?? "我的电脑"}
       connection={mobile.state.connection}
       desktopOnline={mobile.state.desktopOnline}
-      sessions={mobile.state.sessions}
-      sessionCatalogReceived={mobile.state.sessionCatalogReceived}
+      snapshot={mobile.state.snapshot}
       histories={mobile.state.histories}
-      timeline={mobile.state.timeline}
+      events={mobile.state.events}
+      localTurns={mobile.state.localTurns}
       connectionIssue={mobile.state.connectionIssue}
       theme={theme}
       onToggleTheme={toggleTheme}
-      onSend={mobile.sendCommand}
-      onRequestHistory={mobile.requestHistory}
+      onOpenSession={mobile.openSession}
+      onLoadOlderHistory={mobile.loadOlderHistory}
+      onSendTurn={mobile.sendTurn}
+      onInterruptTurn={mobile.interruptTurn}
+      onResolvePermission={mobile.resolvePermission}
+      onCreateSession={mobile.createSession}
+      onRefresh={mobile.refresh}
       onBackToHosts={mobile.backToHosts}
-      onUnpair={mobile.unpair}
       onRetry={mobile.retryConnection}
     />
   );

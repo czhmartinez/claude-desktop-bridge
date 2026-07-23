@@ -7,9 +7,16 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = resolve(root, "dist");
 const mainOnly = process.argv.includes("--main-only");
 const alias = { "@bridge/protocol": resolve(root, "../../packages/protocol/src/index.ts") };
-const define = {
+const sharedDefine = {
   __BRIDGE_DEFAULT_RELAY__: JSON.stringify(process.env.BRIDGE_RELAY_URL ?? "ws://127.0.0.1:8788/ws"),
   __BRIDGE_DEFAULT_PAIRING_BASE__: JSON.stringify(process.env.BRIDGE_PAIRING_BASE_URL ?? "http://localhost:5188"),
+};
+const mainDefine = {
+  ...sharedDefine,
+  "import.meta.url": "__bridgeImportMetaUrl",
+};
+const mainBanner = {
+  js: "const __bridgeImportMetaUrl = require('node:url').pathToFileURL(__filename).href;",
 };
 
 // Never let native helpers from an older build leak into a new package.
@@ -26,7 +33,8 @@ await Promise.all([
     external: ["electron"],
     sourcemap: true,
     alias,
-    define,
+    define: mainDefine,
+    banner: mainBanner,
   }),
   build({
     entryPoints: [resolve(root, "src/preload.ts")],
@@ -38,7 +46,7 @@ await Promise.all([
     external: ["electron"],
     sourcemap: true,
     alias,
-    define,
+    define: sharedDefine,
   }),
 ]);
 

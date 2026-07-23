@@ -2,7 +2,7 @@ import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { App } from "electron";
-import type { ConnectorLaunchSpec, ConnectorPaths } from "./connector.js";
+import type { ConnectorPaths } from "./connector.js";
 
 export function defaultDesktopName(): string {
   return hostname().replace(/\.local$/u, "") || "My computer";
@@ -104,12 +104,6 @@ export function claudeRuntimePaths(): ClaudeRuntimePaths {
       join(configHome, "Claude-3p", "claude-code-sessions"),
     ],
   };
-}
-
-export function connectorLaunchSpec(app: App, userDataPath: string): ConnectorLaunchSpec {
-  const env = { BRIDGE_USER_DATA: userDataPath };
-  if (app.isPackaged) return { command: process.execPath, args: ["--mcp"], env };
-  return { command: process.execPath, args: [app.getAppPath(), "--mcp"], env };
 }
 
 export async function setLaunchAtLogin(app: App, enabled: boolean): Promise<void> {

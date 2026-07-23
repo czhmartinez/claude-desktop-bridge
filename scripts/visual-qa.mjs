@@ -1,9 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { chromium } from "playwright-core";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { QRCodeSVG } from "qrcode.react";
 import {
   BridgeCrypto,
   BridgeSocket,
@@ -13,11 +10,104 @@ import {
 const baseUrl = process.env.BRIDGE_QA_URL ?? "http://127.0.0.1:5188";
 const relayUrl = process.env.BRIDGE_QA_RELAY ?? "ws://127.0.0.1:8788/ws";
 const chrome = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const artifactDir = resolve("artifacts/visual-qa");
-const axePath = resolve("node_modules/axe-core/axe.min.js");
+const artifactDir = resolve("artifacts", "visual-qa");
+const axePath = resolve("node_modules", "axe-core", "axe.min.js");
+const errors = [];
+const now = Date.now();
+
 await mkdir(artifactDir, { recursive: true });
 
-const errors = [];
+const project = {
+  projectId: "project-bridge",
+  name: "Claude Bridge",
+  cwd: "/Users/martinez/Documents/Claude Bridge",
+  sessionCount: 2,
+  runningCount: 1,
+  pendingCount: 1,
+  lastActivityAt: now,
+};
+const secondaryProject = {
+  projectId: "project-pms",
+  name: "ega-pms",
+  cwd: "/Users/martinez/Desktop/ega-pms",
+  sessionCount: 1,
+  runningCount: 0,
+  pendingCount: 0,
+  lastActivityAt: now - 3_600_000,
+};
+const sessions = [
+  {
+    sessionId: "session-running",
+    projectId: project.projectId,
+    projectName: project.name,
+    cwd: project.cwd,
+    title: "Bridge 0.2 同会话联调",
+    source: "desktop",
+    ownership: "BRIDGE_RUNNING",
+    turnState: "running",
+    lastActivityAt: now,
+    pendingCount: 1,
+    activeTurnId: "turn-active",
+    currentSummary: "验证手机与电脑共享同一条事件流",
+  },
+  {
+    sessionId: "session-idle",
+    projectId: project.projectId,
+    projectName: project.name,
+    cwd: project.cwd,
+    title: "协议 v2 与设备安全",
+    source: "desktop",
+    ownership: "DESKTOP_OBSERVED",
+    turnState: "idle",
+    lastActivityAt: now - 1_800_000,
+    pendingCount: 0,
+  },
+  {
+    sessionId: "session-pms",
+    projectId: secondaryProject.projectId,
+    projectName: secondaryProject.name,
+    cwd: secondaryProject.cwd,
+    title: "项目进展页面调整",
+    source: "desktop",
+    ownership: "DESKTOP_OBSERVED",
+    turnState: "idle",
+    lastActivityAt: now - 3_600_000,
+    pendingCount: 0,
+  },
+];
+const history = {
+  sessionId: "session-running",
+  items: [
+    {
+      id: "history-user",
+      sessionId: "session-running",
+      role: "user",
+      text: "把 Bridge 重构为同一会话的远程控制客户端。",
+      createdAt: now - 120_000,
+      origin: "claude-desktop",
+    },
+    {
+      id: "history-assistant",
+      sessionId: "session-running",
+      role: "assistant",
+      text: "会话内核已接管相同 sessionId，正在验证实时事件与审批。",
+      createdAt: now - 90_000,
+      origin: "claude-host",
+    },
+    {
+      id: "history-tool",
+      sessionId: "session-running",
+      role: "tool",
+      text: "npm run verify: 24 tests passed",
+      createdAt: now - 30_000,
+      origin: "claude-host",
+      toolName: "Bash",
+      state: "completed",
+    },
+  ],
+  hasMore: true,
+  nextCursor: "older-page",
+};
 
 function watch(page, name) {
   page.on("console", (message) => {
@@ -26,246 +116,329 @@ function watch(page, name) {
   page.on("pageerror", (error) => errors.push(`${name} page: ${error.message}`));
 }
 
-async function checkAccessibility(page, name) {
+async function checkPage(page, name) {
+  const overflow = await page.evaluate(() => ({
+    horizontal: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    empty: document.body.getBoundingClientRect().height < 100,
+  }));
+  if (overflow.horizontal) errors.push(`${name} layout: horizontal overflow`);
+  if (overflow.empty) errors.push(`${name} layout: empty document`);
   await page.addScriptTag({ path: axePath });
   const result = await page.evaluate(async () => globalThis.axe.run(document, {
     resultTypes: ["violations"],
     runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] },
   }));
   for (const violation of result.violations.filter((item) => ["serious", "critical"].includes(item.impact))) {
-    const targets = violation.nodes.slice(0, 4).map((node) => node.target.join(" ")).join(", ");
+    const targets = violation.nodes.slice(0, 3).map((node) => node.target.join(" ")).join(", ");
     errors.push(`${name} accessibility: ${violation.id} - ${violation.help} [${targets}]`);
   }
 }
 
-const { crypto: desktopCrypto, pairing } = await BridgeCrypto.createDesktop(relayUrl, "Martinez MacBook Pro");
-const pairingUrl = buildPairingUrl(baseUrl, pairing);
-const pairingQrSvg = renderToStaticMarkup(createElement(QRCodeSVG, {
-  value: pairingUrl,
-  size: 600,
-  level: "M",
-  marginSize: 4,
-})).replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" ');
-const browser = await chromium.launch({ executablePath: chrome, headless: true });
-const desktopSocket = new BridgeSocket({ crypto: desktopCrypto, role: "desktop", createRoom: true, reconnect: false });
-desktopSocket.onMessage((message, encrypted) => {
-  desktopSocket.ack([encrypted.id]);
-  if (message.payload.kind !== "history-request") return;
-  void desktopSocket.send({
-    kind: "history",
-    sessionId: message.payload.sessionId,
-    messages: [
-      { id: "history-user-1", role: "user", text: "把手机端会话历史同步完整。", createdAt: Date.now() - 90_000 },
-      { id: "history-assistant-1", role: "assistant", text: "已经定位到 Claude 本地会话记录，正在接入按需同步。", createdAt: Date.now() - 60_000 },
-      { id: "history-user-2", role: "user", text: "继续完成并验证 Android。", createdAt: Date.now() - 30_000 },
-    ],
-    syncedAt: Date.now(),
-    available: true,
-    truncated: false,
-  }, "mobile");
-});
-desktopSocket.connect();
-await new Promise((resolveReady, reject) => {
-  const timeout = setTimeout(() => reject(new Error("QA desktop did not connect")), 5_000);
-  const off = desktopSocket.onState((state) => {
-    if (state === "connected") {
+async function waitForSocket(socket) {
+  await new Promise((resolveReady, reject) => {
+    const timeout = setTimeout(() => reject(new Error("QA desktop did not connect to Relay")), 5_000);
+    const off = socket.onState((state) => {
+      if (state !== "connected") return;
       clearTimeout(timeout);
       off();
       resolveReady();
-    }
+    });
   });
+}
+
+const { crypto: desktopCrypto, pairing } = await BridgeCrypto.createDesktop(relayUrl, "Martinez-MacBook-Pro");
+const pairingUrl = buildPairingUrl(baseUrl, pairing);
+const hostSnapshot = {
+  host: {
+    hostId: desktopCrypto.identity.deviceId,
+    name: "Martinez-MacBook-Pro",
+    relayUrl,
+    online: true,
+    lastSeenAt: now,
+    version: "0.2.0",
+  },
+  projects: [project, secondaryProject],
+  sessions,
+  devices: [{
+    deviceId: pairing.deviceId,
+    name: "Android 手机",
+    platform: "android",
+    online: true,
+    createdAt: now - 86_400_000,
+    lastSeenAt: now,
+  }],
+  runtime: {
+    state: "working",
+    detail: "1 个会话正在由 Bridge 托管。",
+    version: "2.1.217",
+    credentialSource: "third-party-host",
+    activeTurns: 1,
+    maxParallelTurns: 2,
+  },
+  permissions: [{
+    requestId: "permission-bash",
+    sessionId: "session-running",
+    toolUseId: "tool-bash",
+    toolName: "Bash",
+    displayName: "运行验证命令",
+    description: "在 Claude Bridge 项目中运行完整测试。",
+    input: { command: "npm run verify" },
+    createdAt: now - 5_000,
+  }],
+  latestSeq: 42,
+};
+
+let eventSeq = hostSnapshot.latestSeq;
+const desktopSocket = new BridgeSocket({
+  crypto: desktopCrypto,
+  role: "desktop",
+  createRoom: true,
+  reconnect: false,
 });
 
-try {
-  const pairingContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block", bypassCSP: true });
-  const pairingPage = await pairingContext.newPage();
-  await pairingPage.addInitScript(({ svg }) => {
-    let canvas;
-    let imageReady;
+async function sendToMobile(payload, deviceId = pairing.deviceId) {
+  await desktopSocket.send(payload, "mobile", {
+    crypto: desktopCrypto,
+    toDeviceId: deviceId,
+  });
+}
 
-    function prepareCamera() {
-      if (canvas) return canvas;
-      canvas = document.createElement("canvas");
-      canvas.width = 960;
-      canvas.height = 960;
-      const context = canvas.getContext("2d");
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      const image = new Image();
-      imageReady = new Promise((resolveImage, rejectImage) => {
-        image.addEventListener("load", () => resolveImage(image));
-        image.addEventListener("error", rejectImage);
-      });
-      image.src = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-      return canvas;
+function event(type, data, options = {}) {
+  eventSeq += 1;
+  return {
+    eventId: `qa-event-${eventSeq}`,
+    sessionId: options.sessionId ?? "session-running",
+    ...(options.turnId ? { turnId: options.turnId } : {}),
+    ...(options.itemId ? { itemId: options.itemId } : {}),
+    seq: eventSeq,
+    timestamp: Date.now(),
+    origin: options.origin ?? "claude-host",
+    type,
+    data,
+  };
+}
+
+let deviceRegistered = false;
+desktopSocket.onState((state) => {
+  if (state !== "connected" || deviceRegistered) return;
+  deviceRegistered = true;
+  desktopSocket.registerDevice(pairing.deviceId, desktopCrypto.identity.authToken, pairing.expiresAt);
+});
+desktopSocket.onFrame((frame) => {
+  if (frame.type === "presence" && frame.role === "mobile" && frame.online) {
+    void sendToMobile({ kind: "snapshot", snapshot: hostSnapshot }, frame.deviceId);
+  }
+});
+desktopSocket.onMessage((message, encrypted) => {
+  void (async () => {
+    if (message.payload.kind !== "request") {
+      desktopSocket.ack([encrypted.id]);
+      return;
     }
+    const request = message.payload;
+    let result = {};
+    if (request.method === "events.resume") {
+      result = { events: [], latestSeq: eventSeq };
+    } else if (request.method === "session.open") {
+      result = { session: sessions[0], history, latestSeq: eventSeq };
+    } else if (request.method === "session.history") {
+      result = { history: { ...history, items: history.items.slice(0, 1), hasMore: false } };
+    } else if (request.method === "project.list") {
+      result = { projects: hostSnapshot.projects };
+    } else if (request.method === "session.list") {
+      result = { sessions: hostSnapshot.sessions };
+    } else if (request.method === "turn.start" || request.method === "turn.steer") {
+      result = { commandId: "qa-command", state: "running" };
+    } else if (request.method === "turn.interrupt") {
+      result = { interrupted: true };
+    } else if (request.method === "permission.resolve") {
+      result = { resolved: true };
+    } else if (request.method === "session.create") {
+      result = { session: { ...sessions[1], sessionId: "session-created", source: "bridge", title: "新建会话" } };
+    }
+    await sendToMobile({
+      kind: "response",
+      requestId: request.requestId,
+      ok: true,
+      result,
+    }, message.header.fromDeviceId);
+    desktopSocket.ack([encrypted.id]);
 
-    Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
-      configurable: true,
-      value: async () => prepareCamera().captureStream(12),
-    });
-    window.__bridgeShowPairingQr = async () => {
-      const camera = prepareCamera();
-      const image = await imageReady;
-      const context = camera.getContext("2d");
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, camera.width, camera.height);
-      context.drawImage(image, 180, 180, 600, 600);
-    };
-  }, { svg: pairingQrSvg });
+    if (request.method === "turn.start" || request.method === "turn.steer") {
+      const text = typeof request.params.text === "string" ? request.params.text : "";
+      const events = [
+        event("turn.queued", {
+          commandId: "qa-command",
+          requestId: request.requestId,
+          delivery: "host-received",
+          text,
+        }, { origin: "mobile", itemId: "qa-command" }),
+        event("user.message.accepted", {
+          commandId: "qa-command",
+          requestId: request.requestId,
+          text,
+          delivery: "session-received",
+        }, { origin: "mobile", itemId: "qa-user", turnId: "qa-turn" }),
+        event("turn.started", { delivery: "running" }, { turnId: "qa-turn" }),
+        event("assistant.completed", {
+          text: "收到。回复与手机消息已经写入同一个 Claude 会话。",
+        }, { itemId: "qa-assistant", turnId: "qa-turn" }),
+        event("turn.completed", { delivery: "completed" }, { turnId: "qa-turn" }),
+      ];
+      for (const next of events) {
+        await sendToMobile({ kind: "event", event: next }, message.header.fromDeviceId);
+      }
+    }
+  })().catch((error) => errors.push(`mock desktop: ${error.message}`));
+});
+desktopSocket.connect();
+await waitForSocket(desktopSocket);
+
+const browser = await chromium.launch({ executablePath: chrome, headless: true });
+
+try {
+  const pairingContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    serviceWorkers: "block",
+    bypassCSP: true,
+  });
+  const pairingPage = await pairingContext.newPage();
   watch(pairingPage, "pairing");
   await pairingPage.goto(baseUrl, { waitUntil: "networkidle" });
-  await pairingPage.getByText("扫描电脑上的二维码").waitFor();
-  const pairingOverflow = await pairingPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
-  if (pairingOverflow) errors.push("pairing layout: horizontal overflow");
-  await checkAccessibility(pairingPage, "pairing");
-  await pairingPage.screenshot({ path: resolve(artifactDir, "pairing-390x844.png"), fullPage: true });
-  await pairingPage.getByRole("button", { name: "扫描二维码" }).click();
-  await pairingPage.locator("#bridge-qr-reader video").waitFor({ state: "visible" });
-  await checkAccessibility(pairingPage, "scanner");
-  await pairingPage.getByRole("button", { name: "取消扫描" }).click();
-  await pairingPage.getByRole("button", { name: "扫描二维码" }).waitFor();
-  await pairingPage.getByRole("button", { name: "扫描二维码" }).click();
-  await pairingPage.locator("#bridge-qr-reader video").waitFor({ state: "visible" });
-  await pairingPage.evaluate(() => window.__bridgeShowPairingQr());
-  await pairingPage.getByRole("heading", { name: "会话", exact: true }).waitFor();
+  await pairingPage.getByRole("heading", { name: "扫描电脑上的二维码" }).waitFor();
+  await checkPage(pairingPage, "pairing");
+  await pairingPage.screenshot({ path: resolve(artifactDir, "mobile-pairing-390x844.png"), fullPage: true });
   await pairingContext.close();
 
-  const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block", bypassCSP: true });
+  const mobileContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    serviceWorkers: "block",
+    bypassCSP: true,
+  });
   const mobile = await mobileContext.newPage();
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
-  await mobile.getByRole("heading", { name: "会话", exact: true }).waitFor();
-  await desktopSocket.send({
-    kind: "sessions",
-    sessions: [{
-      sessionId: "qa-session",
-      title: "Bridge 联调会话",
-      projectName: "Claude Bridge",
-      state: "running",
-      lastActivityAt: Date.now(),
-      completedTasks: 3,
-      totalTasks: 5,
-      currentTask: "验证手机与电脑状态同步",
-    }],
-  }, "mobile");
-  await mobile.getByText("Bridge 联调会话").waitFor();
-  const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
-  if (mobileOverflow) errors.push("mobile layout: horizontal overflow");
-  await checkAccessibility(mobile, "mobile");
-  await mobile.screenshot({ path: resolve(artifactDir, "mobile-sessions-390x844.png"), fullPage: true });
-  await mobile.getByRole("button", { name: /Bridge 联调会话/u }).click();
-  await mobile.getByText("已经定位到 Claude 本地会话记录，正在接入按需同步。").waitFor();
-  await checkAccessibility(mobile, "mobile history");
-  await mobile.screenshot({ path: resolve(artifactDir, "mobile-history-390x844.png"), fullPage: true });
-  await mobile.getByRole("button", { name: "返回会话列表" }).click();
-  await mobile.getByRole("button", { name: "返回主机列表" }).click();
+  await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
+  await mobile.getByText("Bridge 0.2 同会话联调").waitFor();
+  await checkPage(mobile, "mobile catalog");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-catalog-390x844.png"), fullPage: true });
+
+  await mobile.getByRole("button", { name: /Bridge 0\.2 同会话联调/u }).click();
+  await mobile.getByText("会话内核已接管相同 sessionId，正在验证实时事件与审批。").waitFor();
+  await mobile.getByText("Bash 请求权限").waitFor();
+  await checkPage(mobile, "mobile conversation");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-conversation-390x844.png"), fullPage: true });
+
+  await mobile.getByLabel("给 Claude 发指令").fill("继续验证同一会话的手机消息。");
+  await mobile.getByRole("button", { name: "发送", exact: true }).click();
+  await mobile.getByText("收到。回复与手机消息已经写入同一个 Claude 会话。").waitFor();
+  const sentCount = await mobile.getByText("继续验证同一会话的手机消息。", { exact: true }).count();
+  if (sentCount !== 1) errors.push(`mobile conversation: sent command rendered ${sentCount} times`);
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-completed-390x844.png"), fullPage: true });
+
+  await mobile.getByLabel("返回会话列表").click();
+  await mobile.getByLabel("返回主机列表").click();
   await mobile.getByRole("heading", { name: "主机" }).waitFor();
+  await checkPage(mobile, "mobile hosts");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-hosts-390x844.png"), fullPage: true });
-  await mobile.getByRole("button", { name: "删除 Martinez MacBook Pro" }).click();
-  await mobile.getByRole("alertdialog").waitFor();
-  await mobile.getByRole("button", { name: "删除主机" }).click();
-  await mobile.getByRole("heading", { name: "扫描电脑上的二维码" }).waitFor();
   await mobileContext.close();
 
-  const desktopContext = await browser.newContext({ viewport: { width: 1200, height: 800 }, serviceWorkers: "block", bypassCSP: true });
+  const desktopSnapshot = {
+    ...hostSnapshot,
+    connection: "connected",
+    launchAtLogin: true,
+  };
+  const desktopContext = await browser.newContext({
+    viewport: { width: 1200, height: 800 },
+    serviceWorkers: "block",
+    bypassCSP: true,
+  });
   const desktop = await desktopContext.newPage();
   watch(desktop, "desktop");
-  await desktop.addInitScript(({ pairingUrl }) => {
-    const snapshot = {
-      desktopName: "Martinez MacBook Pro",
-      relayUrl: "wss://bridge.example/ws",
-      connection: "connected",
-      mobileOnline: true,
-      mobilePaired: true,
-      mobilePairedAt: Date.now() - 86_400_000,
-      mobileLastSeenAt: Date.now(),
-      agentOnline: false,
-      pairingUrl,
-      connector: "installed",
-      claudeTransport: {
-        state: "ready",
-        detail: "Bridge 后台续写已就绪，不使用鼠标、键盘或剪贴板，也不会抢占 Claude Desktop。",
-        lastSeenAt: Date.now(),
-        version: "2.1.217",
-      },
-      claudeSessions: [{
-        sessionId: "qa-session",
-        cwd: "/Users/martinez/Documents/Claude Bridge",
-        projectName: "Claude Bridge",
-        name: "Bridge 联调会话",
-        startedAt: Date.now() - 3_600_000,
-        lastActivityAt: Date.now(),
-        state: "running",
-        completedTasks: 3,
-        totalTasks: 5,
-        pendingTasks: 2,
-        currentTask: "验证手机与电脑状态同步",
-      }],
-      claudeActivities: [{
-        id: "qa-command",
-        sessionId: "qa-session",
-        projectName: "Claude Bridge",
-        sessionTitle: "Bridge 联调会话",
-        state: "completed",
-        command: "确认手机发来的指令可以安全执行",
-        summary: "已完成后台续写，回复已经同步到手机与电脑端 Bridge。",
-        updatedAt: Date.now(),
-      }],
-      pendingCommands: 1,
-      launchAtLogin: true,
-      version: "0.1.12",
-    };
-    let currentSnapshot = snapshot;
-    const listeners = new Set();
-    window.__bridgeVisualSetSnapshot = (nextSnapshot) => {
-      currentSnapshot = nextSnapshot;
-      for (const listener of listeners) listener(currentSnapshot);
-    };
-    window.bridgeDesktop = {
-      getSnapshot: async () => currentSnapshot,
-      regeneratePairing: async () => currentSnapshot,
-      installClaudeConnector: async () => ({ ...currentSnapshot, connector: "installed" }),
-      setLaunchAtLogin: async (enabled) => ({ ...currentSnapshot, launchAtLogin: enabled }),
-      sendTestUpdate: async () => {},
-      onSnapshot: (listener) => {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-    };
-  }, { pairingUrl });
-  await desktop.goto(baseUrl, { waitUntil: "networkidle" });
-  await desktop.getByText("Martinez MacBook Pro", { exact: true }).first().waitFor();
-  const desktopOverflow = await desktop.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
-  if (desktopOverflow) errors.push("desktop layout: horizontal overflow");
-  await checkAccessibility(desktop, "desktop");
-  await desktop.screenshot({ path: resolve(artifactDir, "desktop-1200x800.png"), fullPage: true });
-  await desktop.getByRole("button", { name: "显示修复二维码" }).click();
-  await desktop.getByRole("img", { name: "手机配对二维码" }).waitFor();
-  await desktop.screenshot({ path: resolve(artifactDir, "desktop-pairing-1200x800.png"), fullPage: true });
-  await desktop.evaluate(async () => {
-    const snapshot = await window.bridgeDesktop.getSnapshot();
-    window.__bridgeVisualSetSnapshot({
-      ...snapshot,
-      claudeTransport: {
-        state: "auth-required",
-        detail: "未检测到 Claude Desktop 的第三方登录凭据。保持已登录的 Claude Desktop 运行，Bridge 会自动重连后台续写通道。",
-        version: "2.1.217",
-      },
+  await desktop.addInitScript(({ snapshot, pairingUrl, history }) => {
+    let current = snapshot;
+    const snapshotListeners = new Set();
+    const eventListeners = new Set();
+    const response = (request, result) => ({
+      kind: "response",
+      requestId: crypto.randomUUID(),
+      ok: true,
+      result,
     });
-  });
-  await desktop.getByText("等待 Claude Desktop 第三方通道", { exact: true }).waitFor();
-  await desktop.screenshot({ path: resolve(artifactDir, "desktop-auth-required-1200x800.png"), fullPage: true });
-  await desktop.setViewportSize({ width: 800, height: 600 });
-  const compactOverflow = await desktop.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
-  if (compactOverflow) errors.push("desktop compact layout: horizontal overflow");
+    window.bridgeDesktop = {
+      getSnapshot: async () => current,
+      createPairing: async () => {
+        current = {
+          ...current,
+          pairingUrl,
+          pairingExpiresAt: Date.now() + 10 * 60_000,
+        };
+        for (const listener of snapshotListeners) listener(current);
+        return current;
+      },
+      revokeDevice: async (deviceId) => {
+        current = {
+          ...current,
+          devices: current.devices.map((device) => device.deviceId === deviceId
+            ? { ...device, revokedAt: Date.now(), online: false }
+            : device),
+        };
+        return current;
+      },
+      setLaunchAtLogin: async (enabled) => {
+        current = { ...current, launchAtLogin: enabled };
+        return current;
+      },
+      request: async (request) => {
+        if (request.method === "session.open") {
+          return response(request, { session: current.sessions[0], history, latestSeq: current.latestSeq });
+        }
+        if (request.method === "session.create") {
+          return response(request, { session: current.sessions[1] });
+        }
+        if (request.method === "turn.interrupt") return response(request, { interrupted: true });
+        if (request.method === "permission.resolve") return response(request, { resolved: true });
+        return response(request, { commandId: "desktop-command", state: "queued" });
+      },
+      exportDiagnostics: async () => ({ saved: true, path: "/tmp/bridge-diagnostics.json" }),
+      onSnapshot: (listener) => {
+        snapshotListeners.add(listener);
+        return () => snapshotListeners.delete(listener);
+      },
+      onEvent: (listener) => {
+        eventListeners.add(listener);
+        return () => eventListeners.delete(listener);
+      },
+    };
+  }, { snapshot: desktopSnapshot, pairingUrl, history });
+  await desktop.goto(baseUrl, { waitUntil: "networkidle" });
+  await desktop.getByRole("heading", { name: "会话", exact: true }).waitFor();
+  await desktop.getByText("会话内核已接管相同 sessionId，正在验证实时事件与审批。").waitFor();
+  await checkPage(desktop, "desktop sessions");
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-sessions-1200x800.png"), fullPage: true });
+
+  await desktop.getByRole("button", { name: "设备", exact: true }).click();
+  await desktop.getByRole("heading", { name: "设备", exact: true }).waitFor();
+  await desktop.getByRole("button", { name: "添加手机" }).click();
+  await desktop.getByText("一次性配对").waitFor();
+  await checkPage(desktop, "desktop devices");
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-devices-1200x800.png"), fullPage: true });
+
+  await desktop.getByRole("button", { name: "状态", exact: true }).click();
+  await desktop.getByRole("heading", { name: "状态", exact: true }).waitFor();
+  await checkPage(desktop, "desktop status");
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-status-1200x800.png"), fullPage: true });
+
+  await desktop.setViewportSize({ width: 860, height: 620 });
+  await checkPage(desktop, "desktop minimum viewport");
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-status-860x620.png"), fullPage: true });
   await desktopContext.close();
 } finally {
   desktopSocket.close();
   await browser.close();
 }
 
-if (errors.length) {
+if (errors.length > 0) {
   process.stderr.write(`${errors.join("\n")}\n`);
   process.exit(1);
 }

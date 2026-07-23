@@ -1,16 +1,17 @@
 import { join } from "node:path";
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
-import { ClaudeBackgroundWorker } from "./claude-background-worker.js";
-import { ClaudeIntegration } from "./claude-integration.js";
+import { rename, writeFile } from "node:fs/promises";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from "electron";
 import { DesktopConfigRepository, fileSecretProtector } from "./config.js";
-import { DesktopController } from "./controller.js";
-import { runMcpServer } from "./mcp.js";
-import { claudeRuntimePaths, connectorLaunchSpec, connectorPaths, defaultDesktopName, networkReachableUrl } from "./platform.js";
+import { removeLegacyConnector } from "./connector.js";
+import { DesktopController, type LocalBridgeRequest } from "./controller.js";
+import { claudeRuntimePaths, connectorPaths, defaultDesktopName, networkReachableUrl } from "./platform.js";
+import { SessionBroker } from "./session-broker.js";
+import { SessionEventLog } from "./session-event-log.js";
+import { TranscriptObserver } from "./transcript-observer.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PAIRING_BASE__: string;
 
-const MCP_MODE = process.argv.includes("--mcp");
 const DEFAULT_RELAY = process.env.BRIDGE_RELAY_URL
   ?? networkReachableUrl(__BRIDGE_DEFAULT_RELAY__);
 const DEFAULT_PAIRING_BASE = process.env.BRIDGE_PAIRING_BASE_URL
@@ -21,40 +22,53 @@ function configPath(): string {
   return join(base, "bridge-config.json");
 }
 
-async function mcpMain(): Promise<void> {
-  await app.whenReady();
-  app.dock?.hide();
-  const repository = new DesktopConfigRepository(configPath(), fileSecretProtector(), {
-    relayUrl: DEFAULT_RELAY,
-    desktopName: defaultDesktopName(),
+async function archiveLegacyQueue(userDataPath: string): Promise<void> {
+  const path = join(userDataPath, "bridge-claude-sessions.json");
+  await rename(path, `${path}.v1-archive-${Date.now()}`).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
   });
-  await runMcpServer(repository);
 }
 
 async function desktopMain(): Promise<void> {
   app.enableSandbox();
   const singleInstance = app.requestSingleInstanceLock();
-  if (!singleInstance) { app.quit(); return; }
+  if (!singleInstance) {
+    app.quit();
+    return;
+  }
   await app.whenReady();
 
   const userDataPath = app.getPath("userData");
+  await archiveLegacyQueue(userDataPath);
+  await removeLegacyConnector(connectorPaths()).catch(() => undefined);
+
   const repository = new DesktopConfigRepository(configPath(), fileSecretProtector(), {
     relayUrl: DEFAULT_RELAY,
     desktopName: defaultDesktopName(),
+  });
+  const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));
+  const runtimePaths = claudeRuntimePaths();
+  const observer = new TranscriptObserver({ paths: runtimePaths, eventLog });
+  await observer.start();
+  const broker = new SessionBroker({
+    paths: runtimePaths,
+    eventLog,
+    observer,
+    sessionsPath: join(userDataPath, "sessions-v2.json"),
+    queuePath: join(userDataPath, "turn-queue-v2.json"),
   });
   const controller = new DesktopController(
     app,
     repository,
     DEFAULT_PAIRING_BASE,
-    connectorPaths(),
-    connectorLaunchSpec(app, userDataPath),
+    broker,
+    eventLog,
   );
 
   let mainWindow: BrowserWindow | undefined;
   let tray: Tray | undefined;
-  let integration: ClaudeIntegration | undefined;
-  let backgroundWorker: ClaudeBackgroundWorker | undefined;
   let quitting = false;
+  let cleanupStarted = false;
 
   function showWindow(): void {
     if (!mainWindow) return;
@@ -65,7 +79,9 @@ async function desktopMain(): Promise<void> {
   function validSender(frame: Electron.WebFrameMain | null): boolean {
     if (!frame) return false;
     const url = new URL(frame.url);
-    if (process.env.BRIDGE_DEV_SERVER_URL) return url.origin === new URL(process.env.BRIDGE_DEV_SERVER_URL).origin;
+    if (process.env.BRIDGE_DEV_SERVER_URL) {
+      return url.origin === new URL(process.env.BRIDGE_DEV_SERVER_URL).origin;
+    }
     return url.protocol === "file:";
   }
 
@@ -76,16 +92,26 @@ async function desktopMain(): Promise<void> {
     });
   };
   handle("bridge:get-snapshot", () => controller.snapshot());
-  handle("bridge:regenerate-pairing", () => controller.regeneratePairing());
-  handle("bridge:install-connector", () => controller.installConnector());
+  handle("bridge:create-pairing", () => controller.createPairing());
+  handle("bridge:revoke-device", (deviceId: string) => controller.revokeDevice(deviceId));
   handle("bridge:set-launch-at-login", (enabled: boolean) => controller.setLaunchAtLogin(Boolean(enabled)));
-  handle("bridge:send-test-update", () => controller.sendTestUpdate());
+  handle("bridge:request", (request: LocalBridgeRequest) => controller.dispatchLocal(request));
+  handle("bridge:export-diagnostics", async () => {
+    const result = await dialog.showSaveDialog({
+      title: "导出 Bridge 诊断",
+      defaultPath: `bridge-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (result.canceled || !result.filePath) return { saved: false };
+    await writeFile(result.filePath, `${JSON.stringify(controller.diagnostics(), null, 2)}\n`, "utf8");
+    return { saved: true, path: result.filePath };
+  });
 
   mainWindow = new BrowserWindow({
-    width: 1080,
-    height: 720,
-    minWidth: 760,
-    minHeight: 600,
+    width: 1180,
+    height: 780,
+    minWidth: 860,
+    minHeight: 620,
     show: !process.argv.includes("--hidden"),
     backgroundColor: "#f5f6f7",
     title: "Bridge",
@@ -104,7 +130,10 @@ async function desktopMain(): Promise<void> {
   });
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   mainWindow.on("close", (event) => {
-    if (!quitting) { event.preventDefault(); mainWindow?.hide(); }
+    if (!quitting) {
+      event.preventDefault();
+      mainWindow?.hide();
+    }
   });
 
   if (process.env.BRIDGE_DEV_SERVER_URL) await mainWindow.loadURL(process.env.BRIDGE_DEV_SERVER_URL);
@@ -125,30 +154,35 @@ async function desktopMain(): Promise<void> {
       mainWindow.webContents.send("bridge:snapshot", snapshot);
     }
   });
-  await controller.initialize();
-  const runtimePaths = claudeRuntimePaths();
-  integration = new ClaudeIntegration({
-    controller,
-    paths: runtimePaths,
-    authorization: controller.localAuthorization(),
-    bridgeSessionsPath: join(userDataPath, "bridge-claude-sessions.json"),
+  controller.on("event", (event) => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("bridge:event", event);
+    }
   });
-  await integration.start();
-  backgroundWorker = new ClaudeBackgroundWorker({ authorization: controller.localAuthorization() });
-  backgroundWorker.start();
-  await controller.repairConnectorIfNeeded();
+  await controller.initialize();
+  powerMonitor.on("suspend", () => controller.pauseForSleep());
+  powerMonitor.on("resume", () => void controller.reconnect());
   app.on("second-instance", showWindow);
   app.on("activate", showWindow);
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
+    if (cleanupStarted) return;
+    event.preventDefault();
+    cleanupStarted = true;
     quitting = true;
-    void backgroundWorker?.close();
-    void integration?.close();
     controller.close();
+    void (async () => {
+      await broker.close().catch(() => undefined);
+      await observer.close().catch(() => undefined);
+      await eventLog.close().catch(() => undefined);
+      app.quit();
+    })();
   });
-  app.on("window-all-closed", () => { if (process.platform !== "darwin") mainWindow?.hide(); });
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") mainWindow?.hide();
+  });
 }
 
-(MCP_MODE ? mcpMain() : desktopMain()).catch((error: unknown) => {
+desktopMain().catch((error: unknown) => {
   process.stderr.write(`Bridge failed: ${error instanceof Error ? error.message : String(error)}\n`);
   app.exit(1);
 });

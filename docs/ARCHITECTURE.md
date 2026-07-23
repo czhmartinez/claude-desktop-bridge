@@ -1,63 +1,76 @@
-# Bridge 架构
+# Bridge 0.2 架构
 
 ## 产品边界
 
-Bridge 解决的是“人在手机旁、工作在电脑上”的异步协作问题，不做远程桌面，也不把电脑端口暴露到公网。
+Bridge 是 Claude 会话客户端，不是远程桌面，也不是 Claude Desktop 输入框
+自动化。它只建立出站连接，不要求公网 IP、端口映射或额外组网客户端。
 
 ```mermaid
 flowchart LR
-  M[Android / iOS] -->|WSS 密文| R[Relay]
-  D[macOS / Windows / Linux] -->|WSS 密文| R
-  C[Claude] -->|stdio MCP 汇报| D
-  D -->|后台 CLI 会话| C
-  R -.只见信封元数据与密文.-> S[(离线队列)]
+  M["Android / iOS"] <-->|"协议 v2 加密信封"| R["Relay"]
+  D["Bridge Desktop"] <-->|"协议 v2 加密信封"| R
+  D --> B["SessionBroker"]
+  B --> H["ClaudeSessionHost"]
+  H <-->|"Agent SDK Streaming Input"| C["Claude Host"]
+  O["TranscriptObserver"] -->|"只读 JSONL 与元数据"| B
+  B --> E[("SessionEventLog JSONL")]
+  R -. "仅见路由元数据与密文" .-> Q[("按设备离线队列")]
 ```
 
-## 为什么不用参考方案里的 Tailscale
-
-Tailscale 本身可靠，但会让普通用户额外安装、登录和理解组网。Bridge 的桌面端与手机端都建立出站连接，由 Relay 转发，因此无需公网 IP、端口映射、防火墙规则或第三个客户端。
+Bridge 接管后，电脑端 Bridge 和手机共享同一会话、同一执行进程和同一事件流。
+Claude Desktop 当前窗口不承诺即时刷新；释放后仍可从相同 `sessionId` 打开历史。
 
 ## 组件
 
-| 组件 | 技术 | 职责 |
-|---|---|---|
-| `packages/protocol` | TypeScript + Web Crypto | 配对、密钥派生、AES-GCM、信封协议、重连客户端 |
-| `apps/relay` | Node.js + WebSocket | 鉴权、在线转发、离线密文队列、确认与限流 |
-| `apps/client` | React + PWA | 手机工作流与桌面渲染界面 |
-| `apps/desktop` | Electron | 常驻、托盘、开机启动、配对、一键写入 Claude 配置、MCP 进程 |
-| `apps/mobile` | Capacitor | Android/iOS 原生容器与原生二维码扫描 |
+| 组件 | 职责 |
+|---|---|
+| `ClaudeSessionHost` | Agent SDK 持久输入、准确 resume、流式事件、工具审批和中断 |
+| `SessionBroker` | 单写入者、所有权状态、两路并发、持久队列和幂等 |
+| `TranscriptObserver` | 只读观察 Claude Desktop 会话、历史和运行状态 |
+| `SessionEventLog` | 追加式 JSONL、单调 `seq`、delta 合并、history/cursor |
+| `PermissionBroker` | `canUseTool` 与 `AskUserQuestion` 的首次有效答复 |
+| `packages/protocol` | 请求/响应/事件/快照、AES-GCM、设备定向 ACK |
+| `apps/relay` | 鉴权、定向转发、离线密文、撤销和无正文推送唤醒 |
+| `apps/client` | 手机三层导航和电脑轻量控制台 |
 
-## 配对
+## 会话所有权
 
-1. 桌面生成 256-bit 随机根密钥与随机房间 ID。
-2. HKDF-SHA-256 从根密钥分别派生内容加密密钥和 Relay 鉴权令牌。
-3. 二维码承载 `https://app/#/pair/<bundle>`；手机应用可直接用内置相机识别，凭证位于 URL fragment，不会进入 HTTP 请求、访问日志或 Referer。
-4. 手机导入后只持久化不可导出的 `CryptoKey` 和 Relay 令牌，原始根密钥随即丢弃。
-5. 更换二维码会生成全新房间与密钥，旧手机立即失去新消息访问能力。
+```mermaid
+stateDiagram-v2
+  [*] --> DESKTOP_OBSERVED
+  DESKTOP_OBSERVED --> ACQUIRING: "桌面会话空闲且队列非空"
+  ACQUIRING --> BRIDGE_IDLE: "Host 已启动"
+  BRIDGE_IDLE --> BRIDGE_RUNNING: "会话接受消息"
+  BRIDGE_RUNNING --> BRIDGE_IDLE: "turn 完成 / 失败 / 中断"
+  BRIDGE_IDLE --> RELEASING: "空闲超时且无队列"
+  RELEASING --> DESKTOP_OBSERVED: "释放既有桌面会话"
+```
 
-桌面配对密钥保存在权限为 `0600` 的用户目录配置文件中。它只用于手机与本机 Bridge 的端到端加密；不使用系统钥匙串，避免本地临时签名升级改变应用身份后卡住启动。
+同一会话只允许一个 Bridge 写入者。桌面原进程仍活动时，手机消息会先持久化并
+显示为“已排队”；观察器确认空闲后自动接管。主机最多同时运行两个 Bridge turn。
+瞬态会话锁仅在消息尚未被会话接受时重试，避免重复执行。
 
-## 消息投递
+## 历史与事件
 
-每条消息先在发送端加密。信封头作为 AES-GCM Additional Authenticated Data，因此 Relay 即使改写发送者、目标、时间或过期时间，接收端也会拒绝解密。
+`TranscriptObserver` 读取 Claude 标准 JSONL 与桌面会话元数据，但不改写它们。
+Bridge 自身事件写入 `events-v2.jsonl`，最终消息、工具结果、审批和状态全部持久化；
+高频 assistant delta 短时合并。历史默认最近 50 条，向上用 cursor 分页。
 
-Relay 在收到目标端确认前保存密文。断线重连后会重放未确认消息；客户端先落本地密文历史，再发送确认，避免“看见但没保存”的窗口。
+客户端保存最后 `seq`，重连后调用 `events.resume`。Relay ACK 只表示密文已保存或
+目标设备已收到；`session-received`、`running` 和最终状态只能由 Host 事件产生。
 
-## Claude 适配边界
+## 配对与推送
 
-当前适配器包含本地 stdio MCP、只读状态 Hooks 和后台 Claude worker。MCP 只向前台 Claude 暴露两个汇报工具：
+每次二维码生成一个十分钟有效的设备凭据。Relay 只允许该设备凭据首次绑定到一个
+移动实例，之后不可复制使用。主机为每台设备保存独立密钥和鉴权令牌，信封带
+`toDeviceId`，撤销一台设备不会影响其他设备。
 
-- `bridge_send_update`
-- `bridge_complete`
+FCM/APNs 只发送 `bridge-wake` 或 `content-available`，不包含会话 ID、消息摘要或
+正文。App 唤醒后再从 Relay 获取并端到端解密。
 
-适配器在 MCP 初始化时声明里程碑汇报与完成通知纪律；手机收件箱不再作为前台 Claude 工具暴露，避免同一指令被多个入口消费。
+## 运行时发现
 
-手机指令带目标 Claude 会话 ID。Bridge 桌面主进程始终启动一个常驻 worker，因此没有活动 Claude 会话时手机仍可主动发起。它会先在 Claude Desktop 的标准数据目录查找权限收紧的 `host-creds-*.json`，只检查文件名、权限和修改时间，再把路径交给 Claude CLI；Bridge 从不打开文件内容。这样可以复用 Claude Desktop 已有的企业、Gateway 或代理登录。
-
-找不到有效的 Host 凭据时，Bridge 只显示第三方通道未就绪并继续周期性检测，不发起官方 Claude OAuth 登录，也不回退到本机官方 OAuth 凭据。Claude Desktop 启动 Bridge MCP 连接器时，还会增加一个继承当前第三方会话环境的补充 worker。
-
-桌面协调器对每个源会话串行发放带租约的任务，所有 worker 都使用 Claude Code 非交互模式执行并回传结构化结果。常驻 worker 会周期性重新检查登录状态，用户完成一次登录后无需重启 Bridge，队列会自动继续。
-
-空闲会话直接 `--resume`，让后续历史仍属于原会话；源会话仍在运行时使用 `--fork-session`，避免两个 Claude 进程交错写同一 transcript。分支映射持久化在 Bridge 用户数据目录，手机读取历史时合并源会话与后台分支。worker 崩溃或失联时租约到期，未确认密文仍保留在队列中。Hooks 始终返回空决策，只观察启动、权限等待和工具失败等状态，绝不向 Claude 上下文注入手机内容。
-
-Claude Desktop 当前打开的 Code 会话由其父进程通过私有 `stream-json` 输入流驱动，未提供可供第三方调用的本地消息注入 API。Bridge 不修改 Claude 安装包、不附加到该进程，也不使用辅助功能抢占输入框。因此，运行中会话的手机续写属于 Bridge 管理的隔离分支，结果显示在手机和 Bridge 电脑端，不承诺当前 Claude Desktop 窗口同步变化。
+Bridge 只使用 Claude Desktop 已经存在的第三方 Host 凭据路径，不提供官方 OAuth
+登录，也不回退到官方账户存储。实际执行由 `@anthropic-ai/claude-agent-sdk`
+驱动，设置 `resume`、准确 `cwd` 和 `forkSession:false`。如果 SDK 将来不兼容，
+唯一允许的降级是持久 `stream-json` 进程，不能退回单次 `-p`。

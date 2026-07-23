@@ -1,21 +1,54 @@
-# 发布手册
+# Bridge 0.2 发布手册
 
-## 1. 部署服务
+## 1. 发布闸门
 
-准备一台有公网域名的 Linux 主机：
+```bash
+npm ci
+npm run verify
+BRIDGE_M0_REAL=1 npm test -w @bridge/desktop -- \
+  --run src/claude-session-host.real.test.ts
+npm run test:visual
+```
+
+M0 必须证明手机/测试客户端消息与 Claude 回复落入同一 `sessionId` 和同一 JSONL，
+且测试前后的活动应用和剪贴板不变。SDK 不通过时停止发布，不能退回单次任务。
+
+## 2. 部署 Relay 与 Web
 
 ```bash
 cp .env.example .env
-# 将 BRIDGE_DOMAIN 改为自己的域名，并把 DNS A/AAAA 记录指向主机
+# 修改域名、Origin 和推送凭据
 docker compose up -d --build
 curl https://你的域名/health
 ```
 
-Caddy 自动申请 TLS 证书。生产入口同时承载手机 Web App 与 `/ws` Relay。
+生产入口同时承载静态客户端与 `/ws`，必须使用固定 HTTPS/WSS。自托管属于高级
+选项；面向普通用户的安装包应写入 Bridge 托管 Relay。
 
-## 2. 构建桌面安装包
+## 3. 推送配置
 
-构建时将服务地址写入安装包：
+Android 需要 Firebase `google-services.json`、FCM HTTP v1 服务账号和签名
+application ID。Relay 使用：
+
+```text
+BRIDGE_FCM_PROJECT_ID
+BRIDGE_FCM_CLIENT_EMAIL
+BRIDGE_FCM_PRIVATE_KEY
+```
+
+iOS 需要 APNs `.p8` Key、Team ID、Key ID、Bundle ID 和 Background Modes：
+
+```text
+BRIDGE_APNS_TEAM_ID
+BRIDGE_APNS_KEY_ID
+BRIDGE_APNS_BUNDLE_ID
+BRIDGE_APNS_PRIVATE_KEY
+BRIDGE_APNS_PRODUCTION=1
+```
+
+所有私钥只通过部署平台的 secret manager 注入。
+
+## 4. 构建桌面端
 
 ```bash
 BRIDGE_RELAY_URL=wss://你的域名/ws \
@@ -23,34 +56,49 @@ BRIDGE_PAIRING_BASE_URL=https://你的域名 \
 npm run make -w @bridge/desktop
 ```
 
-Electron 安装包必须在目标操作系统构建：macOS 产出 DMG/ZIP，Windows 产出 Squirrel 安装器，Linux 产出 ZIP/DEB/RPM。
+启动打包后的应用并开放临时 CDP 端口后，必须再执行：
 
-## 3. 构建移动端
+```bash
+BRIDGE_DESKTOP_CDP=http://127.0.0.1:9223 npm run test:desktop:packaged
+BRIDGE_DESKTOP_CDP=http://127.0.0.1:9223 npm run test:desktop:pairing
+```
 
-本地 Android 真机联调可直接生成 Debug APK：
+该检查会验证 preload、`file://` 资源、三页控制台、运行时快照和渲染错误，避免
+开发版正常但安装包白屏；配对检查还会使用真实 Relay 完成一次设备认领、加密
+请求、主机快照和撤销失效闭环。
+
+Electron 安装包必须在目标系统构建：macOS 产出 DMG/ZIP，Windows 产出 Squirrel，
+Linux 产出 ZIP/DEB/RPM。没有 Developer ID、Authenticode 或仓库签名时只能标记为
+“构建通过”，不能宣称可正式分发。
+
+## 5. 构建移动端
 
 ```bash
 npm run build:android:debug
-```
-
-产物位于 `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`，支持 Android 8.0 及以上。Debug 包仅为同一局域网联调放行明文 `ws://`；Release 构建不会继承该策略，生产环境仍必须使用 HTTPS/WSS。
-
-首次创建或更新原生工程时使用：
-
-```bash
-npm run add:android -w @bridge/mobile
-npm run add:ios -w @bridge/mobile
 npm run sync -w @bridge/mobile
 ```
 
-随后用 Android Studio / Xcode 签名发布。没有 Apple Developer 证书时只能构建模拟器版本，不能生成可安装到真实 iPhone 的正式包。
+Android Debug APK：
+`apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`。
+生产 Release 不允许明文 `ws://`，并必须使用固定 keystore。
 
-Android 原生扫码依赖最低 API 26（Android 8.0）；iOS 工程已包含相机用途说明。商店包仍需在真机上验证相机授权、扫码取消和弱网重连。
+连接启用了 USB 调试的 Android 真机后，可使用 `adb install -r` 安装，再以
+WebView 调试端口执行 `npm run test:android:installed`。该测试会重新配对、选择
+空闲会话、主动发送唯一指令，并验证用户消息与 Claude 回复各出现一次。
 
-## 4. 发布前必做
+iOS 需要 Xcode 中配置 Team、Bundle ID、Push Notifications、Background
+Notifications 和 provisioning profile。没有 Apple Developer 条件时只能验证
+模拟器构建。
 
-- 配置 macOS Developer ID、notarization。
-- 配置 Windows Authenticode 证书。
-- 配置 Android keystore。
-- 配置 Apple Developer Team 与 provisioning profile。
-- 在真实公网 WSS 上执行端到端测试，而不只测 localhost。
+## 6. 验收矩阵
+
+每个平台至少覆盖：
+
+- 空闲会话主动启动、桌面繁忙排队、断线一小时恢复和重复投递。
+- 历史分页、实时 delta、工具进度、审批、提问、调整和停止。
+- App 前后台、锁屏唤醒、扫码过期、单次二维码和设备撤销。
+- 桌面 `file://` 资源、托盘、开机启动、睡眠恢复和升级覆盖。
+- 活动应用、键盘焦点和剪贴板不变，系统中无辅助功能授权请求。
+
+稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
+WSS 全部通过的平台才能标记“可分发”。

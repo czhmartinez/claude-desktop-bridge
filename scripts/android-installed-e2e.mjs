@@ -8,8 +8,9 @@ const desktopCdp = process.env.BRIDGE_DESKTOP_CDP ?? "http://127.0.0.1:9223";
 const androidCdp = process.env.BRIDGE_ANDROID_CDP ?? "http://127.0.0.1:9224";
 const androidRelay = process.env.BRIDGE_ANDROID_RELAY ?? "ws://10.0.2.2:8788/ws";
 const targetSessionTitle = process.env.BRIDGE_E2E_SESSION_TITLE?.trim();
-const command = process.env.BRIDGE_E2E_COMMAND ?? `Bridge Android E2E ${Date.now()}`;
-const expectedReply = process.env.BRIDGE_E2E_EXPECTED_REPLY ?? `E2E 后台已处理：${command}`;
+const marker = `BRIDGE_ANDROID_E2E_${Date.now()}`;
+const command = process.env.BRIDGE_E2E_COMMAND ?? `请只回复这段文本，不要调用工具：${marker}`;
+const expectedReply = process.env.BRIDGE_E2E_EXPECTED_REPLY ?? marker;
 const artifacts = resolve("artifacts", "installed-android-e2e");
 
 await mkdir(artifacts, { recursive: true });
@@ -77,8 +78,11 @@ try {
     .find((page) => page.url().startsWith("file:"));
   assert.ok(desktopPage, "Packaged Bridge renderer was not found");
 
-  const snapshot = await desktopPage.evaluate(() => window.bridgeDesktop.getSnapshot());
-  const pairing = pairingBundleFromUrl(snapshot.pairingUrl);
+  const pairingSnapshot = await desktopPage.evaluate(async () => {
+    const snapshot = await window.bridgeDesktop.getSnapshot();
+    return snapshot.pairingUrl ? snapshot : window.bridgeDesktop.createPairing();
+  });
+  const pairing = pairingBundleFromUrl(pairingSnapshot.pairingUrl);
   assert.ok(pairing, "Desktop pairing bundle was not available");
   pairing.relayUrl = androidRelay;
 
@@ -97,22 +101,26 @@ try {
     button.click();
   })()`);
 
-  await androidPage.waitFor("Boolean(document.querySelector('.session-row'))");
+  await androidPage.waitFor("Boolean(document.querySelector('.session-row-v2'))");
   await androidPage.screenshot(resolve(artifacts, "02-session-list.png"));
-  const selectedSessionLabel = await androidPage.evaluate(`(() => {
-    const rows = [...document.querySelectorAll('.session-row')];
+  const selectedSession = await androidPage.evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.session-row-v2')];
     const targetTitle = ${JSON.stringify(targetSessionTitle ?? "")};
     const row = targetTitle
       ? rows.find((candidate) => candidate.textContent.includes(targetTitle))
-      : rows.find((candidate) => candidate.textContent.includes('可继续'));
+      : rows.find((candidate) => (
+          candidate.textContent.includes('待机') ||
+          candidate.textContent.includes('桌面会话')
+        ));
     if (!row) throw new Error(targetTitle
       ? 'Requested Claude session was not found'
-      : 'No idle Claude session is available for the proactive-resume test');
+      : 'No idle Claude session is available for the proactive resume test');
     row.dataset.bridgeE2eSelected = 'true';
-    return row.innerText;
+    return { label: row.innerText, sessionId: row.dataset.sessionId };
   })()`);
-  if (targetSessionTitle) assert.match(selectedSessionLabel, new RegExp(targetSessionTitle, "u"));
-  else assert.match(selectedSessionLabel, /可继续/u, "E2E must target an idle Claude session");
+  assert.ok(selectedSession.sessionId, "Selected row must expose its session id");
+  if (targetSessionTitle) assert.match(selectedSession.label, new RegExp(targetSessionTitle, "u"));
+  else assert.match(selectedSession.label, /待机|桌面会话/u, "E2E must target an idle Claude session");
   await androidPage.evaluate("document.querySelector('[data-bridge-e2e-selected=true]').click()");
 
   await androidPage.waitFor("Boolean(document.querySelector('textarea[aria-label=\"给 Claude 发指令\"]'))", 10_000);
@@ -125,34 +133,36 @@ try {
   await androidPage.evaluate("document.querySelector('button[aria-label=\"发送\"]').click()");
 
   await androidPage.waitFor(
-    `[...document.querySelectorAll('.timeline-message')].some((item) => item.textContent === ${JSON.stringify(expectedReply)})`,
-    120_000,
+    `[...document.querySelectorAll('.conversation-item.assistant .conversation-text')].some((item) => item.textContent.includes(${JSON.stringify(expectedReply)}))`,
+    180_000,
   );
   await androidPage.screenshot(resolve(artifacts, "03-completed.png"));
 
   const commandCount = await androidPage.evaluate(
-    `[...document.querySelectorAll('.timeline-message')].filter((item) => item.textContent === ${JSON.stringify(command)}).length`,
+    `[...document.querySelectorAll('.conversation-item.user .conversation-text')].filter((item) => item.textContent === ${JSON.stringify(command)}).length`,
   );
   const completionCount = await androidPage.evaluate(
-    `[...document.querySelectorAll('.timeline-message')].filter((item) => item.textContent === ${JSON.stringify(expectedReply)}).length`,
+    `[...document.querySelectorAll('.conversation-item.assistant .conversation-text')].filter((item) => item.textContent.includes(${JSON.stringify(expectedReply)})).length`,
   );
   assert.equal(commandCount, 1, "Command must render once");
   assert.equal(completionCount, 1, "Completion must render once");
 
   const finalSnapshot = await desktopPage.evaluate(() => window.bridgeDesktop.getSnapshot());
-  assert.equal(finalSnapshot.pendingCommands, 0, "Desktop queue must be empty after completion");
+  const completedSession = finalSnapshot.sessions.find((session) => session.sessionId === selectedSession.sessionId);
+  assert.ok(completedSession, "Selected session must remain in the desktop catalog");
+  assert.equal(completedSession.pendingCount, 0, "Desktop queue must be empty after completion");
   assert.ok(
-    finalSnapshot.claudeTransport.state === "ready" || finalSnapshot.claudeTransport.state === "working",
-    `Unexpected transport state: ${finalSnapshot.claudeTransport.state}`,
+    finalSnapshot.runtime.state === "ready" || finalSnapshot.runtime.state === "working",
+    `Unexpected runtime state: ${finalSnapshot.runtime.state}`,
   );
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
-    desktopVersion: finalSnapshot.version,
+    desktopVersion: finalSnapshot.host.version,
     androidRelay,
-    sessionCount: finalSnapshot.claudeSessions.length,
-    pendingCommands: finalSnapshot.pendingCommands,
-    transport: finalSnapshot.claudeTransport.state,
+    sessionCount: finalSnapshot.sessions.length,
+    pendingCommands: finalSnapshot.sessions.reduce((sum, session) => sum + session.pendingCount, 0),
+    runtime: finalSnapshot.runtime.state,
     selectedIdleSession: true,
     commandRenderedOnce: true,
     completionRenderedOnce: true,

@@ -18,6 +18,13 @@ export interface BridgeSocketOptions {
   createRoom?: boolean;
   WebSocketImpl?: typeof WebSocket;
   reconnect?: boolean;
+  resolveCrypto?: (envelope: EncryptedEnvelope) => BridgeCrypto | undefined | Promise<BridgeCrypto | undefined>;
+}
+
+export interface SendOptions {
+  toDeviceId?: string;
+  crypto?: BridgeCrypto;
+  ttlMs?: number;
 }
 
 type MessageListener = (message: DecryptedEnvelope, encrypted: EncryptedEnvelope) => void;
@@ -30,6 +37,7 @@ export class BridgeSocket {
   private readonly createRoom: boolean;
   private readonly WebSocketImpl: typeof WebSocket;
   private readonly shouldReconnect: boolean;
+  private readonly resolveCrypto?: BridgeSocketOptions["resolveCrypto"];
   private ws: WebSocket | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
@@ -45,6 +53,7 @@ export class BridgeSocket {
     this.createRoom = options.createRoom ?? false;
     this.WebSocketImpl = options.WebSocketImpl ?? WebSocket;
     this.shouldReconnect = options.reconnect ?? true;
+    this.resolveCrypto = options.resolveCrypto;
   }
 
   get state(): SocketState {
@@ -64,6 +73,7 @@ export class BridgeSocket {
         roomId: this.crypto.identity.roomId,
         role: this.role,
         deviceId: this.crypto.identity.deviceId,
+        ...(this.crypto.identity.instanceId ? { instanceId: this.crypto.identity.instanceId } : {}),
         authToken: this.crypto.identity.authToken,
         create: this.createRoom,
       }));
@@ -83,11 +93,19 @@ export class BridgeSocket {
     this.setState("closed");
   }
 
-  async send(payload: BridgePayload, to: MessageTarget): Promise<string> {
+  async send(payload: BridgePayload, to: MessageTarget, options: SendOptions = {}): Promise<string> {
     if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
       throw new Error("Bridge is not connected");
     }
-    const envelope = await this.crypto.encrypt(payload, this.role, to);
+    const selectedCrypto = options.crypto ?? this.crypto;
+    const envelope = await selectedCrypto.encrypt(
+      payload,
+      this.role,
+      to,
+      Date.now(),
+      options.ttlMs,
+      options.toDeviceId,
+    );
     this.sendEnvelope(envelope);
     return envelope.id;
   }
@@ -102,6 +120,30 @@ export class BridgeSocket {
   ack(ids: string[]): void {
     if (!ids.length || !this.ws || this.ws.readyState !== this.WebSocketImpl.OPEN) return;
     this.ws.send(JSON.stringify({ type: "ack", ids }));
+  }
+
+  registerDevice(deviceId: string, authToken: string, expiresAt: number): void {
+    if (this.role !== "desktop") throw new Error("Only desktop hosts can register devices");
+    if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
+      throw new Error("Bridge is not connected");
+    }
+    this.ws.send(JSON.stringify({ type: "device-register", deviceId, authToken, expiresAt }));
+  }
+
+  revokeDevice(deviceId: string): void {
+    if (this.role !== "desktop") throw new Error("Only desktop hosts can revoke devices");
+    if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
+      throw new Error("Bridge is not connected");
+    }
+    this.ws.send(JSON.stringify({ type: "device-revoke", deviceId }));
+  }
+
+  registerPushToken(platform: "android" | "ios", pushToken: string): void {
+    if (this.role !== "mobile") throw new Error("Only mobile clients can register push tokens");
+    if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
+      throw new Error("Bridge is not connected");
+    }
+    this.ws.send(JSON.stringify({ type: "push-register", platform, pushToken }));
   }
 
   onMessage(listener: MessageListener): () => void {
@@ -134,17 +176,23 @@ export class BridgeSocket {
       return;
     }
     if (frame.type === "error") {
-      if (frame.code === "AUTH_FAILED" || frame.code === "ROOM_NOT_FOUND") {
+      if (
+        frame.code === "AUTH_FAILED" ||
+        frame.code === "ROOM_NOT_FOUND" ||
+        frame.code === "DEVICE_REVOKED" ||
+        frame.code === "PAIRING_EXPIRED"
+      ) {
         this.stopped = true;
       }
       return;
     }
     if (frame.type !== "envelope") return;
     try {
-      const decrypted = await this.crypto.decrypt(frame.envelope);
+      const selectedCrypto = await this.resolveCrypto?.(frame.envelope) ?? this.crypto;
+      const decrypted = await selectedCrypto.decrypt(frame.envelope);
       for (const listener of this.messageListeners) listener(decrypted, frame.envelope);
     } catch {
-      // Authentication failures are intentionally ignored; the relay cannot forge valid payloads.
+      // The relay cannot forge valid payloads. Invalid or cross-device ciphertext is ignored.
     }
   }
 

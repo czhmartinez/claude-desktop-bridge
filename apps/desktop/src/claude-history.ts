@@ -2,11 +2,11 @@ import { createReadStream } from "node:fs";
 import { access, readdir } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import type { ClaudeHistoryMessage } from "@bridge/protocol";
+import type { BridgeHistoryPage, ClaudeHistoryMessage } from "@bridge/protocol";
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/u;
-const MAX_HISTORY_MESSAGES = 40;
-const MAX_HISTORY_TEXT_BYTES = 42 * 1024;
+const MAX_HISTORY_MESSAGES = 50;
+const MAX_HISTORY_TEXT_BYTES = 256 * 1024;
 const MAX_MESSAGE_TEXT_BYTES = 10 * 1024;
 const OMITTED_TEXT = "\n\n[内容较长，已省略中间部分]\n\n";
 
@@ -23,6 +23,12 @@ export interface ClaudeHistoryReadResult {
   available: boolean;
   messages: ClaudeHistoryMessage[];
   truncated: boolean;
+}
+
+export interface ClaudeHistoryReadOptions {
+  beforeCursor?: string;
+  before?: { createdAt: number; id: string };
+  limit?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -102,12 +108,26 @@ function clipText(value: string, maxBytes: number): { text: string; clipped: boo
   };
 }
 
-function trimHistory(messages: ClaudeHistoryMessage[]): { messages: ClaudeHistoryMessage[]; truncated: boolean } {
+function trimHistory(
+  messages: ClaudeHistoryMessage[],
+  options: ClaudeHistoryReadOptions = {},
+): { messages: ClaudeHistoryMessage[]; truncated: boolean; nextCursor?: string } {
+  let candidateMessages = messages;
+  if (options.before) {
+    candidateMessages = messages.filter((message) => (
+      message.createdAt < options.before!.createdAt ||
+      (message.createdAt === options.before!.createdAt && message.id < options.before!.id)
+    ));
+  } else if (options.beforeCursor) {
+    const beforeIndex = messages.findIndex((message) => message.id === options.beforeCursor);
+    candidateMessages = beforeIndex >= 0 ? messages.slice(0, beforeIndex) : [];
+  }
+  const maxMessages = Math.max(1, Math.min(options.limit ?? MAX_HISTORY_MESSAGES, 10_000));
   const selected: ClaudeHistoryMessage[] = [];
   let bytes = 0;
-  let truncated = messages.length > MAX_HISTORY_MESSAGES;
-  for (let index = messages.length - 1; index >= 0 && selected.length < MAX_HISTORY_MESSAGES; index -= 1) {
-    const message = messages[index]!;
+  let truncated = candidateMessages.length > maxMessages;
+  for (let index = candidateMessages.length - 1; index >= 0 && selected.length < maxMessages; index -= 1) {
+    const message = candidateMessages[index]!;
     const clipped = clipText(message.text, MAX_MESSAGE_TEXT_BYTES);
     const cost = Buffer.byteLength(clipped.text) + 180;
     if (selected.length > 0 && bytes + cost > MAX_HISTORY_TEXT_BYTES) {
@@ -118,12 +138,16 @@ function trimHistory(messages: ClaudeHistoryMessage[]): { messages: ClaudeHistor
     bytes += cost;
     truncated ||= clipped.clipped;
   }
-  if (selected.length < messages.length) truncated = true;
+  if (selected.length < candidateMessages.length) truncated = true;
   if (truncated && selected[0]?.role === "assistant") {
     const firstUser = selected.findIndex((message) => message.role === "user");
     if (firstUser > 0) selected.splice(0, firstUser);
   }
-  return { messages: selected, truncated };
+  return {
+    messages: selected,
+    truncated,
+    ...(truncated && selected[0] ? { nextCursor: selected[0].id } : {}),
+  };
 }
 
 function projectDirectoryName(cwd: string): string {
@@ -164,7 +188,10 @@ export async function findClaudeTranscriptFile(
   return undefined;
 }
 
-export async function parseClaudeTranscript(path: string): Promise<ClaudeHistoryReadResult> {
+export async function parseClaudeTranscript(
+  path: string,
+  options: ClaudeHistoryReadOptions = {},
+): Promise<ClaudeHistoryReadResult & { nextCursor?: string }> {
   const nodes = new Map<string, TranscriptNode>();
   const referencedParents = new Set<string>();
   let index = 0;
@@ -221,15 +248,38 @@ export async function parseClaudeTranscript(path: string): Promise<ClaudeHistory
     }
     messages.push({ id: node.uuid, role: node.role, text: node.text, createdAt: node.createdAt });
   }
-  return { available: true, ...trimHistory(messages) };
+  return { available: true, ...trimHistory(messages, options) };
 }
 
 export async function readClaudeSessionHistory(
   projectsRoot: string,
   sessionId: string,
   cwd?: string,
-): Promise<ClaudeHistoryReadResult> {
+  options: ClaudeHistoryReadOptions = {},
+): Promise<ClaudeHistoryReadResult & { nextCursor?: string }> {
   const path = await findClaudeTranscriptFile(projectsRoot, sessionId, cwd);
   if (!path) return { available: false, messages: [], truncated: false };
-  return parseClaudeTranscript(path);
+  return parseClaudeTranscript(path, options);
+}
+
+export async function readClaudeSessionHistoryPage(
+  projectsRoot: string,
+  sessionId: string,
+  cwd?: string,
+  options: ClaudeHistoryReadOptions = {},
+): Promise<BridgeHistoryPage> {
+  const result = await readClaudeSessionHistory(projectsRoot, sessionId, cwd, options);
+  return {
+    sessionId,
+    items: result.messages.map((message) => ({
+      id: message.id,
+      sessionId,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+      origin: "claude-desktop",
+    })),
+    hasMore: result.truncated,
+    ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+  };
 }

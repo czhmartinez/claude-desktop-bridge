@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -16,7 +16,8 @@
     "test": "npm run test -ws --if-present",
     "test:coverage": "npm run test:coverage -ws --if-present",
     "test:visual": "node scripts/visual-qa.mjs",
-    "test:mcp-e2e": "node scripts/mcp-e2e.mjs",
+    "test:desktop:packaged": "node scripts/packaged-desktop-qa.mjs",
+    "test:desktop:pairing": "node scripts/desktop-pairing-e2e.mjs",
     "test:android:installed": "node scripts/android-installed-e2e.mjs",
     "typecheck": "npm run typecheck -ws --if-present",
     "verify": "npm run typecheck && npm test && npm run build",

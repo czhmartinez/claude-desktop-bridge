@@ -5,94 +5,91 @@ import {
   decodePairingBundle,
   encodePairingBundle,
   pairingBundleFromUrl,
-} from "./crypto.js";
+  type BridgeRequest,
+} from "./index.js";
 
-describe("BridgeCrypto", () => {
-  it("pairs two devices and exchanges authenticated ciphertext", async () => {
-    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop("ws://localhost:8788/ws", "Studio Mac");
-    const mobile = await BridgeCrypto.fromPairing(pairing, "phone-1");
-    const envelope = await desktop.encrypt(
-      { kind: "status", message: "Tests are green", progress: 100, level: "success" },
-      "agent",
-      "mobile",
-    );
+function request(text: string): BridgeRequest {
+  return {
+    kind: "request",
+    requestId: crypto.randomUUID(),
+    idempotencyKey: crypto.randomUUID(),
+    method: "turn.start",
+    params: { sessionId: "session-1", text },
+  };
+}
 
-    expect(envelope.ciphertext).not.toContain("Tests are green");
-    const result = await mobile.decrypt(envelope);
-    expect(result.payload).toEqual({ kind: "status", message: "Tests are green", progress: 100, level: "success" });
-    expect(mobile.identity.authToken).toBe(desktop.identity.authToken);
-  });
-
-  it("rejects tampered metadata", async () => {
+describe("BridgeCrypto v2", () => {
+  it("encrypts device-targeted requests with authenticated metadata", async () => {
     const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop("ws://localhost:8788/ws", "Studio Mac");
     const mobile = await BridgeCrypto.fromPairing(pairing);
-    const envelope = await desktop.encrypt({ kind: "command", text: "continue" }, "mobile", "agent");
+    const envelope = await mobile.encrypt(request("Continue"), "mobile", "desktop");
 
-    await expect(mobile.decrypt({ ...envelope, to: "desktop" })).rejects.toThrow();
+    expect(envelope.ciphertext).not.toContain("Continue");
+    expect((await desktop.decrypt(envelope)).payload).toMatchObject({
+      kind: "request",
+      method: "turn.start",
+    });
   });
 
-  it("round-trips the URL-safe pairing bundle", async () => {
-    const { pairing } = await BridgeCrypto.createDesktop("wss://relay.example/ws", "Workstation");
+  it("uses independent encryption and relay credentials for each device", async () => {
+    const host = await BridgeCrypto.createHost("wss://relay.example/ws", "Studio Mac");
+    const phoneA = await BridgeCrypto.createDevicePairing({
+      roomId: host.crypto.identity.roomId,
+      relayUrl: host.crypto.identity.relayUrl,
+      desktopName: host.crypto.identity.desktopName,
+    });
+    const phoneB = await BridgeCrypto.createDevicePairing({
+      roomId: host.crypto.identity.roomId,
+      relayUrl: host.crypto.identity.relayUrl,
+      desktopName: host.crypto.identity.desktopName,
+    });
+    const mobileA = await BridgeCrypto.fromPairing(phoneA.pairing);
+    const mobileB = await BridgeCrypto.fromPairing(phoneB.pairing);
+    const outbound = phoneA.desktopCrypto
+      .withSenderDevice(host.crypto.identity.deviceId);
+    const envelope = await outbound.encrypt({
+      kind: "response",
+      requestId: "request-1",
+      ok: true,
+    }, "desktop", "mobile", Date.now(), undefined, phoneA.pairing.deviceId);
+
+    expect(phoneA.desktopCrypto.identity.authToken).not.toBe(phoneB.desktopCrypto.identity.authToken);
+    await expect(mobileB.decrypt(envelope)).rejects.toThrow();
+    expect((await mobileA.decrypt(envelope)).payload).toMatchObject({ kind: "response", ok: true });
+  });
+
+  it("rejects tampered target metadata", async () => {
+    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop("ws://localhost:8788/ws", "Studio Mac");
+    const mobile = await BridgeCrypto.fromPairing(pairing);
+    const envelope = await desktop.encrypt({
+      kind: "event",
+      event: {
+        eventId: "event-1",
+        seq: 1,
+        timestamp: Date.now(),
+        origin: "system",
+        type: "host.presence",
+        data: {},
+      },
+    }, "desktop", "mobile");
+
+    await expect(mobile.decrypt({ ...envelope, toDeviceId: "another-phone" })).rejects.toThrow();
+  });
+
+  it("round-trips a ten-minute single-use pairing URL", async () => {
+    const host = await BridgeCrypto.createHost("wss://relay.example/ws", "Workstation");
+    const { pairing } = await BridgeCrypto.createDevicePairing({
+      roomId: host.crypto.identity.roomId,
+      relayUrl: host.crypto.identity.relayUrl,
+      desktopName: host.crypto.identity.desktopName,
+      now: 1_000,
+    });
     const encoded = encodePairingBundle(pairing);
     expect(encoded).not.toMatch(/[+/=]/u);
     expect(decodePairingBundle(encoded)).toEqual(pairing);
     const url = buildPairingUrl("https://bridge.example/app?source=desktop", pairing);
     expect(new URL(url).searchParams.get("source")).toBe("desktop");
     expect(pairingBundleFromUrl(url)).toEqual(pairing);
-  });
-
-  it("round-trips selectable sessions and a session-targeted command", async () => {
-    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop("ws://localhost:8788/ws", "Studio Mac");
-    const mobile = await BridgeCrypto.fromPairing(pairing, "phone-1");
-    const sessions = await desktop.encrypt({
-      kind: "sessions",
-      sessions: [{
-        sessionId: "session-history",
-        desktopSessionId: "local_history",
-        title: "历史经营分析",
-        projectName: "analysis",
-        state: "idle",
-        lastActivityAt: 1_784_710_000_000,
-      }],
-    }, "desktop", "mobile");
-    const command = await mobile.encrypt({
-      kind: "command",
-      text: "继续这个会话",
-      sessionId: "session-history",
-    }, "mobile", "desktop");
-
-    expect((await mobile.decrypt(sessions)).payload).toEqual(expect.objectContaining({ kind: "sessions" }));
-    expect((await desktop.decrypt(command)).payload).toEqual({
-      kind: "command",
-      text: "继续这个会话",
-      sessionId: "session-history",
-    });
-  });
-
-  it("round-trips an on-demand encrypted Claude transcript", async () => {
-    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop("ws://localhost:8788/ws", "Studio Mac");
-    const mobile = await BridgeCrypto.fromPairing(pairing, "phone-1");
-    const request = await mobile.encrypt({
-      kind: "history-request",
-      sessionId: "session-history",
-    }, "mobile", "desktop");
-    const history = await desktop.encrypt({
-      kind: "history",
-      sessionId: "session-history",
-      messages: [
-        { id: "user-1", role: "user", text: "继续实现", createdAt: 1_784_710_000_000 },
-        { id: "assistant-1", role: "assistant", text: "已经完成。", createdAt: 1_784_710_010_000 },
-      ],
-      syncedAt: 1_784_710_020_000,
-      available: true,
-      truncated: false,
-    }, "desktop", "mobile");
-
-    expect((await desktop.decrypt(request)).payload).toEqual({ kind: "history-request", sessionId: "session-history" });
-    expect((await mobile.decrypt(history)).payload).toEqual(expect.objectContaining({
-      kind: "history",
-      sessionId: "session-history",
-      messages: expect.arrayContaining([expect.objectContaining({ role: "assistant", text: "已经完成。" })]),
-    }));
+    expect(pairing.expiresAt - pairing.createdAt).toBe(10 * 60 * 1_000);
   });
 });

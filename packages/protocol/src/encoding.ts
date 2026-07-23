@@ -37,6 +37,7 @@ export function serializeHeader(header: {
   from: string;
   fromDeviceId: string;
   to: string;
+  toDeviceId?: string;
   sentAt: number;
   expiresAt: number;
 }): Uint8Array<ArrayBuffer> {
@@ -47,6 +48,7 @@ export function serializeHeader(header: {
     header.from,
     header.fromDeviceId,
     header.to,
+    header.toDeviceId ?? "",
     header.sentAt,
     header.expiresAt,
   ].join("\u001f"));

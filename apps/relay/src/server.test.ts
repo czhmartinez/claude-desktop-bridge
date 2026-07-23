@@ -1,7 +1,14 @@
-import { BridgeCrypto, BridgeSocket, type DecryptedEnvelope } from "@bridge/protocol";
+import {
+  BridgeCrypto,
+  BridgeSocket,
+  type BridgePayload,
+  type DecryptedEnvelope,
+  type ServerFrame,
+} from "@bridge/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { startRelayServer, type RunningRelay } from "./server.js";
 import { MemoryRelayStore } from "./store.js";
+import type { DeviceRecord } from "./store.js";
 
 const relays: RunningRelay[] = [];
 const sockets: BridgeSocket[] = [];
@@ -27,6 +34,25 @@ function waitForState(socket: BridgeSocket, expected = "connected", timeoutMs = 
   });
 }
 
+function waitForFrame(
+  socket: BridgeSocket,
+  predicate: (frame: ServerFrame) => boolean,
+  timeoutMs = 3_000,
+): Promise<ServerFrame> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error("Timed out waiting for relay frame"));
+    }, timeoutMs);
+    const unsubscribe = socket.onFrame((frame) => {
+      if (!predicate(frame)) return;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve(frame);
+    });
+  });
+}
+
 function nextMessage(socket: BridgeSocket, timeoutMs = 3_000): Promise<DecryptedEnvelope> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -41,73 +67,202 @@ function nextMessage(socket: BridgeSocket, timeoutMs = 3_000): Promise<Decrypted
   });
 }
 
-describe("relay", () => {
-  it("routes legacy mobile-to-agent commands to the desktop coordinator", async () => {
-    const relay = await startRelayServer({ port: 0, store: new MemoryRelayStore(), logger: { info() {}, warn() {}, error() {} } });
-    relays.push(relay);
-    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop(relay.url, "Test Mac");
-    const mobile = await BridgeCrypto.fromPairing(pairing, "phone");
-    const desktopSocket = new BridgeSocket({ crypto: desktop, role: "desktop", createRoom: true, reconnect: false });
-    const mobileSocket = new BridgeSocket({ crypto: mobile, role: "mobile", reconnect: false });
-    sockets.push(desktopSocket, mobileSocket);
-    desktopSocket.connect();
-    await waitForState(desktopSocket);
-    mobileSocket.connect();
-    await waitForState(mobileSocket);
+function turnRequest(text: string): BridgePayload {
+  return {
+    kind: "request",
+    requestId: crypto.randomUUID(),
+    idempotencyKey: crypto.randomUUID(),
+    method: "turn.start",
+    params: { sessionId: "session-1", text },
+  };
+}
 
-    const messagePromise = nextMessage(desktopSocket);
-    await mobileSocket.send({ kind: "command", text: "Run the focused tests" }, "agent");
-    const message = await messagePromise;
-    expect(message.payload).toEqual({ kind: "command", text: "Run the focused tests" });
+async function connectedPair(relayUrl: string) {
+  const host = await BridgeCrypto.createHost(relayUrl, "Test Mac");
+  const device = await BridgeCrypto.createDevicePairing({
+    roomId: host.crypto.identity.roomId,
+    relayUrl,
+    desktopName: "Test Mac",
+  });
+  const desktopDeviceCrypto = device.desktopCrypto.withSenderDevice(host.crypto.identity.deviceId);
+  const mobileCrypto = await BridgeCrypto.fromPairing(device.pairing);
+  const desktopSocket = new BridgeSocket({
+    crypto: host.crypto,
+    role: "desktop",
+    createRoom: true,
+    reconnect: false,
+    resolveCrypto: () => desktopDeviceCrypto,
+  });
+  const mobileSocket = new BridgeSocket({ crypto: mobileCrypto, role: "mobile", reconnect: false });
+  sockets.push(desktopSocket, mobileSocket);
+  desktopSocket.connect();
+  await waitForState(desktopSocket);
+  const registered = waitForFrame(desktopSocket, (frame) => frame.type === "device-registered");
+  desktopSocket.registerDevice(device.pairing.deviceId, device.desktopCrypto.identity.authToken, device.pairing.expiresAt);
+  await registered;
+  mobileSocket.connect();
+  await waitForState(mobileSocket);
+  return { host, device, desktopDeviceCrypto, mobileCrypto, desktopSocket, mobileSocket };
+}
+
+describe("relay v2", () => {
+  it("routes an encrypted phone request to its host and reports transport storage", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    const stored = waitForFrame(pair.mobileSocket, (frame) => frame.type === "stored");
+    const message = nextMessage(pair.desktopSocket);
+    await pair.mobileSocket.send(turnRequest("Run focused tests"), "desktop");
+
+    expect((await message).payload).toMatchObject({ kind: "request", method: "turn.start" });
+    expect((await stored).type).toBe("stored");
   });
 
-  it("replays an offline message until its target acknowledges it", async () => {
-    const relay = await startRelayServer({ port: 0, store: new MemoryRelayStore(), logger: { info() {}, warn() {}, error() {} } });
+  it("replays an offline request until the exact host device acknowledges it", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
     relays.push(relay);
-    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop(relay.url, "Test Mac");
-    const mobile = await BridgeCrypto.fromPairing(pairing, "phone");
-    const desktopSocket = new BridgeSocket({ crypto: desktop, role: "desktop", createRoom: true, reconnect: false });
-    const mobileSocket = new BridgeSocket({ crypto: mobile, role: "mobile", reconnect: false });
-    sockets.push(desktopSocket, mobileSocket);
-    desktopSocket.connect();
-    await waitForState(desktopSocket);
-    mobileSocket.connect();
-    await waitForState(mobileSocket);
-    desktopSocket.close();
-    await mobileSocket.send({ kind: "command", text: "Remember this" }, "agent");
+    const pair = await connectedPair(relay.url);
+    pair.desktopSocket.close();
+    await pair.mobileSocket.send(turnRequest("Remember this"), "desktop");
 
-    const firstDesktop = new BridgeSocket({ crypto: desktop, role: "desktop", createRoom: true, reconnect: false });
-    sockets.push(firstDesktop);
-    const firstMessage = nextMessage(firstDesktop);
-    firstDesktop.connect();
-    await waitForState(firstDesktop);
-    const delivered = await firstMessage;
-    firstDesktop.close();
+    const reconnect = new BridgeSocket({
+      crypto: pair.host.crypto,
+      role: "desktop",
+      createRoom: true,
+      reconnect: false,
+      resolveCrypto: () => pair.desktopDeviceCrypto,
+    });
+    sockets.push(reconnect);
+    const first = nextMessage(reconnect);
+    reconnect.connect();
+    await waitForState(reconnect);
+    const delivered = await first;
+    reconnect.close();
 
-    const secondDesktop = new BridgeSocket({ crypto: desktop, role: "desktop", createRoom: true, reconnect: false });
-    sockets.push(secondDesktop);
-    const replay = nextMessage(secondDesktop);
-    secondDesktop.connect();
-    await waitForState(secondDesktop);
-    expect((await replay).header.id).toBe(delivered.header.id);
-    secondDesktop.ack([delivered.header.id]);
+    const replaySocket = new BridgeSocket({
+      crypto: pair.host.crypto,
+      role: "desktop",
+      createRoom: true,
+      reconnect: false,
+      resolveCrypto: () => pair.desktopDeviceCrypto,
+    });
+    sockets.push(replaySocket);
+    const replayed = nextMessage(replaySocket);
+    replaySocket.connect();
+    await waitForState(replaySocket);
+    expect((await replayed).header.id).toBe(delivered.header.id);
+    replaySocket.ack([delivered.header.id]);
   });
 
-  it("delivers new mobile commands addressed directly to desktop", async () => {
-    const relay = await startRelayServer({ port: 0, store: new MemoryRelayStore(), logger: { info() {}, warn() {}, error() {} } });
+  it("delivers host events only to the addressed phone", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
     relays.push(relay);
-    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop(relay.url, "Test Mac");
-    const mobile = await BridgeCrypto.fromPairing(pairing, "phone");
-    const desktopSocket = new BridgeSocket({ crypto: desktop, role: "desktop", createRoom: true, reconnect: false });
-    const mobileSocket = new BridgeSocket({ crypto: mobile, role: "mobile", reconnect: false });
-    sockets.push(desktopSocket, mobileSocket);
-    desktopSocket.connect();
-    await waitForState(desktopSocket);
-    mobileSocket.connect();
-    await waitForState(mobileSocket);
+    const pair = await connectedPair(relay.url);
+    const event: BridgePayload = {
+      kind: "event",
+      event: {
+        eventId: "event-1",
+        sessionId: "session-1",
+        seq: 1,
+        timestamp: Date.now(),
+        origin: "claude-host",
+        type: "assistant.completed",
+        data: { text: "Done" },
+      },
+    };
+    const received = nextMessage(pair.mobileSocket);
+    await pair.desktopSocket.send(event, "mobile", {
+      toDeviceId: pair.device.pairing.deviceId,
+      crypto: pair.desktopDeviceCrypto,
+    });
 
-    const messagePromise = nextMessage(desktopSocket);
-    await mobileSocket.send({ kind: "command", text: "Continue the current task" }, "desktop");
-    expect((await messagePromise).payload).toEqual({ kind: "command", text: "Continue the current task" });
+    expect((await received).payload).toEqual(event);
+  });
+
+  it("binds a pairing code to the first mobile installation", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    const copiedCrypto = await BridgeCrypto.fromPairing(pair.device.pairing);
+    const copied = new BridgeSocket({ crypto: copiedCrypto, role: "mobile", reconnect: false });
+    sockets.push(copied);
+    const error = waitForFrame(copied, (frame) => frame.type === "error");
+    copied.connect();
+
+    expect(await error).toMatchObject({ type: "error", code: "PAIRING_ALREADY_USED" });
+  });
+
+  it("rejects a revoked device on its next reconnect", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    const revoked = waitForFrame(pair.desktopSocket, (frame) => frame.type === "device-revoked");
+    pair.desktopSocket.revokeDevice(pair.device.pairing.deviceId);
+    await revoked;
+    pair.mobileSocket.close();
+    const rejected = new BridgeSocket({ crypto: pair.mobileCrypto, role: "mobile", reconnect: false });
+    sockets.push(rejected);
+    const error = waitForFrame(rejected, (frame) => frame.type === "error");
+    rejected.connect();
+
+    expect(await error).toMatchObject({ type: "error", code: "DEVICE_REVOKED" });
+  });
+
+  it("requests a content-free wake when a targeted phone is offline", async () => {
+    const wakes: string[] = [];
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      pushDispatcher: {
+        async wake(device: DeviceRecord) {
+          wakes.push(device.deviceId);
+          return true;
+        },
+      },
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    pair.mobileSocket.registerPushToken("android", "test-push-token-1234567890");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    pair.mobileSocket.close();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await pair.desktopSocket.send({
+      kind: "event",
+      event: {
+        eventId: "wake-event",
+        seq: 2,
+        timestamp: Date.now(),
+        origin: "system",
+        type: "host.presence",
+        data: {},
+      },
+    }, "mobile", {
+      toDeviceId: pair.device.pairing.deviceId,
+      crypto: pair.desktopDeviceCrypto,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(wakes).toEqual([pair.device.pairing.deviceId]);
   });
 });

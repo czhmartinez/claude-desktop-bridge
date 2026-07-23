@@ -1,12 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import {
-  BridgeCrypto,
-  PROTOCOL_VERSION,
-  randomId,
-  type PairingBundle,
-} from "@bridge/protocol";
+import { BridgeCrypto, PROTOCOL_VERSION } from "@bridge/protocol";
 
 export interface SecretProtector {
   available(): boolean;
@@ -25,24 +20,53 @@ export function fileSecretProtector(): SecretProtector {
   };
 }
 
-interface PairingMetadata extends Omit<PairingBundle, "secret"> {}
+interface StoredDeviceConfig {
+  deviceId: string;
+  name: string;
+  platform: "android" | "ios" | "web" | "unknown";
+  protectedSecret: string;
+  createdAt: number;
+  expiresAt: number;
+  pairedAt?: number;
+  lastSeenAt?: number;
+  revokedAt?: number;
+}
 
 interface DesktopConfigFile {
-  version: 1;
-  pairing: PairingMetadata;
-  protectedSecret: string;
-  deviceId: string;
+  version: 2;
+  protocolVersion: typeof PROTOCOL_VERSION;
+  roomId: string;
+  relayUrl: string;
+  desktopName: string;
+  hostDeviceId: string;
+  protectedHostSecret: string;
+  createdAt: number;
   launchAtLogin: boolean;
-  mobilePairedAt?: number;
-  mobileLastSeenAt?: number;
+  devices: StoredDeviceConfig[];
+}
+
+export interface LoadedDeviceConfig {
+  deviceId: string;
+  name: string;
+  platform: "android" | "ios" | "web" | "unknown";
+  secret: string;
+  createdAt: number;
+  expiresAt: number;
+  pairedAt?: number;
+  lastSeenAt?: number;
+  revokedAt?: number;
 }
 
 export interface LoadedDesktopConfig {
-  pairing: PairingBundle;
-  deviceId: string;
+  protocolVersion: typeof PROTOCOL_VERSION;
+  roomId: string;
+  relayUrl: string;
+  desktopName: string;
+  hostDeviceId: string;
+  hostSecret: string;
+  createdAt: number;
   launchAtLogin: boolean;
-  mobilePairedAt?: number;
-  mobileLastSeenAt?: number;
+  devices: LoadedDeviceConfig[];
 }
 
 export interface DesktopConfigDefaults {
@@ -50,27 +74,34 @@ export interface DesktopConfigDefaults {
   desktopName: string;
 }
 
-export function bridgeLocalToken(pairingSecret: string): string {
-  return createHash("sha256").update("claude-bridge/local/v1\0").update(pairingSecret).digest("base64url");
+export function bridgeLocalToken(hostSecret: string): string {
+  return createHash("sha256").update("claude-bridge/local/v2\0").update(hostSecret).digest("base64url");
 }
 
 function assertConfig(value: unknown): DesktopConfigFile {
   if (!value || typeof value !== "object") throw new Error("Desktop config is not an object");
   const config = value as Partial<DesktopConfigFile>;
   if (
-    config.version !== 1 ||
-    !config.pairing ||
-    config.pairing.version !== PROTOCOL_VERSION ||
-    typeof config.pairing.roomId !== "string" ||
-    typeof config.pairing.relayUrl !== "string" ||
-    typeof config.pairing.desktopName !== "string" ||
-    typeof config.pairing.createdAt !== "number" ||
-    typeof config.protectedSecret !== "string" ||
-    typeof config.deviceId !== "string" ||
+    config.version !== 2 ||
+    config.protocolVersion !== PROTOCOL_VERSION ||
+    typeof config.roomId !== "string" ||
+    typeof config.relayUrl !== "string" ||
+    typeof config.desktopName !== "string" ||
+    typeof config.hostDeviceId !== "string" ||
+    typeof config.protectedHostSecret !== "string" ||
+    typeof config.createdAt !== "number" ||
     typeof config.launchAtLogin !== "boolean" ||
-    (config.mobilePairedAt !== undefined && typeof config.mobilePairedAt !== "number") ||
-    (config.mobileLastSeenAt !== undefined && typeof config.mobileLastSeenAt !== "number")
+    !Array.isArray(config.devices)
   ) throw new Error("Desktop config is incomplete");
+  for (const device of config.devices) {
+    if (
+      typeof device.deviceId !== "string" ||
+      typeof device.name !== "string" ||
+      typeof device.protectedSecret !== "string" ||
+      typeof device.createdAt !== "number" ||
+      typeof device.expiresAt !== "number"
+    ) throw new Error("Desktop device config is incomplete");
+  }
   return config as DesktopConfigFile;
 }
 
@@ -101,16 +132,29 @@ export class DesktopConfigRepository {
       throw error;
     }
     const config = assertConfig(JSON.parse(raw));
-    const secret = this.protector.unprotect(config.protectedSecret);
-    const relayUrl = isLoopbackRelay(config.pairing.relayUrl) && !isLoopbackRelay(this.defaults.relayUrl)
+    const relayUrl = isLoopbackRelay(config.relayUrl) && !isLoopbackRelay(this.defaults.relayUrl)
       ? this.defaults.relayUrl
-      : config.pairing.relayUrl;
+      : config.relayUrl;
     return {
-      pairing: { ...config.pairing, relayUrl, secret },
-      deviceId: config.deviceId,
+      protocolVersion: PROTOCOL_VERSION,
+      roomId: config.roomId,
+      relayUrl,
+      desktopName: config.desktopName,
+      hostDeviceId: config.hostDeviceId,
+      hostSecret: this.protector.unprotect(config.protectedHostSecret),
+      createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
-      ...(config.mobilePairedAt !== undefined ? { mobilePairedAt: config.mobilePairedAt } : {}),
-      ...(config.mobileLastSeenAt !== undefined ? { mobileLastSeenAt: config.mobileLastSeenAt } : {}),
+      devices: config.devices.map((device) => ({
+        deviceId: device.deviceId,
+        name: device.name,
+        platform: device.platform,
+        secret: this.protector.unprotect(device.protectedSecret),
+        createdAt: device.createdAt,
+        expiresAt: device.expiresAt,
+        ...(device.pairedAt !== undefined ? { pairedAt: device.pairedAt } : {}),
+        ...(device.lastSeenAt !== undefined ? { lastSeenAt: device.lastSeenAt } : {}),
+        ...(device.revokedAt !== undefined ? { revokedAt: device.revokedAt } : {}),
+      })),
     };
   }
 
@@ -119,28 +163,50 @@ export class DesktopConfigRepository {
       const existing = await this.load();
       if (existing) return existing;
     } catch {
-      await rename(this.path, `${this.path}.unreadable-${Date.now()}`).catch(() => undefined);
+      await rename(this.path, `${this.path}.v1-archive-${Date.now()}`).catch(() => undefined);
     }
     return this.regenerate(false);
   }
 
   async regenerate(launchAtLogin: boolean): Promise<LoadedDesktopConfig> {
-    const { pairing } = await BridgeCrypto.createDesktop(this.defaults.relayUrl, this.defaults.desktopName);
-    const loaded = { pairing, deviceId: randomId(12), launchAtLogin };
+    const { crypto, secret } = await BridgeCrypto.createHost(this.defaults.relayUrl, this.defaults.desktopName);
+    const loaded: LoadedDesktopConfig = {
+      protocolVersion: PROTOCOL_VERSION,
+      roomId: crypto.identity.roomId,
+      relayUrl: crypto.identity.relayUrl,
+      desktopName: crypto.identity.desktopName,
+      hostDeviceId: crypto.identity.deviceId,
+      hostSecret: secret,
+      createdAt: Date.now(),
+      launchAtLogin,
+      devices: [],
+    };
     await this.save(loaded);
     return loaded;
   }
 
   async save(config: LoadedDesktopConfig): Promise<void> {
-    const { secret, ...pairing } = config.pairing;
     const stored: DesktopConfigFile = {
-      version: 1,
-      pairing,
-      protectedSecret: this.protector.protect(secret),
-      deviceId: config.deviceId,
+      version: 2,
+      protocolVersion: PROTOCOL_VERSION,
+      roomId: config.roomId,
+      relayUrl: config.relayUrl,
+      desktopName: config.desktopName,
+      hostDeviceId: config.hostDeviceId,
+      protectedHostSecret: this.protector.protect(config.hostSecret),
+      createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
-      ...(config.mobilePairedAt !== undefined ? { mobilePairedAt: config.mobilePairedAt } : {}),
-      ...(config.mobileLastSeenAt !== undefined ? { mobileLastSeenAt: config.mobileLastSeenAt } : {}),
+      devices: config.devices.map((device) => ({
+        deviceId: device.deviceId,
+        name: device.name,
+        platform: device.platform,
+        protectedSecret: this.protector.protect(device.secret),
+        createdAt: device.createdAt,
+        expiresAt: device.expiresAt,
+        ...(device.pairedAt !== undefined ? { pairedAt: device.pairedAt } : {}),
+        ...(device.lastSeenAt !== undefined ? { lastSeenAt: device.lastSeenAt } : {}),
+        ...(device.revokedAt !== undefined ? { revokedAt: device.revokedAt } : {}),
+      })),
     };
     const contents = `${JSON.stringify(stored, null, 2)}\n`;
     this.saveQueue = this.saveQueue.catch(() => undefined).then(async () => {

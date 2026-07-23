@@ -1,497 +1,727 @@
-import type { BridgePayload, ClaudeHistoryMessage, ClaudeSessionInfo, SocketState, StatusPayload } from "@bridge/protocol";
+import type {
+  BridgeAttachment,
+  BridgeDeliveryState,
+  BridgeEvent,
+  BridgeHistoryItem,
+  BridgePermissionInfo,
+  BridgeSessionInfo,
+  SocketState,
+} from "@bridge/protocol";
 import {
   ArrowLeft,
-  Bell,
-  BellOff,
-  Check,
   ChevronRight,
-  Folder,
-  FolderTree,
-  GitBranch,
+  CircleStop,
+  ImagePlus,
+  LoaderCircle,
   Moon,
+  Plus,
   RefreshCw,
+  Search,
   Send,
   Sun,
-  Trash2,
+  Wrench,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MobileConnectionIssue, SessionHistoryState, TimelineEntry } from "../hooks/useMobileBridge.js";
+import type {
+  LocalTurn,
+  MobileConnectionIssue,
+  SessionHistoryState,
+} from "../hooks/useMobileBridge.js";
 import type { Theme } from "../hooks/useTheme.js";
 import { IconButton } from "./IconButton.js";
-import { ConfirmationDialog } from "./ConfirmationDialog.js";
 
-function connectionLabel(state: SocketState, desktopOnline: boolean, issue?: MobileConnectionIssue): string {
-  if (issue) return "连接未成功";
-  if (state === "connected" && desktopOnline) return "电脑在线";
-  if (state === "connected") return "等待电脑上线";
-  if (state === "connecting" || state === "reconnecting") return "正在连接";
-  return "离线，消息会稍后发送";
+interface ConversationItem extends BridgeHistoryItem {
+  delivery?: BridgeDeliveryState;
+  requestId?: string;
+  live?: boolean;
 }
 
-function payloadText(payload: BridgePayload): string {
-  if (payload.kind === "command") return payload.text;
-  if (payload.kind === "completion") return payload.summary;
-  if (payload.kind === "status" || payload.kind === "system") return payload.message;
+function formatTime(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(value);
+}
+
+function relativeTime(value: number): string {
+  const elapsed = Math.max(0, Date.now() - value);
+  if (elapsed < 60_000) return "刚刚";
+  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
+  if (elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(value);
+}
+
+function ownershipLabel(session: BridgeSessionInfo): string {
+  if (session.turnState === "running") return "运行中";
+  if (session.turnState === "queued") return `${session.pendingCount} 条排队`;
+  if (session.turnState === "waiting") return "需处理";
+  if (session.ownership === "DESKTOP_OBSERVED") return "桌面会话";
+  return "待机";
+}
+
+function deliveryLabel(state: BridgeDeliveryState): string {
+  if (state === "local-saved") return "已保存到手机";
+  if (state === "relay-received") return "Relay 已接收";
+  if (state === "host-received") return "主机已接收";
+  if (state === "session-received") return "会话已接收";
+  if (state === "running") return "Claude 处理中";
+  if (state === "completed") return "已完成";
+  if (state === "failed") return "发送失败";
+  return "已取消";
+}
+
+function eventText(event: BridgeEvent): string {
+  if (typeof event.data.text === "string") return event.data.text;
+  if (typeof event.data.summary === "string") return event.data.summary;
+  if (typeof event.data.error === "string") return event.data.error;
   return "";
 }
 
-function sessionProgress(session: ClaudeSessionInfo): number | undefined {
-  if (!session.totalTasks) return undefined;
-  return Math.round(((session.completedTasks ?? 0) / session.totalTasks) * 100);
-}
-
-function formatSessionTime(value: number): string {
-  const date = new Date(value);
-  const now = new Date();
-  if (date.toDateString() === now.toDateString()) {
-    return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(date);
-  }
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date);
-}
-
-function TimelineItem({ entry }: { entry: TimelineEntry }) {
-  const payload = entry.payload;
-  const time = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(entry.header.sentAt);
-  const className = payload.kind === "command" ? "timeline-item command" : `timeline-item ${payload.kind}`;
-  const sender = payload.kind === "command"
-    ? "你"
-    : payload.kind === "completion"
-      ? "已完成"
-      : payload.kind === "status"
-        ? payload.step ?? "Claude"
-        : "Bridge";
-  return (
-    <article className={className}>
-      <div className="timeline-meta">
-        <span>{sender}</span>
-        <time>{time}</time>
-      </div>
-      <div className="timeline-message">{payloadText(payload)}</div>
-      {payload.kind === "status" && typeof payload.progress === "number" && (
-        <div
-          className="progress-track"
-          role="progressbar"
-          aria-label="当前进度"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.max(0, Math.min(100, payload.progress))}
-        >
-          <span style={{ width: `${Math.max(0, Math.min(100, payload.progress))}%` }} />
-        </div>
-      )}
-      {payload.kind === "completion" && <Check className="completion-check" size={16} aria-hidden="true" />}
-    </article>
-  );
-}
-
-function HistoryItem({ message }: { message: ClaudeHistoryMessage }) {
-  const time = message.createdAt > 0
-    ? new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(message.createdAt)
-    : "";
-  return (
-    <article className={`timeline-item history-item ${message.role === "user" ? "command" : "assistant"}`}>
-      <div className="timeline-meta">
-        <span>{message.role === "user" ? "你" : "Claude"}</span>
-        {time && <time>{time}</time>}
-      </div>
-      <div className="timeline-message">{message.text}</div>
-    </article>
-  );
-}
-
-function normalizedMessage(value: string): string {
-  return value.replace(/\s+/gu, " ").trim();
-}
-
-function timelineWithoutHistoryDuplicates(
-  timeline: TimelineEntry[],
+export function conversationItems(
+  sessionId: string,
   history: SessionHistoryState | undefined,
-): TimelineEntry[] {
-  if (!history?.messages.length) return timeline;
-  const historyText = new Set(history.messages.map((message) => normalizedMessage(message.text)));
-  return timeline.filter((entry) => {
-    const payload = entry.payload;
-    if (
-      payload.kind === "status" &&
-      typeof payload.progress !== "number" &&
-      /^(已读取 Claude Desktop 历史|Claude Desktop 会话已打开)/u.test(payload.message)
-    ) return false;
-    if (payload.kind === "command") return !historyText.has(normalizedMessage(payload.text));
-    if (payload.kind === "status") return !historyText.has(normalizedMessage(payload.message));
-    if (payload.kind === "completion") return !historyText.has(normalizedMessage(payload.summary));
-    return true;
-  });
-}
-
-function timelineForSession(
-  timeline: TimelineEntry[],
-  session: ClaudeSessionInfo,
-  sessions: ClaudeSessionInfo[],
-): TimelineEntry[] {
-  return timeline.filter((entry) => {
-    const payload = entry.payload;
-    if (payload.kind === "sessions" || payload.kind === "history" || payload.kind === "history-request") return false;
-    if (payload.kind === "command" || payload.kind === "status" || payload.kind === "completion") {
-      if (payload.sessionId) return payload.sessionId === session.sessionId;
-      if (payload.kind === "status" && payload.step) {
-        return sessions.find((candidate) => candidate.projectName === payload.step)?.sessionId === session.sessionId;
+  events: BridgeEvent[],
+  localTurns: LocalTurn[],
+): ConversationItem[] {
+  const items = new Map<string, ConversationItem>();
+  for (const item of history?.items ?? []) items.set(item.id, item);
+  const sessionEvents = events.filter((event) => event.sessionId === sessionId);
+  const acceptedRequests = new Set(
+    sessionEvents
+      .filter((event) => event.type === "user.message.accepted" && typeof event.data.requestId === "string")
+      .map((event) => event.data.requestId as string),
+  );
+  for (const turn of localTurns.filter((candidate) => candidate.sessionId === sessionId)) {
+    if (acceptedRequests.has(turn.requestId)) continue;
+    items.set(`local:${turn.requestId}`, {
+      id: `local:${turn.requestId}`,
+      sessionId,
+      role: "user",
+      text: turn.text,
+      createdAt: turn.createdAt,
+      origin: "mobile",
+      attachments: turn.attachments,
+      delivery: turn.delivery,
+      requestId: turn.requestId,
+    });
+  }
+  const completedTurns = new Set(
+    sessionEvents
+      .filter((event) => event.type === "assistant.completed" && event.turnId)
+      .map((event) => event.turnId!),
+  );
+  const deltaByItem = new Map<string, ConversationItem>();
+  const toolByItem = new Map<string, ConversationItem>();
+  for (const event of sessionEvents) {
+    if (event.type === "session.observed") {
+      const role = event.data.role;
+      const text = eventText(event);
+      if ((role === "user" || role === "assistant") && text) {
+        items.set(event.itemId ?? event.eventId, {
+          id: event.itemId ?? event.eventId,
+          sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          role,
+          text,
+          createdAt: event.timestamp,
+          origin: event.origin,
+        });
       }
     }
-    return sessions[0]?.sessionId === session.sessionId;
+    if (event.type === "user.message.accepted") {
+      const text = eventText(event);
+      const attachments = Array.isArray(event.data.attachments)
+        ? event.data.attachments as ConversationItem["attachments"]
+        : undefined;
+      items.set(event.itemId ?? event.eventId, {
+        id: event.itemId ?? event.eventId,
+        sessionId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        role: "user",
+        text,
+        createdAt: event.timestamp,
+        origin: event.origin,
+        delivery: "session-received",
+        ...(attachments?.length ? { attachments } : {}),
+        ...(typeof event.data.requestId === "string" ? { requestId: event.data.requestId } : {}),
+      });
+    }
+    if (event.type === "assistant.delta" && !(event.turnId && completedTurns.has(event.turnId))) {
+      const id = event.itemId ?? event.eventId;
+      const existing = deltaByItem.get(id);
+      const text = `${existing?.text ?? ""}${eventText(event)}`;
+      deltaByItem.set(id, {
+        id,
+        sessionId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        role: "assistant",
+        text,
+        createdAt: existing?.createdAt ?? event.timestamp,
+        origin: "claude-host",
+        live: true,
+      });
+    }
+    if (event.type === "assistant.completed") {
+      const text = eventText(event);
+      if (!text) continue;
+      items.set(event.itemId ?? event.eventId, {
+        id: event.itemId ?? event.eventId,
+        sessionId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        role: "assistant",
+        text,
+        createdAt: event.timestamp,
+        origin: "claude-host",
+      });
+    }
+    if (event.type === "tool.started" || event.type === "tool.progress" || event.type === "tool.completed") {
+      const id = event.itemId ?? event.eventId;
+      const existing = toolByItem.get(id);
+      const toolName = typeof event.data.toolName === "string"
+        ? event.data.toolName
+        : existing?.toolName ?? "工具";
+      const text = eventText(event) || existing?.text || toolName;
+      toolByItem.set(id, {
+        id: `tool:${id}`,
+        sessionId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        role: "tool",
+        toolName,
+        text,
+        createdAt: existing?.createdAt ?? event.timestamp,
+        origin: "claude-host",
+        state: event.type === "tool.completed" ? "completed" : "running",
+      });
+    }
+    if (event.type === "turn.failed" || event.type === "turn.interrupted") {
+      items.set(event.eventId, {
+        id: event.eventId,
+        sessionId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        role: "system",
+        text: event.type === "turn.failed" ? eventText(event) || "Claude 处理失败" : "任务已停止",
+        createdAt: event.timestamp,
+        origin: "system",
+        state: event.type === "turn.failed" ? "failed" : "interrupted",
+      });
+    }
+  }
+  for (const item of deltaByItem.values()) items.set(item.id, item);
+  for (const item of toolByItem.values()) items.set(item.id, item);
+  return [...items.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
+export async function fileToAttachment(file: File): Promise<BridgeAttachment> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result)));
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("图片读取失败")));
+    reader.readAsDataURL(file);
   });
+  const data = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  return {
+    id: crypto.randomUUID(),
+    name: file.name,
+    mimeType: file.type as BridgeAttachment["mimeType"],
+    size: file.size,
+    data,
+  };
+}
+
+function QuestionPrompt({
+  permission,
+  onResolve,
+}: {
+  permission: BridgePermissionInfo;
+  onResolve(
+    requestId: string,
+    decision: "allow-once" | "allow-always" | "deny",
+    message?: string,
+    updatedInput?: Record<string, unknown>,
+  ): Promise<void>;
+}) {
+  const questions = Array.isArray(permission.input.questions)
+    ? permission.input.questions.filter((question): question is Record<string, unknown> => (
+        Boolean(question) && typeof question === "object"
+      ))
+    : [];
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const complete = questions.every((question) => (
+    typeof question.question === "string" && Boolean(answers[question.question])
+  ));
+  return (
+    <section className="permission-prompt question-prompt">
+      <div className="permission-title">
+        <strong>{permission.title || "Claude 需要你的选择"}</strong>
+        <span>任一已授权设备的首次回答生效</span>
+      </div>
+      {questions.map((question, index) => {
+        const prompt = typeof question.question === "string" ? question.question : `问题 ${index + 1}`;
+        const options = Array.isArray(question.options)
+          ? question.options.filter((option): option is Record<string, unknown> => Boolean(option) && typeof option === "object")
+          : [];
+        return (
+          <fieldset key={prompt}>
+            <legend>{prompt}</legend>
+            {options.map((option) => {
+              const label = typeof option.label === "string" ? option.label : "";
+              return (
+                <label key={label} className="question-option">
+                  <input
+                    type="radio"
+                    name={`${permission.requestId}:${index}`}
+                    checked={answers[prompt] === label}
+                    onChange={() => setAnswers((current) => ({ ...current, [prompt]: label }))}
+                  />
+                  <span><strong>{label}</strong>{typeof option.description === "string" && <small>{option.description}</small>}</span>
+                </label>
+              );
+            })}
+          </fieldset>
+        );
+      })}
+      <div className="permission-actions">
+        <button type="button" className="secondary-button" onClick={() => void onResolve(permission.requestId, "deny")}>取消</button>
+        <button
+          type="button"
+          className="primary-button"
+          disabled={!complete}
+          onClick={() => void onResolve(
+            permission.requestId,
+            "allow-once",
+            undefined,
+            { ...permission.input, answers },
+          )}
+        >
+          提交回答
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function PermissionPrompt({
+  permission,
+  onResolve,
+}: {
+  permission: BridgePermissionInfo;
+  onResolve(
+    requestId: string,
+    decision: "allow-once" | "allow-always" | "deny",
+    message?: string,
+    updatedInput?: Record<string, unknown>,
+  ): Promise<void>;
+}) {
+  if (permission.toolName === "AskUserQuestion") {
+    return <QuestionPrompt permission={permission} onResolve={onResolve} />;
+  }
+  return (
+    <section className="permission-prompt">
+      <div className="permission-title">
+        <strong>{permission.title || `${permission.toolName} 请求权限`}</strong>
+        <span>{permission.description || permission.displayName || "Claude 等待确认后继续"}</span>
+      </div>
+      <pre>{JSON.stringify(permission.input, null, 2)}</pre>
+      <div className="permission-actions">
+        <button type="button" className="secondary-button danger-text" onClick={() => void onResolve(permission.requestId, "deny")}>拒绝</button>
+        <button type="button" className="secondary-button" onClick={() => void onResolve(permission.requestId, "allow-once")}>允许一次</button>
+        <button type="button" className="primary-button" onClick={() => void onResolve(permission.requestId, "allow-always")}>始终允许</button>
+      </div>
+    </section>
+  );
 }
 
 export function MobileWorkspace({
   desktopName,
   connection,
   desktopOnline,
-  sessions,
-  sessionCatalogReceived,
+  snapshot,
   histories,
-  timeline,
+  events,
+  localTurns,
   connectionIssue,
   theme,
   onToggleTheme,
-  onSend,
-  onRequestHistory,
+  onOpenSession,
+  onLoadOlderHistory,
+  onSendTurn,
+  onInterruptTurn,
+  onResolvePermission,
+  onCreateSession,
+  onRefresh,
   onBackToHosts,
-  onUnpair,
   onRetry,
 }: {
   desktopName: string;
   connection: SocketState;
   desktopOnline: boolean;
-  sessions: ClaudeSessionInfo[];
-  sessionCatalogReceived: boolean;
+  snapshot: {
+    projects: Array<{ projectId: string; name: string; cwd: string }>;
+    sessions: BridgeSessionInfo[];
+    permissions: BridgePermissionInfo[];
+    runtime: { state: string; activeTurns: number };
+  } | undefined;
   histories: Record<string, SessionHistoryState>;
-  timeline: TimelineEntry[];
+  events: BridgeEvent[];
+  localTurns: LocalTurn[];
   connectionIssue?: MobileConnectionIssue | undefined;
   theme: Theme;
   onToggleTheme(): void;
-  onSend(text: string, sessionId: string): Promise<void>;
-  onRequestHistory(sessionId: string): Promise<void>;
+  onOpenSession(sessionId: string): Promise<void>;
+  onLoadOlderHistory(sessionId: string): Promise<void>;
+  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<void>;
+  onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
+  onResolvePermission(
+    requestId: string,
+    decision: "allow-once" | "allow-always" | "deny",
+    message?: string,
+    updatedInput?: Record<string, unknown>,
+  ): Promise<void>;
+  onCreateSession(cwd: string, title?: string): Promise<BridgeSessionInfo | undefined>;
+  onRefresh(): Promise<void>;
   onBackToHosts(): void;
-  onUnpair(): Promise<void>;
   onRetry(): Promise<void>;
 }) {
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
+  const [search, setSearch] = useState("");
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<BridgeAttachment[]>([]);
   const [sending, setSending] = useState(false);
-  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
-  const [removing, setRemoving] = useState(false);
-  const [notifications, setNotifications] = useState(() => typeof Notification !== "undefined" && Notification.permission === "granted");
+  const [steer, setSteer] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createProjectId, setCreateProjectId] = useState("");
+  const [createTitle, setCreateTitle] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [imageError, setImageError] = useState<string>();
   const endRef = useRef<HTMLDivElement>(null);
-  const sendingRef = useRef(false);
-  const projectGroups = useMemo(() => {
-    const groups = new Map<string, ClaudeSessionInfo[]>();
-    for (const session of sessions) {
-      const projectSessions = groups.get(session.projectName) ?? [];
-      projectSessions.push(session);
-      groups.set(session.projectName, projectSessions);
-    }
-    return [...groups.entries()].map(([projectName, projectSessions]) => ({ projectName, sessions: projectSessions }));
-  }, [sessions]);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const sessions = snapshot?.sessions ?? [];
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
-  const selectedTimeline = useMemo(
-    () => selectedSession
-      ? timelineWithoutHistoryDuplicates(timelineForSession(timeline, selectedSession, sessions), selectedHistory)
+  const items = useMemo(
+    () => selectedSessionId
+      ? conversationItems(selectedSessionId, selectedHistory, events, localTurns)
       : [],
-    [selectedHistory, selectedSession, sessions, timeline],
+    [events, localTurns, selectedHistory, selectedSessionId],
   );
-  const activeProgress = [...selectedTimeline]
-    .reverse()
-    .map((entry) => entry.payload)
-    .find((payload): payload is StatusPayload & { progress: number } => (
-      payload.kind === "status" && typeof payload.progress === "number"
+  const grouped = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    const filtered = sessions.filter((session) => !query || (
+      `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query)
     ));
-  const latestClaudeReply = [...selectedTimeline].reverse().find((entry) => (
-    entry.direction === "incoming" && (
-      entry.payload.kind === "completion" ||
-      (entry.payload.kind === "status" && entry.payload.level === "success")
-    )
-  ));
-
-  useEffect(() => {
-    if (selectedSessionId && !selectedSession) setSelectedSessionId(undefined);
-  }, [selectedSession, selectedSessionId]);
-
-  useEffect(() => {
-    if (selectedSessionId && connection === "connected" && desktopOnline) {
-      void onRequestHistory(selectedSessionId);
+    const groups = new Map<string, BridgeSessionInfo[]>();
+    for (const session of filtered) {
+      const list = groups.get(session.projectId) ?? [];
+      list.push(session);
+      groups.set(session.projectId, list);
     }
-  }, [connection, desktopOnline, onRequestHistory, selectedSessionId]);
+    return [...groups.entries()].map(([projectId, projectSessions]) => ({
+      project: snapshot?.projects.find((project) => project.projectId === projectId),
+      sessions: projectSessions,
+    }));
+  }, [search, sessions, snapshot?.projects]);
 
   useEffect(() => {
-    if (
-      !selectedSessionId ||
-      !latestClaudeReply ||
-      !selectedHistory?.syncedAt ||
-      latestClaudeReply.header.sentAt <= selectedHistory.syncedAt ||
-      connection !== "connected" ||
-      !desktopOnline
-    ) return;
-    const timer = setTimeout(() => void onRequestHistory(selectedSessionId), 400);
-    return () => clearTimeout(timer);
-  }, [
-    connection,
-    desktopOnline,
-    latestClaudeReply?.header.id,
-    onRequestHistory,
-    selectedHistory?.syncedAt,
-    selectedSessionId,
-  ]);
-
-  useEffect(() => {
+    if (!selectedSessionId) return;
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [selectedHistory?.messages.length, selectedTimeline.length]);
+  }, [items.length, selectedSessionId]);
 
-  async function send(): Promise<void> {
-    const command = text.trim();
-    if (!command || sendingRef.current || !selectedSession) return;
-    sendingRef.current = true;
-    setSending(true);
+  async function selectSession(sessionId: string): Promise<void> {
+    setSelectedSessionId(sessionId);
+    await onOpenSession(sessionId);
+  }
+
+  async function sendMessage(): Promise<void> {
+    if (!selectedSession || sending || (!text.trim() && attachments.length === 0)) return;
+    const nextText = text.trim();
+    const nextAttachments = attachments;
     setText("");
-    try { await onSend(command, selectedSession.sessionId); }
-    catch { setText(command); }
-    finally {
-      sendingRef.current = false;
+    setAttachments([]);
+    setSending(true);
+    try {
+      await onSendTurn(selectedSession.sessionId, nextText, nextAttachments, steer);
+      setSteer(false);
+    } catch {
+      setText(nextText);
+      setAttachments(nextAttachments);
+    } finally {
       setSending(false);
     }
   }
 
-  async function toggleNotifications(): Promise<void> {
-    if (typeof Notification === "undefined") return;
-    if (Notification.permission === "granted") {
-      setNotifications(false);
-      return;
-    }
-    const permission = await Notification.requestPermission();
-    setNotifications(permission === "granted");
-  }
-
-  async function removeHost(): Promise<void> {
-    if (removing) return;
-    setRemoving(true);
+  async function addImages(files: FileList | null): Promise<void> {
+    if (!files?.length) return;
+    setImageError(undefined);
     try {
-      await onUnpair();
-      setRemoveConfirmOpen(false);
+      const candidates = [...files];
+      if (candidates.some((file) => file.size > 4 * 1024 * 1024)) throw new Error("单张图片不能超过 4 MB");
+      const total = candidates.reduce((sum, file) => sum + file.size, attachments.reduce((sum, item) => sum + item.size, 0));
+      if (total > 6 * 1024 * 1024) throw new Error("图片总大小不能超过 6 MB");
+      const next = await Promise.all(candidates.map(fileToAttachment));
+      setAttachments((current) => [...current, ...next].slice(0, 4));
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "图片读取失败");
     } finally {
-      setRemoving(false);
+      if (fileRef.current) fileRef.current.value = "";
     }
   }
 
-  const themeButton = (
-    <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
-      {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-    </IconButton>
-  );
+  async function createSession(): Promise<void> {
+    const project = snapshot?.projects.find((candidate) => candidate.projectId === createProjectId);
+    if (!project || createBusy) return;
+    setCreateBusy(true);
+    try {
+      const created = await onCreateSession(project.cwd, createTitle.trim() || undefined);
+      if (created) {
+        setCreateOpen(false);
+        setCreateTitle("");
+        await onRefresh();
+        await selectSession(created.sessionId);
+      }
+    } finally {
+      setCreateBusy(false);
+    }
+  }
 
-  if (!selectedSession) {
+  if (selectedSession) {
+    const bridgeRunning = selectedSession.turnState === "running"
+      && selectedSession.ownership === "BRIDGE_RUNNING";
+    const activeTurn = localTurns
+      .filter((turn) => turn.sessionId === selectedSession.sessionId && turn.delivery === "running")
+      .at(-1);
+    const permissions = snapshot?.permissions.filter((permission) => permission.sessionId === selectedSession.sessionId) ?? [];
     return (
-      <main className="mobile-workspace session-list-workspace">
-        <header className="mobile-topbar">
-          <IconButton label="返回主机列表" onClick={onBackToHosts}><ArrowLeft size={19} /></IconButton>
+      <main className="mobile-workspace conversation-workspace">
+        <header className="mobile-topbar conversation-topbar">
+          <IconButton label="返回会话列表" onClick={() => setSelectedSessionId(undefined)}><ArrowLeft size={21} /></IconButton>
           <div className="mobile-device">
-            <strong>{desktopName}</strong>
-            <span><i className={connection === "connected" && desktopOnline ? "online" : ""} />{connectionLabel(connection, desktopOnline, connectionIssue)}</span>
+            <strong>{selectedSession.title}</strong>
+            <span className={`session-presence ${selectedSession.turnState}`}>
+              <i />{ownershipLabel(selectedSession)}
+            </span>
           </div>
-          <div className="topbar-actions">
-            {themeButton}
-            <IconButton label="删除这台电脑" onClick={() => setRemoveConfirmOpen(true)}><Trash2 size={18} /></IconButton>
-          </div>
+          {bridgeRunning ? (
+            <IconButton label="停止任务" onClick={() => void onInterruptTurn(selectedSession.sessionId, activeTurn?.commandId)}>
+              <CircleStop size={20} />
+            </IconButton>
+          ) : (
+            <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
+              {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
+            </IconButton>
+          )}
         </header>
 
-        <section className="session-browser" aria-label="Claude 会话列表">
-          <div className="session-browser-heading">
-            <div><span>Claude</span><h1>会话</h1></div>
-            <b>{sessions.length}</b>
-          </div>
-          {sessions.length === 0 ? (
-            <div className="empty-sessions">
-              <h2>{connectionIssue
-                ? "无法同步会话"
-                : connection !== "connected"
-                  ? "正在连接电脑"
-                  : !desktopOnline
-                    ? "电脑暂时离线"
-                    : sessionCatalogReceived ? "暂无 Claude 会话" : "正在同步会话"}</h2>
-              <p>{connectionIssue?.message
-                ?? (connection !== "connected"
-                  ? "连接成功后会自动加载项目和会话。"
-                  : !desktopOnline
-                    ? "请确认电脑端 Bridge 正在运行。"
-                    : sessionCatalogReceived
-                      ? "打开电脑端 Claude 后，会话会自动出现在这里。"
-                      : "正在从电脑读取 Claude 的项目和会话。")}</p>
-              {connectionIssue && (
-                <div className="empty-session-actions">
-                  {connectionIssue.code !== "pairing-invalid" && (
-                    <button type="button" className="secondary-button" onClick={() => void onRetry()}>
-                      <RefreshCw size={16} /><span>重试连接</span>
-                    </button>
-                  )}
-                  <button type="button" className="danger-button" onClick={() => setRemoveConfirmOpen(true)}>
-                    <Trash2 size={16} /><span>删除这条配对</span>
-                  </button>
-                </div>
-              )}
+        <section className="conversation-stream" aria-live="polite">
+          {selectedHistory?.hasMore && (
+            <button
+              type="button"
+              className="load-older-button"
+              disabled={selectedHistory.status === "loading"}
+              onClick={() => void onLoadOlderHistory(selectedSession.sessionId)}
+            >
+              {selectedHistory.status === "loading" && <LoaderCircle className="is-spinning" size={15} />}
+              加载更早消息
+            </button>
+          )}
+          {selectedHistory?.status === "loading" && selectedHistory.items.length === 0 && (
+            <div className="conversation-loading"><LoaderCircle className="is-spinning" size={20} />正在读取完整会话</div>
+          )}
+          {selectedHistory?.status === "error" && selectedHistory.items.length === 0 && (
+            <div className="conversation-empty">
+              <strong>会话暂时无法读取</strong>
+              <button type="button" className="secondary-button" onClick={() => void onOpenSession(selectedSession.sessionId)}>重试</button>
             </div>
-          ) : (
-            <div className="project-groups">
-              {projectGroups.map((project) => (
-                <section className="project-group" key={project.projectName}>
-                  <header className="project-group-heading">
-                    <FolderTree size={17} aria-hidden="true" />
-                    <strong>{project.projectName}</strong>
-                    <span>{project.sessions.length} 个会话</span>
-                  </header>
-                  <div className="session-rows">
-                    {project.sessions.map((session) => {
-                      const progress = sessionProgress(session);
-                      return (
-                        <button
-                          type="button"
-                          className="session-row"
-                          key={session.sessionId}
-                          onClick={() => setSelectedSessionId(session.sessionId)}
-                        >
-                          <span className="session-row-icon"><Folder size={18} /></span>
-                          <span className="session-row-copy">
-                            <strong>{session.title}</strong>
-                            <small>{session.currentTask ?? "可在 Bridge 后台续写"}</small>
-                          </span>
-                          <span className="session-row-meta">
-                            <time>{formatSessionTime(session.lastActivityAt)}</time>
-                            <em className={session.state === "running" ? "running" : ""}>{session.state === "running" ? "桌面已打开" : "历史可续写"}</em>
-                          </span>
-                          {progress !== undefined && <span className="session-row-progress">{progress}%</span>}
-                          <ChevronRight size={18} aria-hidden="true" />
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
+          )}
+          {items.length === 0 && selectedHistory?.status === "ready" && (
+            <div className="conversation-empty">
+              <strong>这是一个空会话</strong>
+              <span>从下方发出第一条指令。</span>
+            </div>
+          )}
+          {items.map((item) => (
+            <article className={`conversation-item ${item.role} ${item.live ? "live" : ""}`} key={item.id}>
+              <div className="conversation-item-meta">
+                <strong>{item.role === "user" ? "你" : item.role === "assistant" ? "Claude" : item.role === "tool" ? item.toolName : "Bridge"}</strong>
+                <time>{formatTime(item.createdAt)}</time>
+              </div>
+              {item.role === "tool" && <Wrench size={16} aria-hidden="true" />}
+              {item.text && <div className="conversation-text">{item.text}</div>}
+              {item.attachments?.length ? (
+                <div className="attachment-summary">{item.attachments.map((attachment) => <span key={attachment.id}>{attachment.name}</span>)}</div>
+              ) : null}
+              {item.delivery && <div className={`delivery-state ${item.delivery}`}>{deliveryLabel(item.delivery)}</div>}
+              {item.live && <span className="stream-caret" aria-label="正在生成" />}
+            </article>
+          ))}
+          {permissions.map((permission) => (
+            <PermissionPrompt key={permission.requestId} permission={permission} onResolve={onResolvePermission} />
+          ))}
+          <div ref={endRef} />
+        </section>
+
+        <section className="mobile-composer">
+          {connectionIssue && (
+            <button type="button" className="composer-connection" onClick={() => void onRetry()}>
+              {connectionIssue.message} 点击重试
+            </button>
+          )}
+          {attachments.length > 0 && (
+            <div className="composer-attachments">
+              {attachments.map((attachment) => (
+                <span key={attachment.id}>
+                  {attachment.name}
+                  <button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}>
+                    <X size={13} />
+                  </button>
+                </span>
               ))}
             </div>
           )}
+          {imageError && <div className="composer-error">{imageError}</div>}
+          {bridgeRunning && (
+            <div className="composer-mode" role="group" aria-label="发送方式">
+              <button type="button" className={!steer ? "active" : ""} onClick={() => setSteer(false)}>排到下一轮</button>
+              <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>停止并调整</button>
+            </div>
+          )}
+          <form onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              multiple
+              hidden
+              onChange={(event) => void addImages(event.target.files)}
+            />
+            <IconButton label="添加图片" onClick={() => fileRef.current?.click()}><ImagePlus size={20} /></IconButton>
+            <textarea
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder={desktopOnline ? "给这个 Claude 会话发指令" : "电脑离线，消息会保存在手机并自动送达"}
+              rows={1}
+              aria-label="给 Claude 发指令"
+            />
+            <button type="submit" className="send-button" aria-label="发送" disabled={sending || (!text.trim() && attachments.length === 0)}>
+              {sending ? <LoaderCircle className="is-spinning" size={19} /> : <Send size={19} />}
+            </button>
+          </form>
         </section>
-        <ConfirmationDialog
-          open={removeConfirmOpen}
-          title="删除这台电脑？"
-          description={`将从手机移除“${desktopName}”的配对和本地消息记录，之后可重新扫码添加。`}
-          confirmLabel="删除主机"
-          danger
-          busy={removing}
-          onCancel={() => setRemoveConfirmOpen(false)}
-          onConfirm={() => void removeHost()}
-        />
       </main>
     );
   }
 
   return (
-    <main className="mobile-workspace">
-      <header className="mobile-topbar conversation-topbar">
-        <IconButton label="返回会话列表" onClick={() => setSelectedSessionId(undefined)}><ArrowLeft size={19} /></IconButton>
+    <main className="mobile-workspace host-detail-workspace">
+      <header className="mobile-topbar">
+        <IconButton label="返回主机列表" onClick={onBackToHosts}><ArrowLeft size={21} /></IconButton>
         <div className="mobile-device">
-          <strong>{selectedSession.title}</strong>
-          <span><i className={connection === "connected" && desktopOnline ? "online" : ""} />Bridge 后台续写</span>
+          <strong>{desktopName}</strong>
+          <span className={desktopOnline ? "online" : ""}><i />{desktopOnline ? "在线" : connection === "connecting" ? "正在连接" : "离线"}</span>
         </div>
-        <div className="topbar-actions">
-          <IconButton
-            label="同步历史消息"
-            onClick={() => void onRequestHistory(selectedSession.sessionId)}
-            disabled={connection !== "connected" || !desktopOnline || selectedHistory?.status === "loading"}
-          >
-            <RefreshCw className={selectedHistory?.status === "loading" ? "is-spinning" : ""} size={18} />
-          </IconButton>
-          {typeof Notification !== "undefined" && (
-            <IconButton label={notifications ? "关闭提醒" : "开启提醒"} onClick={() => void toggleNotifications()}>
-              {notifications ? <Bell size={18} /> : <BellOff size={18} />}
-            </IconButton>
-          )}
-          {themeButton}
-        </div>
+        <IconButton label="刷新" onClick={() => void onRefresh()}><RefreshCw size={19} /></IconButton>
+        <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
+          {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
+        </IconButton>
       </header>
 
-      <section className="timeline" aria-live="polite">
-        <section className="continuation-note" aria-label="续写方式">
-          <GitBranch size={17} aria-hidden="true" />
+      <section className="host-detail">
+        <div className="host-detail-heading">
           <div>
-            <strong>独立后台续写</strong>
-            <span>保留这段历史并同步回复，不抢占电脑；当前 Claude Desktop 窗口不会自动变化。</span>
+            <span>Claude</span>
+            <h1>项目与会话</h1>
           </div>
-        </section>
-        {activeProgress && (
-          <section className="active-progress" aria-label="Claude 当前进度">
-            <div className="active-progress-heading">
-              <span>{activeProgress.progress >= 100 ? "当前状态" : "正在处理"}</span>
-              <strong>{activeProgress.step ?? selectedSession.projectName}</strong>
-              <b>{Math.round(activeProgress.progress)}%</b>
-            </div>
-            <p>{activeProgress.message}</p>
-            <div className="progress-track" role="progressbar" aria-label="当前进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={activeProgress.progress}>
-              <span style={{ width: `${Math.max(0, Math.min(100, activeProgress.progress))}%` }} />
-            </div>
-          </section>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!snapshot?.projects.length}
+            onClick={() => {
+              setCreateProjectId(snapshot?.projects[0]?.projectId ?? "");
+              setCreateOpen(true);
+            }}
+          >
+            <Plus size={17} />新建
+          </button>
+        </div>
+        <label className="session-search">
+          <Search size={17} />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
+        </label>
+        {connectionIssue && (
+          <button type="button" className="host-connection-issue" onClick={() => void onRetry()}>
+            {connectionIssue.message}
+          </button>
         )}
-        {selectedHistory?.truncated && selectedHistory.messages.length > 0 && (
-          <div className="history-sync-note">已同步最近 {selectedHistory.messages.length} 条消息，较早内容未载入</div>
-        )}
-        {selectedHistory?.status === "loading" && selectedHistory.messages.length === 0 && (
-          <div className="history-loading"><span className="spinner" /><span>正在同步历史消息</span></div>
-        )}
-        {selectedHistory?.status === "error" && selectedHistory.messages.length === 0 && (
-          <div className="empty-timeline">
-            <h1>历史消息同步失败</h1>
-            <p>连接恢复后可重新读取，不影响继续发送指令。</p>
-            <button type="button" className="secondary-button" onClick={() => void onRequestHistory(selectedSession.sessionId)}>
-              <RefreshCw size={16} /><span>重新同步</span>
-            </button>
-          </div>
-        )}
-        {selectedHistory?.status === "ready" && !selectedHistory.available && selectedHistory.messages.length === 0 && (
-          <div className="empty-timeline">
-            <h1>未找到本地历史记录</h1>
-            <p>这段会话仍可从下方继续，后续消息会正常同步。</p>
+        {!snapshot && (
+          <div className="session-catalog-loading">
+            <LoaderCircle className="is-spinning" size={20} />
+            <strong>正在同步主机状态</strong>
+            <span>已保存的会话会在连接恢复后自动出现。</span>
           </div>
         )}
-        {selectedHistory?.status === "ready" && selectedHistory.available && selectedHistory.messages.length === 0 && selectedTimeline.length === 0 && (
-          <div className="empty-timeline">
-            <h1>暂无可显示的历史消息</h1>
-            <p>工具调用和内部过程不会显示；可以从下方继续对话。</p>
+        {snapshot && grouped.length === 0 && (
+          <div className="session-catalog-loading">
+            <strong>{search ? "没有匹配的会话" : "暂未发现 Claude 会话"}</strong>
+            <span>{search ? "换一个关键词试试。" : "先在电脑端 Claude 打开一个项目，Bridge 会自动读取。"}</span>
           </div>
         )}
-        {!selectedHistory && selectedTimeline.length === 0 && (
-          <div className="empty-timeline">
-            <h1>{connection === "connected" && desktopOnline ? "正在读取历史消息" : "电脑离线"}</h1>
-            <p>{connection === "connected" && desktopOnline ? "正在从电脑端 Claude 同步这段会话。" : "电脑重新在线后会自动同步。"}</p>
-          </div>
-        )}
-        {selectedHistory?.messages.map((message) => <HistoryItem key={message.id} message={message} />)}
-        {selectedTimeline.map((entry) => <TimelineItem key={entry.header.id} entry={entry} />)}
-        <div ref={endRef} />
+        <div className="project-groups">
+          {grouped.map((group) => (
+            <section className="project-group" key={group.project?.projectId ?? group.sessions[0]!.projectId}>
+              <header>
+                <div><strong>{group.project?.name ?? group.sessions[0]!.projectName}</strong><span>{group.sessions.length} 个会话</span></div>
+                <small>{group.project?.cwd ?? group.sessions[0]!.cwd}</small>
+              </header>
+              <div className="session-rows">
+                {group.sessions.map((session) => (
+                  <button
+                    type="button"
+                    className="session-row-v2"
+                    data-session-id={session.sessionId}
+                    key={session.sessionId}
+                    onClick={() => void selectSession(session.sessionId)}
+                  >
+                    <span className={`session-state-dot ${session.turnState}`} />
+                    <span className="session-row-copy">
+                      <strong>{session.title}</strong>
+                      <small>{relativeTime(session.lastActivityAt)}{session.currentSummary ? ` · ${session.currentSummary}` : ""}</small>
+                    </span>
+                    <span className="session-row-status">{ownershipLabel(session)}</span>
+                    <ChevronRight size={18} />
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
       </section>
 
-      <form className="command-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-        <textarea
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-          placeholder="在 Bridge 后台续写这段会话"
-          rows={1}
-          aria-label="给 Claude 发指令"
-        />
-        <button type="submit" className="send-button" aria-label="发送" title="发送" disabled={!text.trim() || sending}>
-          <Send size={19} />
-        </button>
-      </form>
+      {createOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setCreateOpen(false);
+        }}>
+          <section className="create-session-dialog" role="dialog" aria-modal="true" aria-labelledby="create-session-title">
+            <header>
+              <h2 id="create-session-title">新建 Claude 会话</h2>
+              <IconButton label="关闭" onClick={() => setCreateOpen(false)}><X size={19} /></IconButton>
+            </header>
+            <label>
+              <span>项目</span>
+              <select value={createProjectId} onChange={(event) => setCreateProjectId(event.target.value)}>
+                {snapshot?.projects.map((project) => <option value={project.projectId} key={project.projectId}>{project.name}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>会话名称</span>
+              <input value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} placeholder="可留空" />
+            </label>
+            <div className="dialog-actions">
+              <button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>取消</button>
+              <button type="button" className="primary-button" disabled={!createProjectId || createBusy} onClick={() => void createSession()}>
+                {createBusy && <LoaderCircle className="is-spinning" size={16} />}创建会话
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

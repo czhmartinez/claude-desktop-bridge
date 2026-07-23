@@ -9,7 +9,7 @@ const DATABASE_NAME = "claude-bridge";
 const DATABASE_VERSION = 1;
 const LEGACY_IDENTITY_KEY = "current";
 const HOST_KEY_PREFIX = "host:";
-const MESSAGE_LIMIT = 250;
+const MESSAGE_LIMIT = 5_000;
 
 interface StoredCrypto {
   key: string;
