@@ -1,0 +1,148 @@
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import type { BridgeRole, EncryptedEnvelope } from "@bridge/protocol";
+
+export interface RoomRecord {
+  id: string;
+  authHash: string;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
+interface StoreSnapshot {
+  version: 1;
+  rooms: RoomRecord[];
+  messages: EncryptedEnvelope[];
+}
+
+export interface RelayStore {
+  load(): Promise<void>;
+  getRoom(id: string): RoomRecord | undefined;
+  createRoom(room: RoomRecord): Promise<boolean>;
+  touchRoom(id: string, at: number): Promise<void>;
+  enqueue(envelope: EncryptedEnvelope): Promise<void>;
+  listQueued(roomId: string, target: BridgeRole, now: number): EncryptedEnvelope[];
+  ack(roomId: string, target: BridgeRole, ids: string[]): Promise<number>;
+  prune(now: number): Promise<void>;
+  close(): Promise<void>;
+}
+
+export class MemoryRelayStore implements RelayStore {
+  protected readonly rooms = new Map<string, RoomRecord>();
+  protected readonly messages = new Map<string, EncryptedEnvelope>();
+  private readonly maxMessagesPerRoom: number;
+
+  constructor(maxMessagesPerRoom = 1_000) {
+    this.maxMessagesPerRoom = maxMessagesPerRoom;
+  }
+
+  async load(): Promise<void> {}
+
+  getRoom(id: string): RoomRecord | undefined {
+    return this.rooms.get(id);
+  }
+
+  async createRoom(room: RoomRecord): Promise<boolean> {
+    if (this.rooms.has(room.id)) return false;
+    this.rooms.set(room.id, room);
+    await this.changed();
+    return true;
+  }
+
+  async touchRoom(id: string, at: number): Promise<void> {
+    const room = this.rooms.get(id);
+    if (!room) return;
+    room.lastSeenAt = at;
+    await this.changed();
+  }
+
+  async enqueue(envelope: EncryptedEnvelope): Promise<void> {
+    this.messages.set(envelope.id, envelope);
+    const roomMessages = [...this.messages.values()]
+      .filter((message) => message.roomId === envelope.roomId)
+      .sort((a, b) => a.sentAt - b.sentAt);
+    const overflow = roomMessages.length - this.maxMessagesPerRoom;
+    if (overflow > 0) {
+      for (const message of roomMessages.slice(0, overflow)) this.messages.delete(message.id);
+    }
+    await this.changed();
+  }
+
+  listQueued(roomId: string, target: BridgeRole, now: number): EncryptedEnvelope[] {
+    return [...this.messages.values()]
+      .filter((message) => message.roomId === roomId && message.to === target && message.expiresAt > now)
+      .sort((a, b) => a.sentAt - b.sentAt);
+  }
+
+  async ack(roomId: string, target: BridgeRole, ids: string[]): Promise<number> {
+    let deleted = 0;
+    for (const id of ids) {
+      const message = this.messages.get(id);
+      if (message?.roomId === roomId && message.to === target) {
+        this.messages.delete(id);
+        deleted += 1;
+      }
+    }
+    if (deleted > 0) await this.changed();
+    return deleted;
+  }
+
+  async prune(now: number): Promise<void> {
+    let changed = false;
+    for (const [id, message] of this.messages) {
+      if (message.expiresAt <= now) {
+        this.messages.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) await this.changed();
+  }
+
+  async close(): Promise<void> {
+    await this.changed();
+  }
+
+  protected snapshot(): StoreSnapshot {
+    return {
+      version: 1,
+      rooms: [...this.rooms.values()],
+      messages: [...this.messages.values()],
+    };
+  }
+
+  protected async changed(): Promise<void> {}
+}
+
+export class JsonFileRelayStore extends MemoryRelayStore {
+  private readonly path: string;
+  private writeQueue: Promise<void> = Promise.resolve();
+
+  constructor(path: string, maxMessagesPerRoom = 1_000) {
+    super(maxMessagesPerRoom);
+    this.path = path;
+  }
+
+  override async load(): Promise<void> {
+    try {
+      const parsed = JSON.parse(await readFile(this.path, "utf8")) as Partial<StoreSnapshot>;
+      if (parsed.version !== 1 || !Array.isArray(parsed.rooms) || !Array.isArray(parsed.messages)) {
+        throw new Error("Unsupported relay store format");
+      }
+      for (const room of parsed.rooms) this.rooms.set(room.id, room);
+      for (const message of parsed.messages) this.messages.set(message.id, message);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+
+  protected override async changed(): Promise<void> {
+    const contents = JSON.stringify(this.snapshot());
+    this.writeQueue = this.writeQueue.then(async () => {
+      await mkdir(dirname(this.path), { recursive: true });
+      const temporaryPath = `${this.path}.${process.pid}.tmp`;
+      await writeFile(temporaryPath, contents, { encoding: "utf8", mode: 0o600 });
+      await rename(temporaryPath, this.path);
+    });
+    await this.writeQueue;
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@bridge/mobile",
+  "version": "0.1.12",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build -w @bridge/client && node scripts/prepare-web.mjs",
+    "clean": "rm -rf dist coverage",
+    "prepare:web": "npm run build -w @bridge/client && node scripts/prepare-web.mjs",
+    "prepare:from-client": "node scripts/prepare-web.mjs",
+    "add:android": "npm run prepare:web && cap add android",
+    "add:ios": "npm run prepare:web && cap add ios",
+    "open:android": "cap open android",
+    "open:ios": "cap open ios",
+    "sync": "npm run prepare:web && cap sync",
+    "apk:debug": "npm run sync && cd android && ./gradlew --no-daemon assembleDebug",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/barcode-scanner": "^3.1.0",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.2"
+  }
+}

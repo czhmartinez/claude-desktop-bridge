@@ -1,0 +1,15 @@
+{$BRIDGE_DOMAIN} {
+  encode zstd gzip
+
+  handle /ws* {
+    reverse_proxy relay:8788
+  }
+
+  handle /health {
+    reverse_proxy relay:8788
+  }
+
+  handle {
+    reverse_proxy web:80
+  }
+}

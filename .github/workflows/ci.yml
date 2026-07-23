@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  android-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm run build -w @bridge/protocol
+      - run: npm run sync -w @bridge/mobile
+      - run: ./gradlew assembleDebug
+        working-directory: apps/mobile/android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-Android-debug
+          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+
+  ios-simulator:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @bridge/protocol
+      - run: npm run sync -w @bridge/mobile
+      - name: Build unsigned simulator app
+        run: >-
+          xcodebuild
+          -project apps/mobile/ios/App/App.xcodeproj
+          -scheme App
+          -sdk iphonesimulator
+          -configuration Debug
+          -derivedDataPath apps/mobile/ios/DerivedData
+          CODE_SIGNING_ALLOWED=NO
+          build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-iOS-simulator
+          path: apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app

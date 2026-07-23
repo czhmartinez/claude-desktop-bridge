@@ -1,0 +1,19 @@
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(fileURLToPath(import.meta.url));
+
+export default defineConfig({
+  base: "./",
+  plugins: [react()],
+  resolve: {
+    alias: {
+      "@bridge/protocol": resolve(root, "../../packages/protocol/src/index.ts"),
+    },
+  },
+  server: { port: 5188, strictPort: true },
+  preview: { port: 4188, strictPort: true },
+  build: { target: "es2022", sourcemap: true },
+});

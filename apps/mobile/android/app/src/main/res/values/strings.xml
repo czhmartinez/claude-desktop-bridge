@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Bridge</string>
+    <string name="title_activity_main">Bridge</string>
+    <string name="package_name">com.localbridge.mobile</string>
+    <string name="custom_url_scheme">com.localbridge.mobile</string>
+</resources>

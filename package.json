@@ -1,0 +1,43 @@
+{
+  "name": "claude-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @bridge/protocol && npm run build -w @bridge/relay && npm run build -w @bridge/client && npm run build:bundle -w @bridge/desktop && npm run prepare:from-client -w @bridge/mobile",
+    "build:android:debug": "npm run apk:debug -w @bridge/mobile",
+    "dev": "concurrently -n relay,web -c green,cyan \"npm run dev -w @bridge/relay\" \"npm run dev -w @bridge/client\"",
+    "dev:desktop": "concurrently -k -n relay,web,desktop -c green,cyan,magenta \"npm run dev -w @bridge/relay\" \"npm run dev -w @bridge/client\" \"wait-on tcp:5188 tcp:8788 && npm run dev -w @bridge/desktop\"",
+    "lint": "npm run lint -ws --if-present",
+    "test": "npm run test -ws --if-present",
+    "test:coverage": "npm run test:coverage -ws --if-present",
+    "test:visual": "node scripts/visual-qa.mjs",
+    "test:mcp-e2e": "node scripts/mcp-e2e.mjs",
+    "test:android:installed": "node scripts/android-installed-e2e.mjs",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "verify": "npm run typecheck && npm test && npm run build",
+    "clean": "npm run clean -ws --if-present"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "overrides": {
+    "tar": "$tar",
+    "tmp": "$tmp"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "axe-core": "^4.10.3",
+    "concurrently": "^9.2.1",
+    "playwright-core": "^1.55.0",
+    "tar": "^7.5.20",
+    "tmp": "^0.2.7",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4",
+    "wait-on": "^8.0.4"
+  }
+}
