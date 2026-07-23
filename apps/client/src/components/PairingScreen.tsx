@@ -61,49 +61,15 @@ export function PairingScreen({
     }
   }
 
-  async function scan(): Promise<void> {
+  function scan(): void {
     setLocalError(undefined);
-    try {
-      const { Capacitor } = await import("@capacitor/core");
-      if (!Capacitor.isNativePlatform()) {
-        setWebScannerOpen(true);
-        return;
-      }
-      setScanning(true);
-      const {
-        CapacitorBarcodeScanner,
-        CapacitorBarcodeScannerCameraDirection,
-        CapacitorBarcodeScannerScanOrientation,
-        CapacitorBarcodeScannerTypeHint,
-      } = await import("@capacitor/barcode-scanner");
-      const result = await CapacitorBarcodeScanner.scanBarcode({
-        hint: CapacitorBarcodeScannerTypeHint.QR_CODE,
-        cameraDirection: CapacitorBarcodeScannerCameraDirection.BACK,
-        scanOrientation: CapacitorBarcodeScannerScanOrientation.ADAPTIVE,
-        scanInstructions: "将电脑上的配对二维码放入框内",
-        cancelButtonAccessibilityLabel: "取消扫描",
-        torchButtonOnAccessibilityLabel: "关闭手电筒",
-        torchButtonOffAccessibilityLabel: "打开手电筒",
-        web: { showCameraSelection: false, scannerFPS: 15 },
-      });
-      const pairing = readPairing(result.ScanResult);
-      if (!pairing) {
-        setLocalError("这不是 Bridge 配对二维码");
-        return;
-      }
-      await onPair(pairing);
-    } catch (scanError) {
-      const message = scanError instanceof Error ? scanError.message : String(scanError);
-      if (!/cancel|cancelled|canceled|取消/iu.test(message)) {
-        setLocalError("无法使用相机，请粘贴配对链接");
-      }
-    } finally {
-      setScanning(false);
-    }
+    setScanning(true);
+    setWebScannerOpen(true);
   }
 
   function acceptWebScan(value: string): void {
     setWebScannerOpen(false);
+    setScanning(false);
     const pairing = readPairing(value);
     if (!pairing) {
       setLocalError("这不是 Bridge 配对二维码");
@@ -127,7 +93,7 @@ export function PairingScreen({
         <div className="eyebrow">连接自己的电脑</div>
         <h1 id="pair-title">扫描电脑上的二维码</h1>
         <p>打开相机对准电脑屏幕，识别后会自动完成安全配对。</p>
-        <button type="button" className="primary-button full-button" onClick={() => void scan()} disabled={loading || scanning}>
+        <button type="button" className="primary-button full-button" onClick={scan} disabled={loading || scanning}>
           <ScanLine size={18} /><span>{scanning ? "正在扫描" : "扫描二维码"}</span>
         </button>
         <div className="pairing-divider"><span>或者粘贴配对链接</span></div>
@@ -154,9 +120,13 @@ export function PairingScreen({
       {webScannerOpen && (
         <WebQrScannerDialog
           onResult={acceptWebScan}
-          onCancel={() => setWebScannerOpen(false)}
+          onCancel={() => {
+            setWebScannerOpen(false);
+            setScanning(false);
+          }}
           onError={() => {
             setWebScannerOpen(false);
+            setScanning(false);
             setLocalError("无法使用相机，请粘贴配对链接");
           }}
         />

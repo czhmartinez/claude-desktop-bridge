@@ -1,6 +1,6 @@
 {
   "name": "@bridge/mobile",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
-    "@capacitor/barcode-scanner": "^3.1.0",
     "@capacitor/core": "^8.4.2",
     "@capacitor/ios": "^8.4.2",
     "@capacitor/push-notifications": "^8.1.2"

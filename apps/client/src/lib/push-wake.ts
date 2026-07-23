@@ -7,11 +7,12 @@ export interface NativePushRegistration {
 }
 
 const wakeListeners = new Set<() => void>();
+const pushEnabled = import.meta.env.VITE_BRIDGE_PUSH_ENABLED === "true";
 let listenersInstalled = false;
 let registrationPromise: Promise<NativePushRegistration | undefined> | undefined;
 
 async function installListeners(): Promise<void> {
-  if (listenersInstalled || !Capacitor.isNativePlatform()) return;
+  if (!pushEnabled || listenersInstalled || !Capacitor.isNativePlatform()) return;
   listenersInstalled = true;
   await PushNotifications.addListener("pushNotificationReceived", () => {
     for (const listener of wakeListeners) listener();
@@ -30,7 +31,7 @@ export function onNativePushWake(listener: () => void): () => void {
 export function nativePushRegistration(): Promise<NativePushRegistration | undefined> {
   if (registrationPromise) return registrationPromise;
   registrationPromise = (async () => {
-    if (!Capacitor.isNativePlatform()) return undefined;
+    if (!pushEnabled || !Capacitor.isNativePlatform()) return undefined;
     await installListeners();
     let permission = await PushNotifications.checkPermissions();
     if (permission.receive === "prompt") permission = await PushNotifications.requestPermissions();

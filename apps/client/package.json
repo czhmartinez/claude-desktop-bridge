@@ -1,6 +1,6 @@
 {
   "name": "@bridge/client",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,8 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@bridge/protocol": "0.2.2",
-    "@capacitor/barcode-scanner": "^3.1.0",
+    "@bridge/protocol": "0.2.3",
     "@capacitor/core": "^8.4.2",
     "@capacitor/push-notifications": "^8.1.2",
     "html5-qrcode": "^2.3.8",

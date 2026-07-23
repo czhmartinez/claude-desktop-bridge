@@ -46,12 +46,7 @@ export function WebQrScannerDialog({
         await scanner.start(
           { facingMode: "environment" },
           {
-            fps: 12,
-            aspectRatio: 1,
-            qrbox: (width, height) => {
-              const size = Math.floor(Math.min(width, height) * 0.72);
-              return { width: size, height: size };
-            },
+            fps: 10,
           },
           (value) => {
             if (!active || handled) return;
