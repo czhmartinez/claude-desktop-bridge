@@ -11,6 +11,7 @@ import type {
 import {
   AlertTriangle,
   ArrowLeft,
+  ChevronDown,
   ChevronRight,
   CircleStop,
   FilePenLine,
@@ -34,6 +35,7 @@ import type {
   SessionHistoryState,
 } from "../hooks/useMobileBridge.js";
 import type { Theme } from "../hooks/useTheme.js";
+import { expandProject, toggleCollapsedProject } from "../lib/project-groups.js";
 import { IconButton } from "./IconButton.js";
 import {
   SessionConfigurationDialog,
@@ -603,6 +605,7 @@ export function MobileWorkspace({
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [imageError, setImageError] = useState<string>();
   const [permissionOpen, setPermissionOpen] = useState(false);
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
@@ -640,6 +643,10 @@ export function MobileWorkspace({
   }, [items.length, selectedSessionId]);
 
   useEffect(() => {
+    if (search.trim()) setCollapsedProjectIds(new Set());
+  }, [search]);
+
+  useEffect(() => {
     if (
       !focusSessionId ||
       handledFocusRef.current === focusSessionId ||
@@ -674,6 +681,10 @@ export function MobileWorkspace({
     setConfigurationOpen(false);
     setSelectedSessionId(sessionId);
     await onOpenSession(sessionId);
+  }
+
+  function toggleProject(projectId: string): void {
+    setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
   }
 
   async function sendMessage(): Promise<void> {
@@ -720,6 +731,7 @@ export function MobileWorkspace({
       if (created) {
         setCreateOpen(false);
         setCreateTitle("");
+        setCollapsedProjectIds((current) => expandProject(current, created.projectId));
         await onRefresh();
         await selectSession(created.sessionId);
       }
@@ -990,33 +1002,52 @@ export function MobileWorkspace({
           </div>
         )}
         <div className="project-groups">
-          {grouped.map((group) => (
-            <section className="project-group" key={group.project?.projectId ?? group.sessions[0]!.projectId}>
-              <header>
-                <div><strong>{group.project?.name ?? group.sessions[0]!.projectName}</strong><span>{group.sessions.length} 个会话</span></div>
-                <small>{group.project?.cwd ?? group.sessions[0]!.cwd}</small>
-              </header>
-              <div className="session-rows">
-                {group.sessions.map((session) => (
-                  <button
-                    type="button"
-                    className="session-row-v2"
-                    data-session-id={session.sessionId}
-                    key={session.sessionId}
-                    onClick={() => void selectSession(session.sessionId)}
-                  >
-                    <span className={`session-state-dot ${session.turnState}`} />
-                    <span className="session-row-copy">
-                      <strong>{session.title}</strong>
-                      <small>{relativeTime(session.lastActivityAt)}{session.currentSummary ? ` · ${session.currentSummary}` : ""}</small>
+          {grouped.map((group) => {
+            const projectId = group.project?.projectId ?? group.sessions[0]!.projectId;
+            const expanded = !collapsedProjectIds.has(projectId);
+            const sessionsId = `mobile-project-${encodeURIComponent(projectId)}`;
+            return (
+              <section className={`project-group ${expanded ? "expanded" : "collapsed"}`} key={projectId}>
+                <button
+                  type="button"
+                  className="project-group-toggle"
+                  aria-expanded={expanded}
+                  aria-controls={sessionsId}
+                  onClick={() => toggleProject(projectId)}
+                >
+                  <span className="project-group-toggle-copy">
+                    <span>
+                      <strong>{group.project?.name ?? group.sessions[0]!.projectName}</strong>
+                      <b>{group.sessions.length} 个会话</b>
                     </span>
-                    <span className="session-row-status">{ownershipLabel(session)}</span>
-                    <ChevronRight size={18} />
-                  </button>
-                ))}
-              </div>
-            </section>
-          ))}
+                    <small>{group.project?.cwd ?? group.sessions[0]!.cwd}</small>
+                  </span>
+                  {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                </button>
+                {expanded && (
+                  <div className="session-rows" id={sessionsId}>
+                    {group.sessions.map((session) => (
+                      <button
+                        type="button"
+                        className="session-row-v2"
+                        data-session-id={session.sessionId}
+                        key={session.sessionId}
+                        onClick={() => void selectSession(session.sessionId)}
+                      >
+                        <span className={`session-state-dot ${session.turnState}`} />
+                        <span className="session-row-copy">
+                          <strong>{session.title}</strong>
+                          <small>{relativeTime(session.lastActivityAt)}{session.currentSummary ? ` · ${session.currentSummary}` : ""}</small>
+                        </span>
+                        <span className="session-row-status">{ownershipLabel(session)}</span>
+                        <ChevronRight size={18} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
       </section>
 

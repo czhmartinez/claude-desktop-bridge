@@ -9,6 +9,8 @@ import type {
 } from "@bridge/protocol";
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronRight,
   CircleStop,
   Download,
   ImagePlus,
@@ -30,6 +32,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "../hooks/useTheme.js";
 import type { SessionHistoryState } from "../hooks/useMobileBridge.js";
+import { expandProject, toggleCollapsedProject } from "../lib/project-groups.js";
 import type { LocalBridgeRequest } from "../runtime/desktop.js";
 import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
@@ -98,6 +101,7 @@ function DesktopSessions({
   const [sending, setSending] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
   const [title, setTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -211,7 +215,12 @@ function DesktopSessions({
     }));
     setCreateOpen(false);
     setTitle("");
+    setCollapsedProjectIds((current) => expandProject(current, result.session.projectId));
     setSelectedId(result.session.sessionId);
+  }
+
+  function toggleProject(projectId: string): void {
+    setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
   }
 
   async function addImages(files: FileList | null): Promise<void> {
@@ -258,26 +267,41 @@ function DesktopSessions({
           <IconButton label="新建会话" onClick={() => setCreateOpen(true)} disabled={!snapshot.projects.length}><Plus size={18} /></IconButton>
         </div>
         <div className="desktop-project-list">
-          {grouped.map(([groupProjectId, sessions]) => (
-            <section key={groupProjectId}>
-              <header>
-                <strong>{snapshot.projects.find((project) => project.projectId === groupProjectId)?.name ?? sessions[0]!.projectName}</strong>
-                <span>{sessions.length}</span>
-              </header>
-              {sessions.map((session) => (
+          {grouped.map(([groupProjectId, sessions]) => {
+            const expanded = !collapsedProjectIds.has(groupProjectId);
+            const sessionsId = `desktop-project-${encodeURIComponent(groupProjectId)}`;
+            return (
+              <section className={expanded ? "expanded" : "collapsed"} key={groupProjectId}>
                 <button
                   type="button"
-                  className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
-                  onClick={() => setSelectedId(session.sessionId)}
-                  key={session.sessionId}
+                  className="desktop-project-toggle"
+                  aria-expanded={expanded}
+                  aria-controls={sessionsId}
+                  onClick={() => toggleProject(groupProjectId)}
                 >
-                  <span className={`session-state-dot ${session.turnState}`} />
-                  <span><strong>{session.title}</strong><small>{sessionState(session)}</small></span>
-                  {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
+                  {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <strong>{snapshot.projects.find((project) => project.projectId === groupProjectId)?.name ?? sessions[0]!.projectName}</strong>
+                  <span>{sessions.length}</span>
                 </button>
-              ))}
-            </section>
-          ))}
+                {expanded && (
+                  <div className="desktop-project-sessions" id={sessionsId}>
+                    {sessions.map((session) => (
+                      <button
+                        type="button"
+                        className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
+                        onClick={() => setSelectedId(session.sessionId)}
+                        key={session.sessionId}
+                      >
+                        <span className={`session-state-dot ${session.turnState}`} />
+                        <span><strong>{session.title}</strong><small>{sessionState(session)}</small></span>
+                        {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })}
           {snapshot.sessions.length === 0 && (
             <div className="desktop-sidebar-empty">等待发现 Claude Desktop 会话</div>
           )}

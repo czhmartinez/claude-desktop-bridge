@@ -2062,40 +2062,66 @@ button:disabled {
   min-width: 0;
 }
 
-.project-group > header {
+.project-group-toggle {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  width: 100%;
+  min-height: 48px;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
   gap: 10px;
-  margin-bottom: 8px;
-  padding: 0 3px;
+  margin: 0 0 8px;
+  padding: 5px 4px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
 
-.project-group > header div {
+.project-group-toggle:hover {
+  background: var(--surface-2);
+}
+
+.project-group-toggle-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.project-group-toggle-copy > span {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 8px;
 }
 
-.project-group > header strong {
+.project-group-toggle-copy strong {
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.project-group > header span,
-.project-group > header small {
+.project-group-toggle-copy b,
+.project-group-toggle-copy small {
   color: var(--faint);
   font-size: 10px;
+  font-weight: 500;
 }
 
-.project-group > header small {
-  max-width: 42vw;
+.project-group-toggle-copy small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-group-toggle > svg {
+  color: var(--faint);
+}
+
+.project-group.collapsed .project-group-toggle {
+  margin-bottom: 0;
 }
 
 .session-rows {
@@ -2968,23 +2994,42 @@ button:disabled {
   margin-bottom: 18px;
 }
 
-.desktop-project-list > section > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 5px 7px;
-  color: var(--muted);
+.desktop-project-list > section.collapsed {
+  margin-bottom: 8px;
 }
 
-.desktop-project-list > section > header strong {
+.desktop-project-toggle {
+  display: grid;
+  width: 100%;
+  min-height: 30px;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.desktop-project-toggle:hover {
+  background: var(--surface-2);
+}
+
+.desktop-project-toggle > svg {
+  color: var(--faint);
+}
+
+.desktop-project-toggle strong {
   overflow: hidden;
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.desktop-project-list > section > header span {
+.desktop-project-toggle span {
   font-size: 9px;
 }
 
