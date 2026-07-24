@@ -8,6 +8,7 @@ import { claudeRuntimePaths, connectorPaths, defaultDesktopName, networkReachabl
 import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
+import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PAIRING_BASE__: string;
@@ -58,6 +59,7 @@ async function desktopMain(): Promise<void> {
     sessionsPath: join(userDataPath, "sessions-v2.json"),
     queuePath: join(userDataPath, "turn-queue-v2.json"),
   });
+  const claudeDesktop = new ClaudeDesktopLifecycle();
   const controller = new DesktopController(
     app,
     repository,
@@ -65,6 +67,7 @@ async function desktopMain(): Promise<void> {
     CONFIGURED_RELAY,
     broker,
     eventLog,
+    claudeDesktop,
   );
 
   let mainWindow: BrowserWindow | undefined;
@@ -97,6 +100,35 @@ async function desktopMain(): Promise<void> {
   handle("bridge:create-pairing", () => controller.createPairing());
   handle("bridge:revoke-device", (deviceId: string) => controller.revokeDevice(deviceId));
   handle("bridge:set-launch-at-login", (enabled: boolean) => controller.setLaunchAtLogin(Boolean(enabled)));
+  handle("bridge:launch-claude-desktop", () => controller.launchClaudeDesktop());
+  handle("bridge:quit-claude-desktop", async () => {
+    const snapshot = await controller.snapshot();
+    const desktopTurnRunning = snapshot.sessions.some((session) => (
+      session.turnState === "running" &&
+      (
+        session.ownership === "DESKTOP_OBSERVED" ||
+        session.ownership === "DESKTOP_MANAGED_RUNNING" ||
+        session.ownership === "OWNERSHIP_CONFLICT"
+      )
+    ));
+    if (desktopTurnRunning) {
+      const options: Electron.MessageBoxOptions = {
+        type: "warning",
+        title: "退出 Claude Desktop",
+        message: "Claude Desktop 仍有会话正在运行",
+        detail: "现在退出会中断电脑端正在执行的内容。由 Bridge 接管的远程任务不会受到影响。",
+        buttons: ["仍然退出", "取消"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      };
+      const result = mainWindow
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
+      if (result.response !== 0) return snapshot;
+    }
+    return controller.quitClaudeDesktop();
+  });
   handle("bridge:request", (request: LocalBridgeRequest) => controller.dispatchLocal(request));
   handle("bridge:export-diagnostics", async () => {
     const result = await dialog.showSaveDialog({

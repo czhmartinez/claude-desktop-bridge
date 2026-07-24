@@ -208,6 +208,13 @@ export interface BridgeRuntimeStatus {
   };
 }
 
+export interface ClaudeDesktopAppStatus {
+  state: "running" | "stopped" | "unavailable";
+  detail: string;
+  canLaunch: boolean;
+  canQuit: boolean;
+}
+
 export interface BridgeHostSnapshot {
   host: {
     hostId: string;
@@ -229,6 +236,7 @@ export interface DesktopControlSnapshot extends BridgeHostSnapshot {
   connection: "idle" | "connecting" | "connected" | "reconnecting" | "closed";
   launchAtLogin: boolean;
   managedDesktopEnabled: boolean;
+  claudeDesktop: ClaudeDesktopAppStatus;
   pairingUrl?: string;
   pairingExpiresAt?: number;
 }

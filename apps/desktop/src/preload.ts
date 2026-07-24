@@ -11,6 +11,12 @@ contextBridge.exposeInMainWorld("bridgeDesktop", {
   setLaunchAtLogin: (enabled: boolean) => (
     ipcRenderer.invoke("bridge:set-launch-at-login", enabled) as Promise<DesktopControlSnapshot>
   ),
+  launchClaudeDesktop: () => (
+    ipcRenderer.invoke("bridge:launch-claude-desktop") as Promise<DesktopControlSnapshot>
+  ),
+  quitClaudeDesktop: () => (
+    ipcRenderer.invoke("bridge:quit-claude-desktop") as Promise<DesktopControlSnapshot>
+  ),
   request: (request: LocalBridgeRequest) => (
     ipcRenderer.invoke("bridge:request", request) as Promise<BridgeResponse>
   ),

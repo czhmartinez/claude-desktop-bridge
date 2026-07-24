@@ -26,6 +26,7 @@ import {
 } from "./config.js";
 import type { SessionBroker } from "./session-broker.js";
 import type { SessionEventLog } from "./session-event-log.js";
+import type { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
 
 export interface LocalBridgeRequest {
@@ -154,6 +155,7 @@ export class DesktopController extends EventEmitter {
     private readonly relayConnectUrl: string,
     private readonly broker: SessionBroker,
     private readonly eventLog: SessionEventLog,
+    private readonly claudeDesktop: ClaudeDesktopLifecycle,
   ) {
     super();
   }
@@ -221,6 +223,7 @@ export class DesktopController extends EventEmitter {
       connection: this.connection,
       launchAtLogin: this.config.launchAtLogin,
       managedDesktopEnabled: this.config.managedDesktopEnabled,
+      claudeDesktop: await this.claudeDesktop.status(),
       ...(currentPairing ? {
         pairingUrl: buildPairingUrl(this.pairingBaseUrl, pairingForDevice(this.config, currentPairing)),
         pairingExpiresAt: currentPairing.expiresAt,
@@ -278,6 +281,16 @@ export class DesktopController extends EventEmitter {
     await setLaunchAtLogin(this.app, enabled);
     this.config.launchAtLogin = enabled;
     await this.repository.save(this.config);
+    return this.publish();
+  }
+
+  async launchClaudeDesktop(): Promise<DesktopControlSnapshot> {
+    await this.claudeDesktop.launch();
+    return this.publish();
+  }
+
+  async quitClaudeDesktop(): Promise<DesktopControlSnapshot> {
+    await this.claudeDesktop.quit();
     return this.publish();
   }
 

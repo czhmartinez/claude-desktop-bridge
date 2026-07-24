@@ -3399,6 +3399,39 @@ button:disabled {
   color: var(--text);
 }
 
+.desktop-app-control > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.desktop-app-control > span strong {
+  font-size: 12px;
+}
+
+.desktop-app-control > span small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.desktop-app-control > span .desktop-app-error {
+  color: var(--danger);
+}
+
+.desktop-app-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.desktop-app-actions .secondary-button,
+.desktop-app-actions .danger-button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 11px;
+}
+
 @media (max-width: 720px) {
   .conversation-item {
     width: 94%;
