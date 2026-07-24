@@ -27,9 +27,9 @@ export interface SendOptions {
   ttlMs?: number;
 }
 
-type MessageListener = (message: DecryptedEnvelope, encrypted: EncryptedEnvelope) => void;
-type StateListener = (state: SocketState) => void;
-type FrameListener = (frame: ServerFrame) => void;
+export type MessageListener = (message: DecryptedEnvelope, encrypted: EncryptedEnvelope) => void;
+export type StateListener = (state: SocketState) => void;
+export type FrameListener = (frame: ServerFrame) => void;
 
 export class BridgeSocket {
   private readonly crypto: BridgeCrypto;
@@ -144,6 +144,11 @@ export class BridgeSocket {
       throw new Error("Bridge is not connected");
     }
     this.ws.send(JSON.stringify({ type: "push-register", platform, pushToken }));
+  }
+
+  ping(at = Date.now()): void {
+    if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) return;
+    this.ws.send(JSON.stringify({ type: "ping", at }));
   }
 
   onMessage(listener: MessageListener): () => void {

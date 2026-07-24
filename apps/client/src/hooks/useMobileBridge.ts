@@ -1,6 +1,6 @@
 import {
   BridgeCrypto,
-  BridgeSocket,
+  RelayTransport,
   randomId,
   type BridgeAttachment,
   type BridgeDeliveryState,
@@ -14,6 +14,7 @@ import {
   type BridgeResponse,
   type BridgeSessionConfiguration,
   type BridgeSessionInfo,
+  type BridgeTransport,
   type ClaudeDesktopAppStatus,
   type DecryptedEnvelope,
   type EncryptedEnvelope,
@@ -492,7 +493,7 @@ function clientMetadata(): Record<string, string> {
 }
 
 async function revokeRemoteDevice(crypto: BridgeCrypto): Promise<void> {
-  const socket = new BridgeSocket({ crypto, role: "mobile", reconnect: false });
+  const socket = new RelayTransport({ crypto, role: "mobile", reconnect: false });
   await new Promise<void>((resolve) => {
     let finished = false;
     const done = () => {
@@ -535,7 +536,7 @@ export function useMobileBridge() {
   stateRef.current = state;
   const cryptoRef = useRef<BridgeCrypto | undefined>(undefined);
   const cryptoByRoomRef = useRef(new Map<string, BridgeCrypto>());
-  const socketRef = useRef<BridgeSocket | undefined>(undefined);
+  const socketRef = useRef<BridgeTransport | undefined>(undefined);
   const connectionTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingResponsesRef = useRef(new Map<string, PendingResponse>());
   const envelopeRequestsRef = useRef(new Map<string, string>());
@@ -807,7 +808,7 @@ export function useMobileBridge() {
       return;
     }
 
-    const socket = new BridgeSocket({ crypto, role: "mobile" });
+    const socket = new RelayTransport({ crypto, role: "mobile" });
     socketRef.current = socket;
     let bootstrapPending = bootstrap;
     const isCurrent = () => socketRef.current === socket;

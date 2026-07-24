@@ -1,5 +1,7 @@
 export * from "./crypto.js";
 export * from "./encoding.js";
+export * from "./relay-transport.js";
 export * from "./socket.js";
+export * from "./transport.js";
 export * from "./types.js";
 export * from "./validation.js";

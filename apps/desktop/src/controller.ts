@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   BridgeCrypto,
-  BridgeSocket,
+  RelayTransport,
   buildPairingUrl,
   type BridgeAttachment,
   type BridgeDeviceInfo,
@@ -11,6 +11,7 @@ import {
   type BridgePayload,
   type BridgeRequest,
   type BridgeResponse,
+  type BridgeTransport,
   type DesktopControlSnapshot,
   type DecryptedEnvelope,
   type EncryptedEnvelope,
@@ -139,7 +140,7 @@ function errorResponse(requestId: string, error: unknown): BridgeResponse {
 export class DesktopController extends EventEmitter {
   private config: LoadedDesktopConfig | undefined;
   private hostCrypto: BridgeCrypto | undefined;
-  private socket: BridgeSocket | undefined;
+  private socket: BridgeTransport | undefined;
   private connection: SocketState = "idle";
   private currentPairingDeviceId: string | undefined;
   private readonly deviceCryptos = new Map<string, BridgeCrypto>();
@@ -365,7 +366,7 @@ export class DesktopController extends EventEmitter {
 
   private async connect(): Promise<void> {
     if (!this.config || !this.hostCrypto) return;
-    const socket = new BridgeSocket({
+    const socket = new RelayTransport({
       crypto: this.hostCrypto,
       role: "desktop",
       createRoom: true,
