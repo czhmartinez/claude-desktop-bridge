@@ -1,5 +1,6 @@
 export const PROTOCOL_VERSION = 2 as const;
 export const PAIRING_SCHEMA_VERSION = 3 as const;
+export const ENVELOPE_CHUNK_BYTES = 384 * 1024;
 
 export type BridgeRole = "desktop" | "mobile" | "agent";
 export type MessageTarget = BridgeRole;
@@ -235,6 +236,15 @@ export interface BridgeRuntimeStatus {
   };
 }
 
+export interface BridgeConnectionStatus {
+  path: BridgeEndpointKind;
+  state: "idle" | "connecting" | "connected" | "reconnecting" | "closed";
+  rttMs?: number;
+  lastConnectedAt?: number;
+  pendingCount: number;
+  relayHealthy: boolean;
+}
+
 export interface ClaudeDesktopAppStatus {
   state: "running" | "stopped" | "unavailable";
   detail: string;
@@ -255,6 +265,7 @@ export interface BridgeHostSnapshot {
   sessions: BridgeSessionInfo[];
   devices: BridgeDeviceInfo[];
   runtime: BridgeRuntimeStatus;
+  transport?: BridgeConnectionStatus;
   claudeDesktop?: ClaudeDesktopAppStatus;
   permissions: BridgePermissionInfo[];
   latestSeq: number;
@@ -384,6 +395,26 @@ export interface EncryptedEnvelope extends EnvelopeHeader {
   ciphertext: string;
 }
 
+export interface EncryptedEnvelopeChunk {
+  version: typeof PROTOCOL_VERSION;
+  transferId: string;
+  roomId: string;
+  from: BridgeRole;
+  fromDeviceId: string;
+  to: MessageTarget;
+  toDeviceId?: string;
+  sentAt: number;
+  expiresAt: number;
+  index: number;
+  total: number;
+  sha256: string;
+  data: string;
+}
+
+export type EnvelopeChunkManifest = Omit<EncryptedEnvelopeChunk, "index" | "data">;
+
+export type RelayEnvelopeItem = EncryptedEnvelope | EncryptedEnvelopeChunk;
+
 export interface ClientHello {
   type: "hello";
   version: typeof PROTOCOL_VERSION;
@@ -398,6 +429,16 @@ export interface ClientHello {
 export interface ClientEnvelopeMessage {
   type: "envelope";
   envelope: EncryptedEnvelope;
+}
+
+export interface ClientEnvelopeChunkMessage {
+  type: "envelope-chunk";
+  chunk: EncryptedEnvelopeChunk;
+}
+
+export interface ClientChunkQuery {
+  type: "chunk-query";
+  manifest: EnvelopeChunkManifest;
 }
 
 export interface ClientAck {
@@ -433,6 +474,8 @@ export interface ClientPushRegister {
 export type ClientFrame =
   | ClientHello
   | ClientEnvelopeMessage
+  | ClientEnvelopeChunkMessage
+  | ClientChunkQuery
   | ClientAck
   | ClientPing
   | ClientDeviceRegister
@@ -455,6 +498,17 @@ export interface ServerReady {
 export interface ServerEnvelopeMessage {
   type: "envelope";
   envelope: EncryptedEnvelope;
+}
+
+export interface ServerEnvelopeChunkMessage {
+  type: "envelope-chunk";
+  chunk: EncryptedEnvelopeChunk;
+}
+
+export interface ServerChunkMissing {
+  type: "chunk-missing";
+  transferId: string;
+  indexes: number[];
 }
 
 export interface ServerPresence {
@@ -500,6 +554,8 @@ export interface ServerPong {
 export type ServerFrame =
   | ServerReady
   | ServerEnvelopeMessage
+  | ServerEnvelopeChunkMessage
+  | ServerChunkMissing
   | ServerPresence
   | ServerDeviceRegistered
   | ServerDeviceRevoked

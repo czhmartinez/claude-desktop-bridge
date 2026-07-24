@@ -19,7 +19,7 @@ import {
 class FakeTransport implements BridgeTransport {
   state: SocketState = "idle";
   rttMs: number | undefined;
-  readonly sendEnvelope = vi.fn();
+  readonly sendEnvelope = vi.fn(async () => undefined);
   readonly ack = vi.fn();
   readonly registerDevice = vi.fn();
   readonly revokeDevice = vi.fn();

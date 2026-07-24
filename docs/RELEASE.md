@@ -1,4 +1,4 @@
-# Bridge 0.2 发布手册
+# Bridge 0.3 发布手册
 
 ## 1. 发布闸门
 
@@ -20,10 +20,12 @@ cp .env.example .env
 # 修改域名、Origin 和推送凭据
 docker compose up -d --build
 curl https://你的域名/health
+curl https://你的域名/ready
 ```
 
 生产入口同时承载静态客户端与 `/ws`，必须使用固定 HTTPS/WSS。自托管属于高级
-选项；面向普通用户的安装包应写入 Bridge 托管 Relay。
+选项；面向普通用户的安装包应写入 Bridge 托管 Relay。Relay 数据位于
+`/data/bridge-relay.db`，WAL 和每日七份备份都必须位于持久卷。
 
 ## 3. 推送配置
 
@@ -51,7 +53,9 @@ BRIDGE_APNS_PRODUCTION=1
 ## 4. 构建桌面端
 
 ```bash
-BRIDGE_RELAY_URL=wss://你的域名/ws \
+BRIDGE_RELAY_URL=ws://127.0.0.1:8788/ws \
+BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
+BRIDGE_SERVICE_ORIGIN=https://你的域名 \
 BRIDGE_PAIRING_BASE_URL=https://你的域名 \
 npm run make -w @bridge/desktop
 ```
@@ -74,6 +78,9 @@ Linux 产出 ZIP/DEB/RPM。没有 Developer ID、Authenticode 或仓库签名时
 ## 5. 构建移动端
 
 ```bash
+VITE_BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
+VITE_BRIDGE_SERVICE_ORIGIN=https://你的域名 \
+VITE_BRIDGE_PUSH_ENABLED=true \
 npm run build:android:debug
 npm run sync -w @bridge/mobile
 ```

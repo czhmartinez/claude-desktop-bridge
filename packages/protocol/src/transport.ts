@@ -28,7 +28,7 @@ export interface BridgeTransport {
   connect(): void;
   close(): void;
   send(payload: BridgePayload, to: MessageTarget, options?: SendOptions): Promise<string>;
-  sendEnvelope(envelope: EncryptedEnvelope): void;
+  sendEnvelope(envelope: EncryptedEnvelope): Promise<void>;
   ack(ids: string[]): void;
   registerDevice(
     deviceId: string,
@@ -125,8 +125,8 @@ export class TransportRouter implements BridgeTransport {
     return this.active?.send(payload, to, options) ?? unavailable();
   }
 
-  sendEnvelope(envelope: EncryptedEnvelope): void {
-    (this.active ?? unavailable()).sendEnvelope(envelope);
+  sendEnvelope(envelope: EncryptedEnvelope): Promise<void> {
+    return (this.active ?? unavailable()).sendEnvelope(envelope);
   }
 
   ack(ids: string[]): void {

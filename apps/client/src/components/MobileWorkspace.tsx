@@ -7,6 +7,7 @@ import type {
   BridgePermissionInfo,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
+  BridgeTransportMetrics,
   ClaudeDesktopAppStatus,
   SocketState,
 } from "@bridge/protocol";
@@ -71,6 +72,20 @@ function relativeTime(value: number): string {
   if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
   if (elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(value);
+}
+
+function mobileConnectionLabel(
+  connection: SocketState,
+  desktopOnline: boolean,
+  metrics: BridgeTransportMetrics | undefined,
+  version: string | undefined,
+): string {
+  if (version?.startsWith("0.2.")) return "需要升级";
+  if (connection === "connecting" || connection === "reconnecting") return "正在重连";
+  if (connection !== "connected" || !desktopOnline) return "主机离线";
+  if (metrics?.path === "direct") return "直连";
+  if (metrics?.path === "public-relay") return "安全中继";
+  return "局域网连接";
 }
 
 function ownershipLabel(session: BridgeSessionInfo): string {
@@ -552,6 +567,8 @@ export function MobileWorkspace({
   events,
   localTurns,
   connectionIssue,
+  transportMetrics,
+  pendingOutbound,
   theme,
   onToggleTheme,
   onOpenSession,
@@ -579,6 +596,8 @@ export function MobileWorkspace({
   events: BridgeEvent[];
   localTurns: LocalTurn[];
   connectionIssue?: MobileConnectionIssue | undefined;
+  transportMetrics?: BridgeTransportMetrics | undefined;
+  pendingOutbound: number;
   theme: Theme;
   onToggleTheme(): void;
   onOpenSession(sessionId: string): Promise<void>;
@@ -988,6 +1007,17 @@ export function MobileWorkspace({
           {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
         </IconButton>
       </header>
+
+      <section className={`mobile-transport-band ${connection === "connected" && desktopOnline ? "online" : ""}`}>
+        <span>
+          <i aria-hidden="true" />
+          <strong>{mobileConnectionLabel(connection, desktopOnline, transportMetrics, snapshot?.host.version)}</strong>
+        </span>
+        <small>
+          {transportMetrics?.rttMs !== undefined ? `${Math.round(transportMetrics.rttMs)} ms` : "等待链路"}
+          {" · "}{pendingOutbound} 条待发送
+        </small>
+      </section>
 
       <section className="host-detail">
         <div className="host-detail-heading">

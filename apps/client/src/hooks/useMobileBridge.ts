@@ -21,6 +21,8 @@ import {
   type BridgeSessionInfo,
   type BridgeTransport,
   type BridgeTransportCandidate,
+  type BridgeTransportMetrics,
+  type BridgeTransportPath,
   type ClaudeDesktopAppStatus,
   type DecryptedEnvelope,
   type EncryptedEnvelope,
@@ -41,6 +43,7 @@ export interface PairedHost {
   lastSeenAt?: number;
   activeTurns: number;
   attentionSessionId?: string;
+  path: BridgeTransportPath;
 }
 
 export interface MobileConnectionIssue {
@@ -87,6 +90,8 @@ interface MobileBridgeState {
   localTurns: LocalTurn[];
   latestSeq: number;
   connectionIssue: MobileConnectionIssue | undefined;
+  transportMetrics: BridgeTransportMetrics | undefined;
+  pendingOutbound: number;
   error: string | undefined;
 }
 
@@ -105,6 +110,8 @@ const INITIAL_STATE: MobileBridgeState = {
   localTurns: [],
   latestSeq: 0,
   connectionIssue: undefined,
+  transportMetrics: undefined,
+  pendingOutbound: 0,
   error: undefined,
 };
 
@@ -153,13 +160,16 @@ function hostSummary(
   snapshot?: BridgeHostSnapshot,
   permissions: BridgePermissionInfo[] = snapshot?.permissions ?? [],
 ): PairedHost {
+  const activeEndpoint = host.relayEndpoints.find((endpoint) => endpoint.id === host.activeEndpoint)
+    ?? host.relayEndpoints[0];
   return {
     roomId: host.roomId,
     desktopName: host.desktopName,
     relayUrl: host.relayUrl,
-    needsRepair: Capacitor.isNativePlatform() && isLoopbackRelay(host.relayUrl),
+    needsRepair: Capacitor.isNativePlatform() && host.relayEndpoints.every((endpoint) => isLoopbackRelay(endpoint.url)),
     status: hostStatus(snapshot, permissions),
     activeTurns: snapshot?.runtime.activeTurns ?? 0,
+    path: activeEndpoint?.kind ?? "lan-relay",
     ...(snapshot ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
     ...(permissions[0] ? { attentionSessionId: permissions[0].sessionId } : {}),
   };
@@ -663,6 +673,7 @@ export function useMobileBridge() {
     const envelope = await crypto.encrypt(request, "mobile", "desktop");
     envelopeRequestsRef.current.set(envelope.id, request.requestId);
     await Promise.all([bridgeVault.saveMessage(envelope), bridgeVault.addOutbox(envelope)]);
+    setState((current) => ({ ...current, pendingOutbound: current.pendingOutbound + 1 }));
     if (method === "turn.start" || method === "turn.steer") {
       const attachments = Array.isArray(params.attachments)
         ? params.attachments.flatMap((attachment) => {
@@ -698,7 +709,7 @@ export function useMobileBridge() {
       pendingResponsesRef.current.set(request.requestId, { resolve, timer });
     }) : undefined;
     try {
-      socket.sendEnvelope(envelope);
+      await socket.sendEnvelope(envelope);
     } catch (error) {
       const pending = pendingResponsesRef.current.get(request.requestId);
       if (pending) clearTimeout(pending.timer);
@@ -793,10 +804,13 @@ export function useMobileBridge() {
       localTurns: [],
       latestSeq: 0,
       connectionIssue: undefined,
+      transportMetrics: undefined,
+      pendingOutbound: 0,
       error: undefined,
     }));
 
     const stored = await readStoredHostState(crypto);
+    const pendingOutbound = (await bridgeVault.listOutbox(roomId)).length;
     if (cryptoRef.current !== crypto) return;
     setState((current) => ({
       ...current,
@@ -805,6 +819,7 @@ export function useMobileBridge() {
       events: stored.events,
       localTurns: stored.localTurns,
       latestSeq: stored.latestSeq,
+      pendingOutbound,
     }));
     if (stored.snapshot) updateHostCache(roomId, stored.snapshot, stored.permissions);
 
@@ -865,7 +880,7 @@ export function useMobileBridge() {
               if (decrypted.payload.kind === "request") {
                 envelopeRequestsRef.current.set(envelope.id, decrypted.payload.requestId);
               }
-              socket.sendEnvelope(envelope);
+              await socket.sendEnvelope(envelope);
             } catch {
               break;
             }
@@ -880,6 +895,16 @@ export function useMobileBridge() {
         })();
       }
     });
+    socket.onMetrics((metrics) => {
+      if (!isCurrent()) return;
+      setState((current) => ({
+        ...current,
+        transportMetrics: metrics,
+        hosts: current.hosts.map((host) => host.roomId === roomId
+          ? { ...host, path: metrics.path }
+          : host),
+      }));
+    });
     socket.onFrame((frame) => {
       if (!isCurrent()) return;
       if (frame.type === "ready") {
@@ -893,7 +918,13 @@ export function useMobileBridge() {
       }
       if (frame.type === "stored" || frame.type === "acknowledged") {
         const delivery: BridgeDeliveryState = frame.type === "stored" ? "relay-received" : "host-received";
-        void Promise.all(frame.ids.map((id) => bridgeVault.removeOutbox(id)));
+        void Promise.all(frame.ids.map((id) => bridgeVault.removeOutbox(id)))
+          .then(() => bridgeVault.listOutbox(roomId))
+          .then((outbox) => {
+            if (!isCurrent()) return;
+            setState((current) => ({ ...current, pendingOutbound: outbox.length }));
+          })
+          .catch(() => undefined);
         const requestIds = frame.ids
           .map((id) => envelopeRequestsRef.current.get(id))
           .filter((value): value is string => Boolean(value));
@@ -993,6 +1024,25 @@ export function useMobileBridge() {
     socketRef.current?.connect();
     void resumeEvents();
   }), [resumeEvents]);
+
+  useEffect(() => {
+    const reconnect = () => {
+      if (document.visibilityState === "hidden") return;
+      const socket = socketRef.current;
+      if (!socket) return;
+      socket.connect();
+      if (socket.state === "connected") void resumeEvents();
+    };
+    const visibilityChanged = () => {
+      if (document.visibilityState === "visible") reconnect();
+    };
+    window.addEventListener("online", reconnect);
+    document.addEventListener("visibilitychange", visibilityChanged);
+    return () => {
+      window.removeEventListener("online", reconnect);
+      document.removeEventListener("visibilitychange", visibilityChanged);
+    };
+  }, [resumeEvents]);
 
   const pair = useCallback(async (pairing: PairingBundle): Promise<boolean> => {
     setState((current) => ({ ...current, loading: true, error: undefined }));
@@ -1367,6 +1417,8 @@ export function useMobileBridge() {
         localTurns: [],
         latestSeq: 0,
         connectionIssue: undefined,
+        transportMetrics: undefined,
+        pendingOutbound: 0,
       } : {}),
     }));
   }, [sendRequest]);

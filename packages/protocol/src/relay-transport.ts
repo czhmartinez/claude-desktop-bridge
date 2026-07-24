@@ -21,6 +21,7 @@ import type {
 } from "./transport.js";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
+const HEARTBEAT_TIMEOUT_MS = 45_000;
 
 export interface RelayTransportOptions extends BridgeSocketOptions {
   path?: Exclude<BridgeTransportPath, "direct">;
@@ -41,6 +42,7 @@ export class RelayTransport implements BridgeTransport {
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private rttValue: number | undefined;
   private lastConnectedAt: number | undefined;
+  private lastPongAt: number | undefined;
   private lastError: string | undefined;
   private errorListeners = new Set<ErrorListener>();
   private metricsListeners = new Set<MetricsListener>();
@@ -53,6 +55,7 @@ export class RelayTransport implements BridgeTransport {
     this.socket.onState((state) => {
       if (state === "connected") {
         this.lastConnectedAt = Date.now();
+        this.lastPongAt = Date.now();
         this.startHeartbeat();
       } else if (state === "closed") {
         this.stopHeartbeat();
@@ -62,6 +65,7 @@ export class RelayTransport implements BridgeTransport {
     this.socket.onFrame((frame) => {
       if (frame.type === "pong") {
         this.rttValue = Math.max(0, Date.now() - frame.at);
+        this.lastPongAt = Date.now();
         this.emitMetrics();
       } else if (frame.type === "error") {
         this.lastError = `${frame.code}: ${frame.message}`;
@@ -94,8 +98,8 @@ export class RelayTransport implements BridgeTransport {
     return this.socket.send(payload, to, options);
   }
 
-  sendEnvelope(envelope: EncryptedEnvelope): void {
-    this.socket.sendEnvelope(envelope);
+  sendEnvelope(envelope: EncryptedEnvelope): Promise<void> {
+    return this.socket.sendEnvelope(envelope);
   }
 
   ack(ids: string[]): void {
@@ -145,7 +149,17 @@ export class RelayTransport implements BridgeTransport {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.socket.ping();
-    this.heartbeat = setInterval(() => this.socket.ping(), this.heartbeatIntervalMs);
+    this.heartbeat = setInterval(() => {
+      if (Date.now() - (this.lastPongAt ?? 0) > HEARTBEAT_TIMEOUT_MS) {
+        const error = new Error("Relay heartbeat timed out");
+        error.name = "RELAY_HEARTBEAT_TIMEOUT";
+        this.lastError = error.message;
+        for (const listener of this.errorListeners) listener(error);
+        this.socket.close();
+        return;
+      }
+      this.socket.ping();
+    }, this.heartbeatIntervalMs);
   }
 
   private stopHeartbeat(): void {

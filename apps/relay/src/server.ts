@@ -1,16 +1,23 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { parseClientFrame, type BridgeRole, type ClientHello, type EncryptedEnvelope } from "@bridge/protocol";
+import {
+  parseClientFrame,
+  type BridgeRole,
+  type ClientHello,
+  type EnvelopeChunkManifest,
+  type RelayEnvelopeItem,
+} from "@bridge/protocol";
 import { WebSocket, WebSocketServer } from "ws";
 import { EnvironmentPushDispatcher, type PushDispatcher } from "./push.js";
-import { MemoryRelayStore, type RelayStore } from "./store.js";
+import { MemoryRelayStore, relayItemId, type RelayStore } from "./store.js";
 
-const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_FRAME_BYTES = 1024 * 1024;
 const MAX_ENVELOPE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CLOCK_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 const MAX_PAIRING_WINDOW_MS = 10 * 60 * 1000;
 const MAX_MIGRATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const ROOM_RATE_WINDOW_MS = 60 * 60 * 1000;
 
 interface AuthenticatedClient {
   connectionId: string;
@@ -24,6 +31,18 @@ interface ClientState {
   isAlive: boolean;
   rateWindowStartedAt: number;
   rateCount: number;
+  remoteAddress: string;
+  processing: Promise<void>;
+}
+
+export interface RelayMetrics {
+  startedAt: number;
+  activeConnections: number;
+  framesReceived: number;
+  envelopesStored: number;
+  errors: number;
+  pushAttempts: number;
+  pushSucceeded: number;
 }
 
 export interface RelayServerOptions {
@@ -33,12 +52,15 @@ export interface RelayServerOptions {
   allowedOrigins?: string[];
   logger?: Pick<Console, "info" | "warn" | "error">;
   pushDispatcher?: PushDispatcher;
+  maxRooms?: number;
+  roomCreationsPerIpPerHour?: number;
 }
 
 export interface RunningRelay {
   httpServer: HttpServer;
   wsServer: WebSocketServer;
   url: string;
+  metrics(): RelayMetrics;
   close(): Promise<void>;
 }
 
@@ -68,12 +90,58 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
   const logger = options.logger ?? console;
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
   const pushDispatcher = options.pushDispatcher ?? new EnvironmentPushDispatcher();
+  const maxRooms = options.maxRooms ?? 100_000;
+  const roomCreationsPerIpPerHour = options.roomCreationsPerIpPerHour ?? 20;
+  const roomCreationWindows = new Map<string, { startedAt: number; count: number }>();
+  const relayMetrics: RelayMetrics = {
+    startedAt: Date.now(),
+    activeConnections: 0,
+    framesReceived: 0,
+    envelopesStored: 0,
+    errors: 0,
+    pushAttempts: 0,
+    pushSucceeded: 0,
+  };
   await store.load();
 
   const httpServer = createServer((request, response) => {
     if (request.method === "GET" && request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(JSON.stringify({ ok: true, service: "claude-bridge-relay", version: 2 }));
+      response.end(JSON.stringify({ ok: true, service: "claude-bridge-relay", version: 3 }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/ready") {
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(JSON.stringify({ ok: true, storage: store.stats() }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/metrics") {
+      const stored = store.stats();
+      const values = [
+        "# TYPE bridge_relay_connections gauge",
+        `bridge_relay_connections ${relayMetrics.activeConnections}`,
+        "# TYPE bridge_relay_rooms gauge",
+        `bridge_relay_rooms ${stored.rooms}`,
+        "# TYPE bridge_relay_devices gauge",
+        `bridge_relay_devices ${stored.devices}`,
+        "# TYPE bridge_relay_queue_frames gauge",
+        `bridge_relay_queue_frames ${stored.queuedFrames}`,
+        "# TYPE bridge_relay_queue_bytes gauge",
+        `bridge_relay_queue_bytes ${stored.queuedBytes}`,
+        "# TYPE bridge_relay_frames_received counter",
+        `bridge_relay_frames_received ${relayMetrics.framesReceived}`,
+        "# TYPE bridge_relay_envelopes_stored counter",
+        `bridge_relay_envelopes_stored ${relayMetrics.envelopesStored}`,
+        "# TYPE bridge_relay_errors counter",
+        `bridge_relay_errors ${relayMetrics.errors}`,
+        "# TYPE bridge_relay_push_attempts counter",
+        `bridge_relay_push_attempts ${relayMetrics.pushAttempts}`,
+        "# TYPE bridge_relay_push_succeeded counter",
+        `bridge_relay_push_succeeded ${relayMetrics.pushSucceeded}`,
+        "",
+      ];
+      response.writeHead(200, { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" });
+      response.end(values.join("\n"));
       return;
     }
     response.writeHead(404, { "content-type": "application/json" });
@@ -130,6 +198,22 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
         return;
       }
       const now = Date.now();
+      const previousWindow = roomCreationWindows.get(state.remoteAddress);
+      const rateWindow = !previousWindow || now - previousWindow.startedAt >= ROOM_RATE_WINDOW_MS
+        ? { startedAt: now, count: 0 }
+        : previousWindow;
+      if (rateWindow.count >= roomCreationsPerIpPerHour) {
+        relayMetrics.errors += 1;
+        sendError(ws, "ROOM_RATE_LIMITED", "Too many rooms were created from this address", 1008);
+        return;
+      }
+      if (store.stats().rooms >= maxRooms) {
+        relayMetrics.errors += 1;
+        sendError(ws, "CAPACITY_REACHED", "The relay is at capacity", 1013);
+        return;
+      }
+      rateWindow.count += 1;
+      roomCreationWindows.set(state.remoteAddress, rateWindow);
       await store.createRoom({
         id: hello.roomId,
         hostDeviceId: hello.deviceId,
@@ -196,11 +280,18 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
       online,
       onlineDevices,
     });
-    for (const envelope of queued) safeSend(ws, { type: "envelope", envelope });
+    for (const item of queued) {
+      safeSend(ws, "transferId" in item
+        ? { type: "envelope-chunk", chunk: item }
+        : { type: "envelope", envelope: item });
+    }
     broadcastPresence(room.id, hello.role, hello.deviceId, true);
   }
 
-  function validateEnvelope(client: AuthenticatedClient, envelope: EncryptedEnvelope): boolean {
+  function validateEnvelope(
+    client: AuthenticatedClient,
+    envelope: RelayEnvelopeItem | EnvelopeChunkManifest,
+  ): boolean {
     const now = Date.now();
     if (
       envelope.roomId !== client.roomId ||
@@ -221,20 +312,24 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
     return envelope.to === "desktop";
   }
 
-  wsServer.on("connection", (ws) => {
+  wsServer.on("connection", (ws, request) => {
     const state: ClientState = {
       isAlive: true,
       rateWindowStartedAt: Date.now(),
       rateCount: 0,
+      remoteAddress: request.socket.remoteAddress ?? "unknown",
+      processing: Promise.resolve(),
     };
     states.set(ws, state);
+    relayMetrics.activeConnections += 1;
     const helloTimeout = setTimeout(() => {
       if (!state.authenticated) sendError(ws, "HELLO_TIMEOUT", "Authentication timed out", 1008);
     }, 10_000);
 
     ws.on("pong", () => { state.isAlive = true; });
     ws.on("message", (data, isBinary) => {
-      void (async () => {
+      state.processing = state.processing.then(async () => {
+        relayMetrics.framesReceived += 1;
         const raw = data.toString();
         if (isBinary || Buffer.byteLength(raw) > MAX_FRAME_BYTES) {
           sendError(ws, "FRAME_TOO_LARGE", "The frame is too large", 1009);
@@ -333,42 +428,91 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
           if (!registered) sendError(ws, "PUSH_REGISTRATION_FAILED", "Push token registration was rejected");
           return;
         }
+        if (frame.type === "chunk-query") {
+          if (!validateEnvelope(client, frame.manifest)) {
+            sendError(ws, "INVALID_ENVELOPE", "Chunk metadata does not match this connection");
+            return;
+          }
+          const storedIndexes = new Set(store.chunkIndexes(
+            client.roomId,
+            frame.manifest.transferId,
+            client.deviceId,
+          ));
+          const indexes = Array.from(
+            { length: frame.manifest.total },
+            (_, index) => index,
+          ).filter((index) => !storedIndexes.has(index));
+          safeSend(ws, {
+            type: "chunk-missing",
+            transferId: frame.manifest.transferId,
+            indexes,
+          });
+          if (indexes.length === 0) {
+            safeSend(ws, { type: "stored", ids: [frame.manifest.transferId] });
+          }
+          return;
+        }
         if (frame.type === "ack") {
           const acknowledged = await store.ack(client.roomId, client.role, client.deviceId, frame.ids);
-          const bySender = new Map<string, string[]>();
-          for (const envelope of acknowledged) {
-            const ids = bySender.get(envelope.fromDeviceId) ?? [];
-            ids.push(envelope.id);
-            bySender.set(envelope.fromDeviceId, ids);
+          const bySender = new Map<string, Set<string>>();
+          for (const item of acknowledged) {
+            const ids = bySender.get(item.fromDeviceId) ?? new Set<string>();
+            ids.add(relayItemId(item));
+            bySender.set(item.fromDeviceId, ids);
           }
           for (const [senderDeviceId, ids] of bySender) {
             for (const [sender] of roomClients(client.roomId, undefined, senderDeviceId)) {
-              safeSend(sender, { type: "acknowledged", ids, byDeviceId: client.deviceId });
+              safeSend(sender, { type: "acknowledged", ids: [...ids], byDeviceId: client.deviceId });
             }
           }
           return;
         }
-        if (!validateEnvelope(client, frame.envelope)) {
+        const item = frame.type === "envelope-chunk" ? frame.chunk : frame.envelope;
+        if (!validateEnvelope(client, item)) {
           sendError(ws, "INVALID_ENVELOPE", "Envelope metadata does not match this connection");
           return;
         }
-        await store.enqueue(frame.envelope);
-        safeSend(ws, { type: "stored", ids: [frame.envelope.id] });
+        const completeBefore = "transferId" in item && store.chunkIndexes(
+          item.roomId,
+          item.transferId,
+          item.fromDeviceId,
+        ).length === item.total;
+        await store.enqueue(item);
+        const id = relayItemId(item);
+        const complete = !("transferId" in item) || store.chunkIndexes(
+          item.roomId,
+          item.transferId,
+          item.fromDeviceId,
+        ).length === item.total;
+        if (complete) {
+          if (!completeBefore) relayMetrics.envelopesStored += 1;
+          safeSend(ws, { type: "stored", ids: [id] });
+        }
         const recipients = roomClients(
           client.roomId,
-          frame.envelope.to,
-          frame.envelope.toDeviceId,
+          item.to,
+          item.toDeviceId,
         );
-        for (const [target] of recipients) safeSend(target, { type: "envelope", envelope: frame.envelope });
+        for (const [target] of recipients) safeSend(target, "transferId" in item
+          ? { type: "envelope-chunk", chunk: item }
+          : { type: "envelope", envelope: item });
         if (
+          complete &&
+          !completeBefore &&
           recipients.length === 0 &&
-          frame.envelope.to === "mobile" &&
-          frame.envelope.toDeviceId
+          item.to === "mobile" &&
+          item.toDeviceId
         ) {
-          const device = store.getDevice(client.roomId, frame.envelope.toDeviceId);
-          if (device) void pushDispatcher.wake(device);
+          const device = store.getDevice(client.roomId, item.toDeviceId);
+          if (device) {
+            relayMetrics.pushAttempts += 1;
+            void pushDispatcher.wake(device).then((sent) => {
+              if (sent) relayMetrics.pushSucceeded += 1;
+            });
+          }
         }
-      })().catch((error: unknown) => {
+      }).catch((error: unknown) => {
+        relayMetrics.errors += 1;
         logger.error("relay message handler failed", error);
         sendError(ws, "SERVER_ERROR", "The relay could not process this message");
       });
@@ -378,6 +522,7 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
       clearTimeout(helloTimeout);
       const client = state.authenticated;
       states.delete(ws);
+      relayMetrics.activeConnections = Math.max(0, relayMetrics.activeConnections - 1);
       if (client && roomClients(client.roomId, client.role, client.deviceId).length === 0) {
         broadcastPresence(client.roomId, client.role, client.deviceId, false);
       }
@@ -423,6 +568,7 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
     httpServer,
     wsServer,
     url,
+    metrics: () => ({ ...relayMetrics }),
     async close() {
       clearInterval(heartbeat);
       for (const ws of states.keys()) ws.close(1001, "relay shutting down");

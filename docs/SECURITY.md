@@ -5,6 +5,7 @@
 - 正文与事件使用每设备独立的 AES-256-GCM 密钥端到端加密。
 - 房间、发送设备、目标设备、时间和过期时间属于认证数据，Relay 不能静默改写。
 - Relay 只保存鉴权摘要和密文；设备 ACK、离线队列和撤销均按 `deviceId` 隔离。
+- 大附件在端到端加密后分块，Relay 只能看到分块大小、序号和整体密文哈希。
 - 二维码十分钟内单次有效，并由 Relay 绑定到首次使用它的移动实例。
 - 在线撤销会立即移除 Relay 权限；手机删除主机时同时删除本地密钥和缓存。
 - 主机与设备密钥保存在权限为 `0600` 的本地配置中，不调用系统钥匙串，避免临时
@@ -41,6 +42,8 @@ Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会
 ## 生产要求
 
 - 公网只允许 HTTPS/WSS，并设置严格的 `BRIDGE_ALLOWED_ORIGINS`。
+- Relay 使用 SQLite WAL 持久卷，密文默认保留七天，每房间最多 2,000 条或 128 MB；
+  每日备份保留七份。
 - Relay 数据目录、FCM 服务账号和 APNs 私钥不得进入镜像或源码。
 - 配置 macOS notarization、Windows code signing、Android keystore 和 iOS
   provisioning profile。

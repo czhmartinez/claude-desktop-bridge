@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   BridgeCrypto,
@@ -19,6 +19,7 @@ import {
   type BridgeResponse,
   type BridgeTransport,
   type BridgeTransportCandidate,
+  type BridgeTransportMetrics,
   type DesktopControlSnapshot,
   type DecryptedEnvelope,
   type EncryptedEnvelope,
@@ -103,6 +104,21 @@ function attachmentsParam(params: Record<string, unknown>): BridgeAttachment[] {
   });
 }
 
+function relayReadyUrl(endpoint: string): string {
+  const url = new URL(endpoint);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = "/ready";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function redactedEndpoint(endpoint: string): string {
+  const url = new URL(endpoint);
+  const fingerprint = createHash("sha256").update(url.host).digest("hex").slice(0, 10);
+  return `${url.protocol}//relay-${fingerprint}${url.pathname}`;
+}
+
 function pairingForDevice(config: LoadedDesktopConfig, device: LoadedDeviceConfig): PairingBundle {
   return {
     version: PAIRING_SCHEMA_VERSION,
@@ -158,6 +174,8 @@ export class DesktopController extends EventEmitter {
   private readonly onlineDevices = new Set<string>();
   private readonly responseCache = new Map<string, BridgeResponse>();
   private lastSeenAt = Date.now();
+  private transportMetrics: BridgeTransportMetrics | undefined;
+  private relayHealthy = false;
 
   constructor(
     private readonly app: App,
@@ -218,6 +236,16 @@ export class DesktopController extends EventEmitter {
       sessions: this.broker.listSessions(),
       devices: this.deviceSnapshots(),
       runtime: this.broker.runtimeStatus(),
+      transport: {
+        path: this.socket?.path ?? relayPathForUrl(this.config.relayUrl),
+        state: this.connection,
+        pendingCount: 0,
+        relayHealthy: this.relayHealthy,
+        ...(this.transportMetrics?.rttMs !== undefined ? { rttMs: this.transportMetrics.rttMs } : {}),
+        ...(this.transportMetrics?.lastConnectedAt !== undefined
+          ? { lastConnectedAt: this.transportMetrics.lastConnectedAt }
+          : {}),
+      },
       permissions: this.broker.permissionBroker.list().map((request) => ({
         requestId: request.requestId,
         sessionId: request.sessionId,
@@ -338,9 +366,12 @@ export class DesktopController extends EventEmitter {
       arch: process.arch,
       node: process.version,
       relay: {
-        endpoint: new URL(this.config.relayUrl).host,
-        connectionEndpoint: new URL(this.relayConnectUrl).host,
+        endpoint: redactedEndpoint(this.config.relayUrl),
+        connectionEndpoint: redactedEndpoint(this.relayConnectUrl),
         connection: this.connection,
+        path: this.socket?.path,
+        rttMs: this.transportMetrics?.rttMs,
+        healthy: this.relayHealthy,
       },
       runtime: this.broker.runtimeStatus(),
       counts: {
@@ -361,6 +392,7 @@ export class DesktopController extends EventEmitter {
     this.socket?.close();
     this.socket = undefined;
     this.connection = "closed";
+    this.relayHealthy = false;
     void this.publish();
   }
 
@@ -421,7 +453,14 @@ export class DesktopController extends EventEmitter {
           void this.repository.save(this.config);
         }
         this.registerPendingDevices();
+        void this.checkRelayHealth(socket.endpoint);
+      } else if (connection === "closed" || connection === "reconnecting") {
+        this.relayHealthy = false;
       }
+      void this.publish();
+    });
+    socket.onMetrics((metrics) => {
+      this.transportMetrics = metrics;
       void this.publish();
     });
     socket.onFrame((frame) => {
@@ -448,6 +487,21 @@ export class DesktopController extends EventEmitter {
       void this.receiveMessage(message, encrypted);
     });
     socket.connect();
+  }
+
+  private async checkRelayHealth(endpoint: string): Promise<void> {
+    try {
+      const response = await fetch(relayReadyUrl(endpoint), {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(4_000),
+      });
+      if (this.socket?.endpoint !== endpoint) return;
+      this.relayHealthy = response.ok;
+    } catch {
+      if (this.socket?.endpoint !== endpoint) return;
+      this.relayHealthy = false;
+    }
+    await this.publish();
   }
 
   private async receiveMessage(message: DecryptedEnvelope, encrypted: EncryptedEnvelope): Promise<void> {

@@ -7,11 +7,17 @@ import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
 
 function statusLabel(host: PairedHost): string {
-  if (host.needsRepair) return "需修复";
+  if (host.needsRepair) return "需要升级";
   if (host.status === "running") return `${host.activeTurns} 个任务运行中`;
   if (host.status === "attention") return "需要处理";
   if (host.status === "offline") return "离线";
   return "待机";
+}
+
+function pathLabel(host: PairedHost): string {
+  if (host.path === "public-relay") return "安全中继";
+  if (host.path === "direct") return "直连";
+  return "局域网连接";
 }
 
 function lastSeenLabel(host: PairedHost): string {
@@ -97,7 +103,7 @@ export function HostBrowser({
                 <span className="host-row-icon"><Laptop size={19} /></span>
                 <span className="host-row-copy">
                   <strong>{host.desktopName}</strong>
-                  <small>{openingHostId === host.roomId ? "正在连接" : lastSeenLabel(host)}</small>
+                  <small>{openingHostId === host.roomId ? "正在连接" : `${pathLabel(host)} · ${lastSeenLabel(host)}`}</small>
                 </span>
                 <span className={`host-row-state ${host.needsRepair || host.status === "attention" ? "warning" : host.status}`}>
                   <i />{statusLabel(host)}

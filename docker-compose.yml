@@ -7,10 +7,25 @@ services:
     environment:
       BRIDGE_RELAY_HOST: 0.0.0.0
       BRIDGE_RELAY_PORT: 8788
-      BRIDGE_RELAY_DATA: /data/relay-store.json
+      BRIDGE_RELAY_DATA: /data/bridge-relay.db
+      BRIDGE_RELAY_BACKUP_DIR: /data/backups
       BRIDGE_ALLOWED_ORIGINS: https://${BRIDGE_DOMAIN}
+      BRIDGE_FCM_PROJECT_ID: ${BRIDGE_FCM_PROJECT_ID:-}
+      BRIDGE_FCM_CLIENT_EMAIL: ${BRIDGE_FCM_CLIENT_EMAIL:-}
+      BRIDGE_FCM_PRIVATE_KEY: ${BRIDGE_FCM_PRIVATE_KEY:-}
+      BRIDGE_APNS_TEAM_ID: ${BRIDGE_APNS_TEAM_ID:-}
+      BRIDGE_APNS_KEY_ID: ${BRIDGE_APNS_KEY_ID:-}
+      BRIDGE_APNS_BUNDLE_ID: ${BRIDGE_APNS_BUNDLE_ID:-com.localbridge.mobile}
+      BRIDGE_APNS_PRIVATE_KEY: ${BRIDGE_APNS_PRIVATE_KEY:-}
+      BRIDGE_APNS_PRODUCTION: ${BRIDGE_APNS_PRODUCTION:-0}
     volumes:
       - relay-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8788/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   web:
     build:
@@ -22,8 +37,10 @@ services:
     image: caddy:2.10-alpine
     restart: unless-stopped
     depends_on:
-      - relay
-      - web
+      relay:
+        condition: service_healthy
+      web:
+        condition: service_started
     environment:
       BRIDGE_DOMAIN: ${BRIDGE_DOMAIN}
     ports:

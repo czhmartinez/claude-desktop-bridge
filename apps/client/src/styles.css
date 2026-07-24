@@ -1957,7 +1957,7 @@ button:disabled {
 /* Mobile host and session layers */
 
 .host-detail-workspace {
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
 }
 
 .host-detail-workspace > .mobile-topbar {
@@ -1968,6 +1968,45 @@ button:disabled {
 .session-presence.running i {
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mobile-transport-band {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 max(18px, env(safe-area-inset-right)) 0 max(18px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.mobile-transport-band > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.mobile-transport-band i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.mobile-transport-band.online i {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mobile-transport-band strong {
+  font-size: 11px;
+}
+
+.mobile-transport-band small {
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .host-detail {

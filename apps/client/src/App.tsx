@@ -52,6 +52,8 @@ export function App() {
       events={mobile.state.events}
       localTurns={mobile.state.localTurns}
       connectionIssue={mobile.state.connectionIssue}
+      transportMetrics={mobile.state.transportMetrics}
+      pendingOutbound={mobile.state.pendingOutbound}
       theme={theme}
       onToggleTheme={toggleTheme}
       onOpenSession={mobile.openSession}

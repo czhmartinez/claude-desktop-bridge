@@ -1,11 +1,15 @@
 import { BridgeCrypto } from "./crypto.js";
-import { parseServerFrame } from "./validation.js";
+import { decodeUtf8, fromBase64Url, toBase64Url, utf8 } from "./encoding.js";
+import { isEncryptedEnvelope, parseServerFrame } from "./validation.js";
 import {
+  ENVELOPE_CHUNK_BYTES,
   PROTOCOL_VERSION,
   type BridgePayload,
   type BridgeRole,
   type DecryptedEnvelope,
+  type EncryptedEnvelopeChunk,
   type EncryptedEnvelope,
+  type EnvelopeChunkManifest,
   type MessageTarget,
   type ServerFrame,
 } from "./types.js";
@@ -36,6 +40,28 @@ export type MessageListener = (message: DecryptedEnvelope, encrypted: EncryptedE
 export type StateListener = (state: SocketState) => void;
 export type FrameListener = (frame: ServerFrame) => void;
 
+interface IncomingTransfer {
+  chunk: EncryptedEnvelopeChunk;
+  parts: Array<Uint8Array<ArrayBuffer> | undefined>;
+  received: number;
+  byteLength: number;
+}
+
+function sameChunkTransfer(left: EncryptedEnvelopeChunk, right: EncryptedEnvelopeChunk): boolean {
+  return (
+    left.transferId === right.transferId &&
+    left.roomId === right.roomId &&
+    left.from === right.from &&
+    left.fromDeviceId === right.fromDeviceId &&
+    left.to === right.to &&
+    left.toDeviceId === right.toDeviceId &&
+    left.sentAt === right.sentAt &&
+    left.expiresAt === right.expiresAt &&
+    left.total === right.total &&
+    left.sha256 === right.sha256
+  );
+}
+
 export class BridgeSocket {
   private readonly crypto: BridgeCrypto;
   private readonly role: BridgeRole;
@@ -51,6 +77,12 @@ export class BridgeSocket {
   private messageListeners = new Set<MessageListener>();
   private stateListeners = new Set<StateListener>();
   private frameListeners = new Set<FrameListener>();
+  private incomingTransfers = new Map<string, IncomingTransfer>();
+  private deliveredIds = new Set<string>();
+  private missingChunkRequests = new Map<string, {
+    resolve(indexes: number[] | undefined): void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   constructor(options: BridgeSocketOptions) {
     this.crypto = options.crypto;
@@ -95,6 +127,12 @@ export class BridgeSocket {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.ws?.close(1000, "client closed");
     this.ws = undefined;
+    this.incomingTransfers.clear();
+    for (const pending of this.missingChunkRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(undefined);
+    }
+    this.missingChunkRequests.clear();
     this.setState("closed");
   }
 
@@ -111,15 +149,49 @@ export class BridgeSocket {
       options.ttlMs,
       options.toDeviceId,
     );
-    this.sendEnvelope(envelope);
+    await this.sendEnvelope(envelope);
     return envelope.id;
   }
 
-  sendEnvelope(envelope: EncryptedEnvelope): void {
+  async sendEnvelope(envelope: EncryptedEnvelope): Promise<void> {
     if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
       throw new Error("Bridge is not connected");
     }
-    this.ws.send(JSON.stringify({ type: "envelope", envelope }));
+    const serialized = utf8(JSON.stringify(envelope));
+    if (serialized.byteLength <= ENVELOPE_CHUNK_BYTES) {
+      this.ws.send(JSON.stringify({ type: "envelope", envelope }));
+      return;
+    }
+    const digest = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", serialized)));
+    const total = Math.ceil(serialized.byteLength / ENVELOPE_CHUNK_BYTES);
+    const manifest: EnvelopeChunkManifest = {
+      version: envelope.version,
+      transferId: envelope.id,
+      roomId: envelope.roomId,
+      from: envelope.from,
+      fromDeviceId: envelope.fromDeviceId,
+      to: envelope.to,
+      ...(envelope.toDeviceId ? { toDeviceId: envelope.toDeviceId } : {}),
+      sentAt: envelope.sentAt,
+      expiresAt: envelope.expiresAt,
+      total,
+      sha256: digest,
+    };
+    const missing = await this.queryMissingChunks(manifest);
+    const indexes = missing ?? Array.from({ length: total }, (_, index) => index);
+    for (const index of indexes) {
+      if (index < 0 || index >= total) continue;
+      if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
+        throw new Error("Bridge disconnected while sending an attachment");
+      }
+      const start = index * ENVELOPE_CHUNK_BYTES;
+      const chunk: EncryptedEnvelopeChunk = {
+        ...manifest,
+        index,
+        data: toBase64Url(serialized.slice(start, start + ENVELOPE_CHUNK_BYTES)),
+      };
+      this.ws.send(JSON.stringify({ type: "envelope-chunk", chunk }));
+    }
   }
 
   ack(ids: string[]): void {
@@ -208,14 +280,127 @@ export class BridgeSocket {
       }
       return;
     }
+    if (frame.type === "chunk-missing") {
+      const pending = this.missingChunkRequests.get(frame.transferId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.missingChunkRequests.delete(frame.transferId);
+        pending.resolve(frame.indexes);
+      }
+      return;
+    }
+    if (frame.type === "envelope-chunk") {
+      const envelope = await this.acceptChunk(frame.chunk);
+      if (envelope) await this.deliverEnvelope(envelope);
+      return;
+    }
     if (frame.type !== "envelope") return;
+    await this.deliverEnvelope(frame.envelope);
+  }
+
+  private async deliverEnvelope(envelope: EncryptedEnvelope): Promise<void> {
+    if (this.deliveredIds.has(envelope.id)) {
+      this.ack([envelope.id]);
+      return;
+    }
     try {
-      const selectedCrypto = await this.resolveCrypto?.(frame.envelope) ?? this.crypto;
-      const decrypted = await selectedCrypto.decrypt(frame.envelope);
-      for (const listener of this.messageListeners) listener(decrypted, frame.envelope);
+      const selectedCrypto = await this.resolveCrypto?.(envelope) ?? this.crypto;
+      const decrypted = await selectedCrypto.decrypt(envelope);
+      this.deliveredIds.add(envelope.id);
+      if (this.deliveredIds.size > 2_048) {
+        const oldest = this.deliveredIds.values().next().value as string | undefined;
+        if (oldest) this.deliveredIds.delete(oldest);
+      }
+      for (const listener of this.messageListeners) listener(decrypted, envelope);
     } catch {
       // The relay cannot forge valid payloads. Invalid or cross-device ciphertext is ignored.
     }
+  }
+
+  private async acceptChunk(chunk: EncryptedEnvelopeChunk): Promise<EncryptedEnvelope | undefined> {
+    this.pruneTransfers();
+    let transfer = this.incomingTransfers.get(chunk.transferId);
+    if (!transfer) {
+      if (this.incomingTransfers.size >= 8) {
+        const oldest = this.incomingTransfers.keys().next().value as string | undefined;
+        if (oldest) this.incomingTransfers.delete(oldest);
+      }
+      transfer = {
+        chunk,
+        parts: new Array(chunk.total),
+        received: 0,
+        byteLength: 0,
+      };
+      this.incomingTransfers.set(chunk.transferId, transfer);
+    }
+    if (!sameChunkTransfer(transfer.chunk, chunk)) {
+      this.incomingTransfers.delete(chunk.transferId);
+      return undefined;
+    }
+    if (!transfer.parts[chunk.index]) {
+      const part = fromBase64Url(chunk.data);
+      transfer.parts[chunk.index] = part;
+      transfer.received += 1;
+      transfer.byteLength += part.byteLength;
+    }
+    if (transfer.received !== chunk.total) return undefined;
+    this.incomingTransfers.delete(chunk.transferId);
+    if (transfer.byteLength > 16 * 1024 * 1024) return undefined;
+    const serialized = new Uint8Array(transfer.byteLength);
+    let offset = 0;
+    for (const part of transfer.parts) {
+      if (!part) return undefined;
+      serialized.set(part, offset);
+      offset += part.byteLength;
+    }
+    const digest = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", serialized)));
+    if (digest !== chunk.sha256) return undefined;
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(decodeUtf8(serialized));
+    } catch {
+      return undefined;
+    }
+    if (
+      !isEncryptedEnvelope(envelope) ||
+      envelope.id !== chunk.transferId ||
+      envelope.roomId !== chunk.roomId ||
+      envelope.from !== chunk.from ||
+      envelope.fromDeviceId !== chunk.fromDeviceId ||
+      envelope.to !== chunk.to ||
+      envelope.toDeviceId !== chunk.toDeviceId ||
+      envelope.sentAt !== chunk.sentAt ||
+      envelope.expiresAt !== chunk.expiresAt
+    ) return undefined;
+    return envelope;
+  }
+
+  private pruneTransfers(): void {
+    const now = Date.now();
+    for (const [id, transfer] of this.incomingTransfers) {
+      if (transfer.chunk.expiresAt <= now || now - transfer.chunk.sentAt > 24 * 60 * 60 * 1_000) {
+        this.incomingTransfers.delete(id);
+      }
+    }
+  }
+
+  private queryMissingChunks(manifest: EnvelopeChunkManifest): Promise<number[] | undefined> {
+    if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
+      return Promise.reject(new Error("Bridge is not connected"));
+    }
+    const previous = this.missingChunkRequests.get(manifest.transferId);
+    if (previous) {
+      clearTimeout(previous.timer);
+      previous.resolve(undefined);
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.missingChunkRequests.delete(manifest.transferId);
+        resolve(undefined);
+      }, 2_000);
+      this.missingChunkRequests.set(manifest.transferId, { resolve, timer });
+      this.ws!.send(JSON.stringify({ type: "chunk-query", manifest }));
+    });
   }
 
   private handleClose(): void {

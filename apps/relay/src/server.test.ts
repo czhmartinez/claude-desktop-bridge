@@ -3,6 +3,7 @@ import {
   BridgeSocket,
   type BridgePayload,
   type DecryptedEnvelope,
+  type RelayEnvelopeItem,
   type ServerFrame,
 } from "@bridge/protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,6 +13,15 @@ import type { DeviceRecord } from "./store.js";
 
 const relays: RunningRelay[] = [];
 const sockets: BridgeSocket[] = [];
+
+class CountingRelayStore extends MemoryRelayStore {
+  enqueuedFrames = 0;
+
+  override async enqueue(item: RelayEnvelopeItem): Promise<void> {
+    this.enqueuedFrames += 1;
+    await super.enqueue(item);
+  }
+}
 
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.close();
@@ -106,6 +116,26 @@ async function connectedPair(relayUrl: string) {
 }
 
 describe("relay v2", () => {
+  it("publishes liveness, readiness and content-free operational metrics", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const origin = relay.url.replace(/^ws:/u, "http:").replace(/\/ws$/u, "");
+    const health = await fetch(`${origin}/health`);
+    const ready = await fetch(`${origin}/ready`);
+    const metrics = await fetch(`${origin}/metrics`);
+
+    expect(await health.json()).toMatchObject({ ok: true, version: 3 });
+    expect(await ready.json()).toMatchObject({
+      ok: true,
+      storage: { rooms: 0, devices: 0, queuedFrames: 0 },
+    });
+    expect(await metrics.text()).toContain("bridge_relay_queue_bytes 0");
+  });
+
   it("routes an encrypted phone request to its host and reports transport storage", async () => {
     const relay = await startRelayServer({
       port: 0,
@@ -120,6 +150,35 @@ describe("relay v2", () => {
 
     expect((await message).payload).toMatchObject({ kind: "request", method: "turn.start" });
     expect((await stored).type).toBe("stored");
+  });
+
+  it("chunks, hashes and reassembles an encrypted payload larger than a websocket frame", async () => {
+    const store = new CountingRelayStore();
+    const relay = await startRelayServer({
+      port: 0,
+      store,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    const text = "x".repeat(900_000);
+    const received = nextMessage(pair.desktopSocket, 5_000);
+    const stored = waitForFrame(pair.mobileSocket, (frame) => frame.type === "stored", 5_000);
+    const envelope = await pair.mobileCrypto.encrypt(turnRequest(text), "mobile", "desktop");
+    await pair.mobileSocket.sendEnvelope(envelope);
+
+    const payload = (await received).payload;
+    expect(payload.kind).toBe("request");
+    if (payload.kind !== "request") throw new Error("Expected a request payload");
+    expect(payload.params.text).toBe(text);
+    expect(await stored).toMatchObject({ type: "stored" });
+    const initiallyStoredFrames = store.enqueuedFrames;
+    expect(initiallyStoredFrames).toBeGreaterThan(1);
+    const retried = waitForFrame(pair.mobileSocket, (frame) => frame.type === "stored", 5_000);
+    await pair.mobileSocket.sendEnvelope(envelope);
+    await retried;
+    expect(store.enqueuedFrames).toBe(initiallyStoredFrames);
+    expect(relay.metrics().envelopesStored).toBeGreaterThanOrEqual(1);
   });
 
   it("replays an offline request until the exact host device acknowledges it", async () => {

@@ -40,6 +40,20 @@ interface ApnsConfig {
   production: boolean;
 }
 
+export function fcmWakeRequestBody(pushToken: string): Record<string, unknown> {
+  return {
+    message: {
+      token: pushToken,
+      data: { type: "bridge-wake" },
+      android: { priority: "high" },
+    },
+  };
+}
+
+export function apnsWakeRequestBody(): Record<string, unknown> {
+  return { aps: { "content-available": 1 } };
+}
+
 function envValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = environment[name]?.replaceAll("\\n", "\n").trim();
   return value || undefined;
@@ -135,13 +149,7 @@ export class EnvironmentPushDispatcher implements PushDispatcher {
           authorization: `Bearer ${accessToken}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          message: {
-            token: pushToken,
-            data: { type: "bridge-wake" },
-            android: { priority: "high" },
-          },
-        }),
+        body: JSON.stringify(fcmWakeRequestBody(pushToken)),
       },
     );
     return response.ok;
@@ -189,7 +197,7 @@ export class EnvironmentPushDispatcher implements PushDispatcher {
         client.close();
         resolve(false);
       });
-      request.end(JSON.stringify({ aps: { "content-available": 1 } }));
+      request.end(JSON.stringify(apnsWakeRequestBody()));
     });
   }
 }

@@ -3,7 +3,9 @@ import {
   type BridgePayload,
   type BridgeRole,
   type ClientFrame,
+  type EncryptedEnvelopeChunk,
   type EncryptedEnvelope,
+  type EnvelopeChunkManifest,
   type MessageTarget,
   type ServerFrame,
 } from "./types.js";
@@ -52,7 +54,44 @@ export function isEncryptedEnvelope(value: unknown): value is EncryptedEnvelope 
     typeof value.sentAt === "number" && Number.isFinite(value.sentAt) &&
     typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) &&
     typeof value.nonce === "string" && value.nonce.length <= 32 &&
-    typeof value.ciphertext === "string" && value.ciphertext.length <= 8_000_000
+    typeof value.ciphertext === "string" && value.ciphertext.length <= 16_000_000
+  );
+}
+
+export function isEncryptedEnvelopeChunk(value: unknown): value is EncryptedEnvelopeChunk {
+  if (!isRecord(value)) return false;
+  return (
+    value.version === PROTOCOL_VERSION &&
+    typeof value.transferId === "string" && value.transferId.length > 0 && value.transferId.length <= 64 &&
+    typeof value.roomId === "string" && value.roomId.length <= 64 &&
+    isBridgeRole(value.from) &&
+    typeof value.fromDeviceId === "string" && value.fromDeviceId.length <= 64 &&
+    typeof value.to === "string" && TARGETS.has(value.to as MessageTarget) &&
+    (value.toDeviceId === undefined || (typeof value.toDeviceId === "string" && value.toDeviceId.length <= 64)) &&
+    typeof value.sentAt === "number" && Number.isFinite(value.sentAt) &&
+    typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) &&
+    typeof value.index === "number" && Number.isInteger(value.index) && value.index >= 0 &&
+    typeof value.total === "number" && Number.isInteger(value.total) && value.total > 1 && value.total <= 64 &&
+    value.index < value.total &&
+    typeof value.sha256 === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value.sha256) &&
+    typeof value.data === "string" && value.data.length > 0 && value.data.length <= 524_288
+  );
+}
+
+export function isEnvelopeChunkManifest(value: unknown): value is EnvelopeChunkManifest {
+  if (!isRecord(value)) return false;
+  return (
+    value.version === PROTOCOL_VERSION &&
+    typeof value.transferId === "string" && value.transferId.length > 0 && value.transferId.length <= 64 &&
+    typeof value.roomId === "string" && value.roomId.length <= 64 &&
+    isBridgeRole(value.from) &&
+    typeof value.fromDeviceId === "string" && value.fromDeviceId.length <= 64 &&
+    typeof value.to === "string" && TARGETS.has(value.to as MessageTarget) &&
+    (value.toDeviceId === undefined || (typeof value.toDeviceId === "string" && value.toDeviceId.length <= 64)) &&
+    typeof value.sentAt === "number" && Number.isFinite(value.sentAt) &&
+    typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) &&
+    typeof value.total === "number" && Number.isInteger(value.total) && value.total > 1 && value.total <= 64 &&
+    typeof value.sha256 === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value.sha256)
   );
 }
 
@@ -71,6 +110,12 @@ export function parseClientFrame(input: string): ClientFrame {
     return value as unknown as ClientFrame;
   }
   if (value.type === "envelope" && isEncryptedEnvelope(value.envelope)) {
+    return value as unknown as ClientFrame;
+  }
+  if (value.type === "envelope-chunk" && isEncryptedEnvelopeChunk(value.chunk)) {
+    return value as unknown as ClientFrame;
+  }
+  if (value.type === "chunk-query" && isEnvelopeChunkManifest(value.manifest)) {
     return value as unknown as ClientFrame;
   }
   if (
@@ -107,6 +152,17 @@ export function parseServerFrame(input: string): ServerFrame {
   const value: unknown = JSON.parse(input);
   if (!isRecord(value) || typeof value.type !== "string") throw new Error("Invalid server frame");
   if (value.type === "envelope" && isEncryptedEnvelope(value.envelope)) return value as unknown as ServerFrame;
+  if (value.type === "envelope-chunk" && isEncryptedEnvelopeChunk(value.chunk)) {
+    return value as unknown as ServerFrame;
+  }
+  if (
+    value.type === "chunk-missing" &&
+    typeof value.transferId === "string" &&
+    value.transferId.length <= 64 &&
+    Array.isArray(value.indexes) &&
+    value.indexes.length <= 64 &&
+    value.indexes.every((index) => typeof index === "number" && Number.isInteger(index) && index >= 0 && index < 64)
+  ) return value as unknown as ServerFrame;
   if (
     value.type === "ready" ||
     value.type === "presence" ||
