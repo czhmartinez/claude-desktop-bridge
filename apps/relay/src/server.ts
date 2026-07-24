@@ -54,6 +54,7 @@ export interface RelayServerOptions {
   pushDispatcher?: PushDispatcher;
   maxRooms?: number;
   roomCreationsPerIpPerHour?: number;
+  trustProxy?: boolean;
 }
 
 export interface RunningRelay {
@@ -313,11 +314,13 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
   }
 
   wsServer.on("connection", (ws, request) => {
+    const forwarded = options.trustProxy ? request.headers["x-forwarded-for"] : undefined;
+    const forwardedAddress = Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0]?.trim();
     const state: ClientState = {
       isAlive: true,
       rateWindowStartedAt: Date.now(),
       rateCount: 0,
-      remoteAddress: request.socket.remoteAddress ?? "unknown",
+      remoteAddress: forwardedAddress || request.socket.remoteAddress || "unknown",
       processing: Promise.resolve(),
     };
     states.set(ws, state);

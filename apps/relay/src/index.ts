@@ -22,6 +22,7 @@ const relay = await startRelayServer({
   host,
   port,
   store,
+  trustProxy: process.env.BRIDGE_TRUST_PROXY === "1",
   ...(allowedOrigins.length ? { allowedOrigins } : {}),
 });
 const backups = scheduleRelayBackups(store, backupDirectory);

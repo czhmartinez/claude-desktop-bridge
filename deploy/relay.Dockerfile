@@ -17,6 +17,7 @@ COPY apps/relay/package.json ./apps/relay/package.json
 RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund --workspace @bridge/relay
 COPY --from=build /app/packages/protocol/dist ./packages/protocol/dist
 COPY --from=build /app/apps/relay/dist ./apps/relay/dist
+RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 8788
 CMD ["node", "apps/relay/dist/index.js"]
