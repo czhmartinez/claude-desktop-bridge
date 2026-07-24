@@ -51,6 +51,47 @@ describe("desktop configuration", () => {
     expect((await repository.load())?.devices[0]?.secret).toBe("independent-device-secret");
   });
 
+  it("refreshes a stale LAN relay address without rotating pairing secrets", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const original = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      desktopName: "Test PC",
+    });
+    const created = await original.loadOrCreate();
+    await original.save(created);
+
+    const movedNetwork = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://10.245.46.37:8788/ws",
+      desktopName: "Test PC",
+    });
+    const loaded = await movedNetwork.load();
+
+    expect(loaded?.relayUrl).toBe("ws://10.245.46.37:8788/ws");
+    expect(loaded?.roomId).toBe(created.roomId);
+    expect(loaded?.hostSecret).toBe(created.hostSecret);
+  });
+
+  it("does not replace an explicit remote relay with the packaged default", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const remote = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await remote.loadOrCreate();
+    await remote.save(created);
+
+    const localDefault = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://10.245.46.37:8788/ws",
+      desktopName: "Test PC",
+    });
+
+    expect((await localDefault.load())?.relayUrl).toBe("wss://relay.example/ws");
+  });
+
   it("archives a v1 config and requires one-time re-pairing", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);

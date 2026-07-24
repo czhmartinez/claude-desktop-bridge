@@ -152,6 +152,7 @@ export class DesktopController extends EventEmitter {
     private readonly app: App,
     private readonly repository: DesktopConfigRepository,
     private readonly pairingBaseUrl: string,
+    private readonly relayConnectUrl: string,
     private readonly broker: SessionBroker,
     private readonly eventLog: SessionEventLog,
     private readonly managedDesktop: ClaudeDesktopManager,
@@ -166,7 +167,7 @@ export class DesktopController extends EventEmitter {
     await this.repository.save(this.config);
     this.hostCrypto = await BridgeCrypto.fromHostSecret({
       roomId: this.config.roomId,
-      relayUrl: this.config.relayUrl,
+      relayUrl: this.relayConnectUrl,
       desktopName: this.config.desktopName,
       deviceId: this.config.hostDeviceId,
       secret: this.config.hostSecret,
@@ -325,6 +326,7 @@ export class DesktopController extends EventEmitter {
       node: process.version,
       relay: {
         endpoint: new URL(this.config.relayUrl).host,
+        connectionEndpoint: new URL(this.relayConnectUrl).host,
         connection: this.connection,
       },
       runtime: this.broker.runtimeStatus(),
@@ -354,7 +356,13 @@ export class DesktopController extends EventEmitter {
     this.socket = undefined;
     this.connection = "reconnecting";
     await this.publish();
+    await this.broker.refreshRuntime();
     await this.connect();
+  }
+
+  async refreshRuntime(): Promise<void> {
+    await this.broker.refreshRuntime();
+    await this.publish();
   }
 
   private async connect(): Promise<void> {

@@ -116,6 +116,41 @@ function isLoopbackRelay(value: string): boolean {
   }
 }
 
+function isPrivateIpv4(hostname: string): boolean {
+  const octets = hostname.split(".").map(Number);
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+  ) return false;
+  const [first, second] = octets;
+  return (
+    first === 10 ||
+    (first === 172 && second! >= 16 && second! <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 169 && second === 254) ||
+    (first === 100 && second! >= 64 && second! <= 127)
+  );
+}
+
+function shouldRefreshLocalRelay(stored: string, currentDefault: string): boolean {
+  try {
+    const previous = new URL(stored);
+    const current = new URL(currentDefault);
+    if (previous.toString() === current.toString()) return false;
+    if (previous.protocol !== "ws:" || current.protocol !== "ws:") return false;
+    if (
+      previous.port !== current.port ||
+      previous.pathname !== current.pathname ||
+      previous.search !== current.search
+    ) return false;
+    const previousIsLocal = isLoopbackRelay(stored) || isPrivateIpv4(previous.hostname);
+    const currentIsLocal = isLoopbackRelay(currentDefault) || isPrivateIpv4(current.hostname);
+    return previousIsLocal && currentIsLocal;
+  } catch {
+    return false;
+  }
+}
+
 export class DesktopConfigRepository {
   private saveQueue: Promise<void> = Promise.resolve();
 
@@ -134,7 +169,7 @@ export class DesktopConfigRepository {
       throw error;
     }
     const config = assertConfig(JSON.parse(raw));
-    const relayUrl = isLoopbackRelay(config.relayUrl) && !isLoopbackRelay(this.defaults.relayUrl)
+    const relayUrl = shouldRefreshLocalRelay(config.relayUrl, this.defaults.relayUrl)
       ? this.defaults.relayUrl
       : config.relayUrl;
     return {

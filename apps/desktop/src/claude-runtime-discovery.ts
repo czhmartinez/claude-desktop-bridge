@@ -123,27 +123,33 @@ export function buildClaudeRuntimeEnvironment(
   const runtimeEnvironment: NodeJS.ProcessEnv = {
     ...environment,
     CLAUDE_CODE_ENTRYPOINT: "claude-bridge",
-    CLAUDE_AGENT_SDK_CLIENT_APP: "claude-bridge/0.2.3",
+    CLAUDE_AGENT_SDK_CLIENT_APP: "claude-bridge/0.2.4",
     BRIDGE_SESSION_RUNTIME: "1",
   };
   delete runtimeEnvironment.CLAUDECODE;
   return runtimeEnvironment;
 }
 
-export async function prepareClaudeRuntime(
-  environment: NodeJS.ProcessEnv = process.env,
-): Promise<{
+export interface ClaudeRuntime {
   environment: NodeJS.ProcessEnv;
   executablePath?: string;
   credentialPath?: string;
   version?: string;
-}> {
+}
+
+export async function prepareClaudeRuntime(
+  environment: NodeJS.ProcessEnv = process.env,
+  previous?: ClaudeRuntime,
+): Promise<ClaudeRuntime> {
   const prepared = buildClaudeRuntimeEnvironment(environment);
   const credentialPath = await findClaudeHostCredentials(prepared);
   if (credentialPath) applyClaudeHostCredentials(prepared, credentialPath);
-  const executablePath = await findClaudeExecutable(prepared);
-  let version: string | undefined;
-  if (executablePath) {
+  const previousExecutable = previous?.executablePath && await isExecutable(previous.executablePath)
+    ? previous.executablePath
+    : undefined;
+  const executablePath = previousExecutable ?? await findClaudeExecutable(prepared);
+  let version = executablePath === previous?.executablePath ? previous?.version : undefined;
+  if (executablePath && !version) {
     try {
       const result = await execFileAsync(executablePath, ["--version"], {
         env: prepared,

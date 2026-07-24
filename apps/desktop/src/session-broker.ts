@@ -168,6 +168,7 @@ export interface SessionBrokerOptions {
   maxParallelTurns?: number;
   hostFactory?: (options: ClaudeSessionHostOptions) => SessionHostRuntime;
   prepareRuntime?: typeof prepareClaudeRuntime;
+  runtimeRetryDelayMs?: number;
   managedDesktop?: ManagedDesktopRuntime;
   managedTransport?: ManagedDesktopTransportRuntime;
 }
@@ -203,6 +204,7 @@ const EFFORT_LEVELS: BridgeEffort[] = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_CONTEXT_TOKENS = 262_144;
 const LONG_CONTEXT_TOKENS = 1_000_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 8_000;
+const RUNTIME_RETRY_DELAY_MS = 2_000;
 
 function compact(value: string, max = 160): string {
   const normalized = value.replace(/\s+/gu, " ").trim();
@@ -249,6 +251,8 @@ export class SessionBroker extends EventEmitter {
   private activeTurns = 0;
   private initialized = false;
   private closed = false;
+  private runtimeRetryTimer: NodeJS.Timeout | undefined;
+  private runtimeRefresh: Promise<boolean> | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
   private eventQueue: Promise<void> = Promise.resolve();
   private pumpQueue: Promise<void> = Promise.resolve();
@@ -359,8 +363,35 @@ export class SessionBroker extends EventEmitter {
       });
       this.emit("changed");
     });
-    this.runtime = await this.runtimeFactory();
+    await this.refreshRuntime();
     await this.pump();
+  }
+
+  async refreshRuntime(): Promise<boolean> {
+    if (this.closed) return false;
+    if (this.runtimeRefresh) return this.runtimeRefresh;
+    const refresh = (async () => {
+      const previous = this.runtime;
+      const next = await this.runtimeFactory(process.env, previous);
+      if (this.closed) return false;
+      this.runtime = next;
+      const changed = (
+        previous?.executablePath !== next.executablePath ||
+        previous?.credentialPath !== next.credentialPath ||
+        previous?.version !== next.version
+      );
+      if (next.executablePath && next.credentialPath) this.clearRuntimeRetry();
+      else this.scheduleRuntimeRetry();
+      if (changed) {
+        this.emit("changed");
+        void this.pump();
+      }
+      return changed;
+    })().finally(() => {
+      if (this.runtimeRefresh === refresh) this.runtimeRefresh = undefined;
+    });
+    this.runtimeRefresh = refresh;
+    return refresh;
   }
 
   runtimeStatus(): BridgeRuntimeStatus {
@@ -991,6 +1022,7 @@ export class SessionBroker extends EventEmitter {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.clearRuntimeRetry();
     for (const state of this.runtimeStates.values()) {
       if (state.releaseTimer) clearTimeout(state.releaseTimer);
       await state.host?.close();
@@ -1788,6 +1820,9 @@ export class SessionBroker extends EventEmitter {
 
   private async pumpOnce(): Promise<void> {
     if (this.closed || !this.initialized) return;
+    if (!this.managedTransport?.ready && (!this.runtime?.executablePath || !this.runtime.credentialPath)) {
+      await this.refreshRuntime();
+    }
     this.sortPending();
     for (const turn of this.pending) {
       if (this.activeTurns >= this.maxParallelTurns) break;
@@ -1830,6 +1865,21 @@ export class SessionBroker extends EventEmitter {
       await this.acquire(turn);
     }
     this.emit("changed");
+  }
+
+  private scheduleRuntimeRetry(): void {
+    if (this.runtimeRetryTimer || this.closed) return;
+    this.runtimeRetryTimer = setTimeout(() => {
+      this.runtimeRetryTimer = undefined;
+      void this.refreshRuntime();
+    }, this.options.runtimeRetryDelayMs ?? RUNTIME_RETRY_DELAY_MS);
+    this.runtimeRetryTimer.unref?.();
+  }
+
+  private clearRuntimeRetry(): void {
+    if (!this.runtimeRetryTimer) return;
+    clearTimeout(this.runtimeRetryTimer);
+    this.runtimeRetryTimer = undefined;
   }
 
   private refreshObservedOwnership(): void {

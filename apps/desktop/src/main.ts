@@ -13,8 +13,9 @@ import { ClaudeDesktopManager } from "./claude-desktop-manager.js";
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PAIRING_BASE__: string;
 
-const DEFAULT_RELAY = process.env.BRIDGE_RELAY_URL
-  ?? networkReachableUrl(__BRIDGE_DEFAULT_RELAY__);
+const CONFIGURED_RELAY = process.env.BRIDGE_RELAY_URL
+  ?? __BRIDGE_DEFAULT_RELAY__;
+const DEFAULT_RELAY = networkReachableUrl(CONFIGURED_RELAY);
 const DEFAULT_PAIRING_BASE = process.env.BRIDGE_PAIRING_BASE_URL
   ?? networkReachableUrl(__BRIDGE_DEFAULT_PAIRING_BASE__);
 
@@ -71,6 +72,7 @@ async function desktopMain(): Promise<void> {
     app,
     repository,
     DEFAULT_PAIRING_BASE,
+    CONFIGURED_RELAY,
     broker,
     eventLog,
     managedDesktop,
@@ -193,8 +195,14 @@ async function desktopMain(): Promise<void> {
   await controller.initialize();
   powerMonitor.on("suspend", () => controller.pauseForSleep());
   powerMonitor.on("resume", () => void controller.reconnect());
-  app.on("second-instance", showWindow);
-  app.on("activate", showWindow);
+  app.on("second-instance", () => {
+    showWindow();
+    void controller.refreshRuntime();
+  });
+  app.on("activate", () => {
+    showWindow();
+    void controller.refreshRuntime();
+  });
   app.on("before-quit", (event) => {
     if (cleanupStarted) return;
     event.preventDefault();

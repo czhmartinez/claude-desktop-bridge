@@ -276,6 +276,43 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
 }
 
 describe("SessionBroker", () => {
+  it("detects a Claude Host credential created after Bridge startup", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-"));
+    directories.push(root);
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const observer = new FakeObserver({ projects: [], sessions: [], observedAt: Date.now() });
+    let credentialAvailable = false;
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      runtimeRetryDelayMs: 5,
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        ...(credentialAvailable ? { credentialPath: "/fake/host-creds.json" } : {}),
+        environment: {},
+        version: "test",
+      }),
+    });
+
+    await broker.initialize();
+    expect(broker.runtimeStatus().state).toBe("auth-required");
+
+    credentialAvailable = true;
+    await waitFor(() => broker.runtimeStatus().state === "ready");
+    expect(broker.runtimeStatus().credentialSource).toBe("third-party-host");
+
+    await broker.close();
+    await eventLog.close();
+  });
+
   it("waits for desktop idle, resumes exactly once, and deduplicates delivery", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-"));
     directories.push(root);
