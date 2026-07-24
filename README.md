@@ -1,6 +1,8 @@
-# Claude Bridge
+# Claude Desktop Bridge
 
-这段是我自己写的：
+首先这是一个专门针对第三方登录Claude desktop时使用的手机同步开发工具，仅限此种使用场景。
+
+然后这段是我自己写的：
 
 天下苦Anthropic久矣，3天内封了我5个Max订阅账号，A➗你是真的➗。
 
@@ -16,7 +18,7 @@
 
 下一阶段 V0.3 开始研究怎么跨网实现
 
-下面是Codex写的：
+然后下面这些都是Codex写的：
 
 Bridge 0.2 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
 共享同一个 Claude `sessionId`、同一个持久执行进程和同一条有序事件流。
