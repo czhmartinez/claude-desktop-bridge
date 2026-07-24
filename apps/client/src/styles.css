@@ -1997,18 +1997,128 @@ button:disabled {
   line-height: 1.15;
 }
 
+.mobile-desktop-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.mobile-desktop-control-copy {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 9px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.mobile-desktop-control-copy > i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.mobile-desktop-control.running .mobile-desktop-control-copy > i {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mobile-desktop-control.unavailable .mobile-desktop-control-copy > i,
+.mobile-desktop-control.unknown .mobile-desktop-control-copy > i {
+  background: var(--warm);
+}
+
+.mobile-desktop-control-copy > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.mobile-desktop-control-copy strong {
+  font-size: 13px;
+}
+
+.mobile-desktop-control-copy small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.mobile-desktop-control-copy .desktop-app-error {
+  color: var(--danger);
+}
+
+.mobile-desktop-control-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.mobile-desktop-control-actions .secondary-button,
+.mobile-desktop-control-actions .danger-button {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
 .session-search {
   display: grid;
   height: 42px;
   grid-template-columns: auto 1fr;
   align-items: center;
   gap: 9px;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--surface);
   color: var(--faint);
+}
+
+.project-list-toolbar {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.project-list-toolbar > span {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.project-list-toolbar > div {
+  display: flex;
+  gap: 3px;
+}
+
+.project-list-toolbar button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.project-list-toolbar button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .session-search input {
@@ -2984,6 +3094,17 @@ button:disabled {
   font-size: 23px;
 }
 
+.desktop-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.desktop-sidebar-actions .icon-button {
+  width: 32px;
+  height: 32px;
+}
+
 .desktop-project-list {
   min-height: 0;
   padding: 12px 10px 20px;
@@ -3533,6 +3654,16 @@ button:disabled {
     border-bottom: 0;
     border-left: 0;
     border-radius: 8px 8px 0 0;
+  }
+}
+
+@media (max-width: 380px) {
+  .mobile-desktop-control {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-desktop-control-actions {
+    justify-content: flex-end;
   }
 }
 

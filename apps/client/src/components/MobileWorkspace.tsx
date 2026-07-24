@@ -3,9 +3,11 @@ import type {
   BridgeDeliveryState,
   BridgeEvent,
   BridgeHistoryItem,
+  BridgeHostSnapshot,
   BridgePermissionInfo,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
+  ClaudeDesktopAppStatus,
   SocketState,
 } from "@bridge/protocol";
 import {
@@ -13,12 +15,16 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   CircleStop,
   FilePenLine,
   ImagePlus,
   LoaderCircle,
   Moon,
+  Play,
   Plus,
+  Power,
   RefreshCw,
   Search,
   Send,
@@ -35,7 +41,13 @@ import type {
   SessionHistoryState,
 } from "../hooks/useMobileBridge.js";
 import type { Theme } from "../hooks/useTheme.js";
-import { expandProject, toggleCollapsedProject } from "../lib/project-groups.js";
+import {
+  collapseProjects,
+  expandAllProjects,
+  expandProject,
+  toggleCollapsedProject,
+} from "../lib/project-groups.js";
+import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
 import {
   SessionConfigurationDialog,
@@ -551,6 +563,8 @@ export function MobileWorkspace({
   onCreateSession,
   onLoadSessionConfiguration,
   onConfigureSession,
+  onClaudeDesktopLaunch,
+  onClaudeDesktopQuit,
   onRefresh,
   onBackToHosts,
   onRetry,
@@ -558,11 +572,7 @@ export function MobileWorkspace({
   desktopName: string;
   connection: SocketState;
   desktopOnline: boolean;
-  snapshot: {
-    projects: Array<{ projectId: string; name: string; cwd: string }>;
-    sessions: BridgeSessionInfo[];
-    runtime: { state: string; activeTurns: number };
-  } | undefined;
+  snapshot: BridgeHostSnapshot | undefined;
   permissions: BridgePermissionInfo[];
   focusSessionId?: string | undefined;
   histories: Record<string, SessionHistoryState>;
@@ -588,6 +598,8 @@ export function MobileWorkspace({
     sessionId: string,
     change: SessionConfigurationChange,
   ): Promise<BridgeSessionConfiguration>;
+  onClaudeDesktopLaunch(): Promise<ClaudeDesktopAppStatus>;
+  onClaudeDesktopQuit(): Promise<ClaudeDesktopAppStatus>;
   onRefresh(): Promise<void>;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
@@ -606,6 +618,9 @@ export function MobileWorkspace({
   const [imageError, setImageError] = useState<string>();
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
+  const [desktopAction, setDesktopAction] = useState<"launch" | "quit">();
+  const [desktopActionError, setDesktopActionError] = useState("");
+  const [quitDesktopOpen, setQuitDesktopOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
@@ -636,6 +651,14 @@ export function MobileWorkspace({
       sessions: projectSessions,
     }));
   }, [search, sessions, snapshot?.projects]);
+  const groupedProjectIds = useMemo(
+    () => grouped.map((group) => group.project?.projectId ?? group.sessions[0]!.projectId),
+    [grouped],
+  );
+  const allProjectsCollapsed = groupedProjectIds.length > 0
+    && groupedProjectIds.every((projectId) => collapsedProjectIds.has(projectId));
+  const allProjectsExpanded = groupedProjectIds.length > 0
+    && groupedProjectIds.every((projectId) => !collapsedProjectIds.has(projectId));
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -685,6 +708,21 @@ export function MobileWorkspace({
 
   function toggleProject(projectId: string): void {
     setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
+  }
+
+  async function runClaudeDesktopAction(action: "launch" | "quit"): Promise<void> {
+    if (desktopAction) return;
+    if (action === "quit") setQuitDesktopOpen(false);
+    setDesktopAction(action);
+    setDesktopActionError("");
+    try {
+      if (action === "launch") await onClaudeDesktopLaunch();
+      else await onClaudeDesktopQuit();
+    } catch (error) {
+      setDesktopActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDesktopAction(undefined);
+    }
   }
 
   async function sendMessage(): Promise<void> {
@@ -969,10 +1007,60 @@ export function MobileWorkspace({
             <Plus size={17} />新建
           </button>
         </div>
+        <section className={`mobile-desktop-control ${snapshot?.claudeDesktop?.state ?? "unknown"}`}>
+          <div className="mobile-desktop-control-copy">
+            <i aria-hidden="true" />
+            <span>
+              <strong>Claude Desktop</strong>
+              <small className={desktopActionError ? "desktop-app-error" : undefined}>
+                {desktopActionError || snapshot?.claudeDesktop?.detail || "正在读取电脑端运行状态。"}
+              </small>
+            </span>
+          </div>
+          <div className="mobile-desktop-control-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={Boolean(desktopAction) || !desktopOnline || !snapshot?.claudeDesktop?.canLaunch}
+              onClick={() => void runClaudeDesktopAction("launch")}
+            >
+              <Play size={15} />
+              {desktopAction === "launch" ? "启动中" : "启动"}
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              disabled={Boolean(desktopAction) || !desktopOnline || !snapshot?.claudeDesktop?.canQuit}
+              onClick={() => setQuitDesktopOpen(true)}
+            >
+              <Power size={15} />
+              {desktopAction === "quit" ? "退出中" : "退出"}
+            </button>
+          </div>
+        </section>
         <label className="session-search">
           <Search size={17} />
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
         </label>
+        <div className="project-list-toolbar">
+          <span>{groupedProjectIds.length} 个项目</span>
+          <div>
+            <button
+              type="button"
+              disabled={groupedProjectIds.length === 0 || allProjectsCollapsed}
+              onClick={() => setCollapsedProjectIds(collapseProjects(groupedProjectIds))}
+            >
+              <ChevronsUp size={15} />全部折叠
+            </button>
+            <button
+              type="button"
+              disabled={groupedProjectIds.length === 0 || allProjectsExpanded}
+              onClick={() => setCollapsedProjectIds(expandAllProjects())}
+            >
+              <ChevronsDown size={15} />全部展开
+            </button>
+          </div>
+        </div>
         {permissions[0] && (
           <button type="button" className="host-permission-alert" onClick={() => void selectSession(permissions[0]!.sessionId)}>
             <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
@@ -1079,6 +1167,16 @@ export function MobileWorkspace({
           </section>
         </div>
       )}
+      <ConfirmationDialog
+        open={quitDesktopOpen}
+        title="退出电脑上的 Claude Desktop？"
+        description="Claude Desktop 窗口会关闭，Bridge 主机仍保持在线，可继续管理已接管的远程会话。"
+        confirmLabel="退出 Claude Desktop"
+        busy={desktopAction === "quit"}
+        danger
+        onCancel={() => setQuitDesktopOpen(false)}
+        onConfirm={() => void runClaudeDesktopAction("quit")}
+      />
     </main>
   );
 }

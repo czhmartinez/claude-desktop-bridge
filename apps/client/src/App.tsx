@@ -63,6 +63,8 @@ export function App() {
       onCreateSession={mobile.createSession}
       onLoadSessionConfiguration={mobile.loadSessionConfiguration}
       onConfigureSession={mobile.configureSession}
+      onClaudeDesktopLaunch={mobile.launchClaudeDesktop}
+      onClaudeDesktopQuit={mobile.quitClaudeDesktop}
       onRefresh={mobile.refresh}
       onBackToHosts={mobile.backToHosts}
       onRetry={mobile.retryConnection}

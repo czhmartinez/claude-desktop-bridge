@@ -185,7 +185,7 @@ const hostSnapshot = {
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.2.2",
+    version: "0.2.9",
   },
   projects: [project, secondaryProject],
   sessions,
@@ -204,6 +204,12 @@ const hostSnapshot = {
     credentialSource: "third-party-host",
     activeTurns: 1,
     maxParallelTurns: 2,
+  },
+  claudeDesktop: {
+    state: "running",
+    detail: "Claude Desktop 正在运行。",
+    canLaunch: false,
+    canQuit: true,
   },
   permissions: [{
     requestId: "permission-bash",
@@ -287,6 +293,24 @@ desktopSocket.onMessage((message, encrypted) => {
       result = { projects: hostSnapshot.projects };
     } else if (request.method === "session.list") {
       result = { sessions: hostSnapshot.sessions };
+    } else if (request.method === "claude.desktop.status") {
+      result = { claudeDesktop: hostSnapshot.claudeDesktop };
+    } else if (request.method === "claude.desktop.launch") {
+      hostSnapshot.claudeDesktop = {
+        state: "running",
+        detail: "Claude Desktop 正在运行。",
+        canLaunch: false,
+        canQuit: true,
+      };
+      result = { claudeDesktop: hostSnapshot.claudeDesktop };
+    } else if (request.method === "claude.desktop.quit") {
+      hostSnapshot.claudeDesktop = {
+        state: "stopped",
+        detail: "Claude Desktop 已退出，Bridge 仍可继续处理远程会话。",
+        canLaunch: true,
+        canQuit: false,
+      };
+      result = { claudeDesktop: hostSnapshot.claudeDesktop };
     } else if (request.method === "turn.start" || request.method === "turn.steer") {
       result = { commandId: "qa-command", state: "running" };
     } else if (request.method === "turn.interrupt") {
@@ -302,6 +326,9 @@ desktopSocket.onMessage((message, encrypted) => {
       ok: true,
       result,
     }, message.header.fromDeviceId);
+    if (request.method.startsWith("claude.desktop.")) {
+      await sendToMobile({ kind: "snapshot", snapshot: hostSnapshot }, message.header.fromDeviceId);
+    }
     desktopSocket.ack([encrypted.id]);
 
     if (request.method === "turn.start" || request.method === "turn.steer") {
@@ -361,6 +388,20 @@ try {
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
   const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.2 同会话联调" });
   await waitingSessionRow.waitFor();
+  if (await mobile.locator(".session-row-v2").count() !== 3) {
+    errors.push("mobile catalog: expected three expanded session rows");
+  }
+  await mobile.getByRole("button", { name: "全部折叠" }).click();
+  if (await mobile.locator(".session-row-v2").count() !== 0) {
+    errors.push("mobile catalog: collapse all did not hide every session row");
+  }
+  await mobile.getByRole("button", { name: "全部展开" }).click();
+  await waitingSessionRow.waitFor();
+  await mobile.getByRole("button", { name: "退出", exact: true }).click();
+  await mobile.getByRole("button", { name: "退出 Claude Desktop", exact: true }).click();
+  await mobile.getByText("Claude Desktop 已退出，Bridge 仍可继续处理远程会话。").waitFor();
+  await mobile.getByRole("button", { name: "启动", exact: true }).click();
+  await mobile.getByText("Claude Desktop 正在运行。").waitFor();
   await checkPage(mobile, "mobile catalog");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-catalog-390x844.png"), fullPage: true });
 
@@ -470,6 +511,32 @@ try {
         current = { ...current, launchAtLogin: enabled };
         return current;
       },
+      launchClaudeDesktop: async () => {
+        current = {
+          ...current,
+          claudeDesktop: {
+            state: "running",
+            detail: "Claude Desktop 正在运行。",
+            canLaunch: false,
+            canQuit: true,
+          },
+        };
+        for (const listener of snapshotListeners) listener(current);
+        return current;
+      },
+      quitClaudeDesktop: async () => {
+        current = {
+          ...current,
+          claudeDesktop: {
+            state: "stopped",
+            detail: "Claude Desktop 已退出，Bridge 仍可继续处理远程会话。",
+            canLaunch: true,
+            canQuit: false,
+          },
+        };
+        for (const listener of snapshotListeners) listener(current);
+        return current;
+      },
       request: async (request) => {
         if (request.method === "session.open") {
           return response(request, { session: current.sessions[0], history, latestSeq: current.latestSeq });
@@ -506,6 +573,15 @@ try {
   await desktop.goto(baseUrl, { waitUntil: "networkidle" });
   await desktop.getByRole("heading", { name: "会话", exact: true }).waitFor();
   await desktop.getByText("会话内核已接管相同 sessionId，正在验证实时事件与审批。").waitFor();
+  if (await desktop.locator(".desktop-session-row").count() !== 3) {
+    errors.push("desktop sessions: expected three expanded session rows");
+  }
+  await desktop.getByRole("button", { name: "全部折叠" }).click();
+  if (await desktop.locator(".desktop-session-row").count() !== 0) {
+    errors.push("desktop sessions: collapse all did not hide every session row");
+  }
+  await desktop.getByRole("button", { name: "全部展开" }).click();
+  await desktop.locator(".desktop-session-row").first().waitFor();
   await checkPage(desktop, "desktop sessions");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-sessions-1200x800.png"), fullPage: true });
   await desktop.getByRole("button", { name: "模型与 Effort" }).click();

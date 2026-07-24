@@ -11,6 +11,8 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   CircleStop,
   Download,
   ImagePlus,
@@ -32,7 +34,12 @@ import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "../hooks/useTheme.js";
 import type { SessionHistoryState } from "../hooks/useMobileBridge.js";
-import { expandProject, toggleCollapsedProject } from "../lib/project-groups.js";
+import {
+  collapseProjects,
+  expandAllProjects,
+  expandProject,
+  toggleCollapsedProject,
+} from "../lib/project-groups.js";
 import type { LocalBridgeRequest } from "../runtime/desktop.js";
 import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
@@ -123,6 +130,14 @@ function DesktopSessions({
     }
     return [...map.entries()];
   }, [snapshot.sessions]);
+  const groupedProjectIds = useMemo(
+    () => grouped.map(([groupProjectId]) => groupProjectId),
+    [grouped],
+  );
+  const allProjectsCollapsed = groupedProjectIds.length > 0
+    && groupedProjectIds.every((groupProjectId) => collapsedProjectIds.has(groupProjectId));
+  const allProjectsExpanded = groupedProjectIds.length > 0
+    && groupedProjectIds.every((groupProjectId) => !collapsedProjectIds.has(groupProjectId));
   const uncertainDeliveries = useMemo(() => {
     if (!selectedId) return [];
     const latest = new Map<string, BridgeEvent>();
@@ -264,7 +279,23 @@ function DesktopSessions({
       <aside className="desktop-session-sidebar">
         <div className="desktop-sidebar-heading">
           <div><span>Claude</span><h1>会话</h1></div>
-          <IconButton label="新建会话" onClick={() => setCreateOpen(true)} disabled={!snapshot.projects.length}><Plus size={18} /></IconButton>
+          <div className="desktop-sidebar-actions">
+            <IconButton
+              label="全部折叠"
+              disabled={groupedProjectIds.length === 0 || allProjectsCollapsed}
+              onClick={() => setCollapsedProjectIds(collapseProjects(groupedProjectIds))}
+            >
+              <ChevronsUp size={17} />
+            </IconButton>
+            <IconButton
+              label="全部展开"
+              disabled={groupedProjectIds.length === 0 || allProjectsExpanded}
+              onClick={() => setCollapsedProjectIds(expandAllProjects())}
+            >
+              <ChevronsDown size={17} />
+            </IconButton>
+            <IconButton label="新建会话" onClick={() => setCreateOpen(true)} disabled={!snapshot.projects.length}><Plus size={18} /></IconButton>
+          </div>
         </div>
         <div className="desktop-project-list">
           {grouped.map(([groupProjectId, sessions]) => {

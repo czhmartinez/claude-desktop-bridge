@@ -8,7 +8,6 @@ import {
   type BridgeDeviceInfo,
   type BridgeEffort,
   type BridgeEvent,
-  type BridgeHostSnapshot,
   type BridgePayload,
   type BridgeRequest,
   type BridgeResponse,
@@ -286,12 +285,16 @@ export class DesktopController extends EventEmitter {
 
   async launchClaudeDesktop(): Promise<DesktopControlSnapshot> {
     await this.claudeDesktop.launch();
-    return this.publish();
+    const snapshot = await this.publish();
+    await this.broadcast({ kind: "snapshot", snapshot });
+    return snapshot;
   }
 
   async quitClaudeDesktop(): Promise<DesktopControlSnapshot> {
     await this.claudeDesktop.quit();
-    return this.publish();
+    const snapshot = await this.publish();
+    await this.broadcast({ kind: "snapshot", snapshot });
+    return snapshot;
   }
 
   async dispatchLocal(input: LocalBridgeRequest): Promise<BridgeResponse> {
@@ -440,6 +443,15 @@ export class DesktopController extends EventEmitter {
     sourceDeviceId?: string,
   ): Promise<unknown> {
     const params = request.params;
+    if (request.method === "claude.desktop.status") {
+      return { claudeDesktop: await this.claudeDesktop.status(true) };
+    }
+    if (request.method === "claude.desktop.launch") {
+      return { claudeDesktop: (await this.launchClaudeDesktop()).claudeDesktop };
+    }
+    if (request.method === "claude.desktop.quit") {
+      return { claudeDesktop: (await this.quitClaudeDesktop()).claudeDesktop };
+    }
     if (request.method === "project.list") return { projects: this.broker.listProjects() };
     if (request.method === "session.list") {
       return {

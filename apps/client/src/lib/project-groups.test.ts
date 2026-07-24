@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { expandProject, toggleCollapsedProject } from "./project-groups.js";
+import {
+  collapseProjects,
+  expandAllProjects,
+  expandProject,
+  toggleCollapsedProject,
+} from "./project-groups.js";
 
 describe("project group collapse state", () => {
   it("collapses and expands projects independently", () => {
@@ -15,5 +20,10 @@ describe("project group collapse state", () => {
 
     expect([...expandProject(collapsed, "project-a")]).toEqual(["project-b"]);
     expect(expandProject(collapsed, "project-c")).toBe(collapsed);
+  });
+
+  it("collapses and expands every visible project in one action", () => {
+    expect([...collapseProjects(["project-a", "project-b"])]).toEqual(["project-a", "project-b"]);
+    expect(expandAllProjects()).toEqual(new Set());
   });
 });

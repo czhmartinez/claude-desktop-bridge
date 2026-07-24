@@ -14,6 +14,7 @@ import {
   type BridgeResponse,
   type BridgeSessionConfiguration,
   type BridgeSessionInfo,
+  type ClaudeDesktopAppStatus,
   type DecryptedEnvelope,
   type EncryptedEnvelope,
   type PairingBundle,
@@ -311,6 +312,13 @@ function snapshotWithPermissions(
       };
     }),
   };
+}
+
+export function snapshotWithClaudeDesktop(
+  snapshot: BridgeHostSnapshot | undefined,
+  claudeDesktop: ClaudeDesktopAppStatus,
+): BridgeHostSnapshot | undefined {
+  return snapshot ? { ...snapshot, claudeDesktop } : undefined;
 }
 
 export function applyEventToSnapshot(
@@ -634,6 +642,10 @@ export function useMobileBridge() {
   ): Promise<BridgeResponse | undefined> => {
     const crypto = cryptoRef.current;
     if (!crypto) throw new Error("No host selected");
+    const socket = socketRef.current;
+    if ((!socket || socket.state !== "connected") && !options.allowOffline) {
+      throw new Error("电脑当前离线");
+    }
     const request: BridgeRequest = {
       kind: "request",
       requestId: randomId(),
@@ -668,10 +680,8 @@ export function useMobileBridge() {
         ],
       }));
     }
-    const socket = socketRef.current;
     if (!socket || socket.state !== "connected") {
-      if (options.allowOffline) return undefined;
-      throw new Error("电脑当前离线");
+      return undefined;
     }
     const responsePromise = options.wait ? new Promise<BridgeResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1233,8 +1243,42 @@ export function useMobileBridge() {
     return result.configuration;
   }, [sendRequest]);
 
+  const controlClaudeDesktop = useCallback(async (
+    action: "status" | "launch" | "quit",
+  ): Promise<ClaudeDesktopAppStatus> => {
+    const method: BridgeRequest["method"] = `claude.desktop.${action}`;
+    const response = await sendRequest(method, {}, {
+      wait: true,
+      timeoutMs: action === "status" ? 20_000 : 45_000,
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error?.message ?? (
+        action === "launch" ? "Claude Desktop 启动失败" : action === "quit" ? "Claude Desktop 退出失败" : "无法读取 Claude Desktop 状态"
+      ));
+    }
+    const result = response.result as { claudeDesktop?: ClaudeDesktopAppStatus } | undefined;
+    if (!result?.claudeDesktop) throw new Error("电脑未返回 Claude Desktop 状态");
+    const claudeDesktop = result.claudeDesktop;
+    setState((current) => ({
+      ...current,
+      snapshot: snapshotWithClaudeDesktop(current.snapshot, claudeDesktop),
+    }));
+    return claudeDesktop;
+  }, [sendRequest]);
+
+  const launchClaudeDesktop = useCallback(
+    () => controlClaudeDesktop("launch"),
+    [controlClaudeDesktop],
+  );
+
+  const quitClaudeDesktop = useCallback(
+    () => controlClaudeDesktop("quit"),
+    [controlClaudeDesktop],
+  );
+
   const refresh = useCallback(async () => {
     await resumeEvents();
+    await controlClaudeDesktop("status").catch(() => undefined);
     const response = await sendRequest("session.list", {}, { wait: true }).catch(() => undefined);
     if (!response?.ok) return;
     const result = response.result as { sessions?: BridgeSessionInfo[] };
@@ -1243,7 +1287,7 @@ export function useMobileBridge() {
       ...current,
       snapshot: { ...current.snapshot, sessions: result.sessions! },
     } : current);
-  }, [resumeEvents, sendRequest]);
+  }, [controlClaudeDesktop, resumeEvents, sendRequest]);
 
   const forgetHost = useCallback(async (roomId: string) => {
     const crypto = cryptoByRoomRef.current.get(roomId);
@@ -1299,6 +1343,8 @@ export function useMobileBridge() {
     createSession,
     loadSessionConfiguration,
     configureSession,
+    launchClaudeDesktop,
+    quitClaudeDesktop,
     refresh,
     forgetHost,
     retryConnection,

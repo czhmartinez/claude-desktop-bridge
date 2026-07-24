@@ -17,3 +17,11 @@ export function expandProject(
   next.delete(projectId);
   return next;
 }
+
+export function collapseProjects(projectIds: Iterable<string>): Set<string> {
+  return new Set(projectIds);
+}
+
+export function expandAllProjects(): Set<string> {
+  return new Set();
+}

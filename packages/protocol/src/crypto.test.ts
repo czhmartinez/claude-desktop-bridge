@@ -4,6 +4,7 @@ import {
   buildPairingUrl,
   decodePairingBundle,
   encodePairingBundle,
+  isBridgePayload,
   pairingBundleFromUrl,
   type BridgeRequest,
 } from "./index.js";
@@ -91,5 +92,21 @@ describe("BridgeCrypto v2", () => {
     expect(new URL(url).searchParams.get("source")).toBe("desktop");
     expect(pairingBundleFromUrl(url)).toEqual(pairing);
     expect(pairing.expiresAt - pairing.createdAt).toBe(10 * 60 * 1_000);
+  });
+
+  it("accepts authenticated Claude Desktop lifecycle requests", () => {
+    for (const method of [
+      "claude.desktop.status",
+      "claude.desktop.launch",
+      "claude.desktop.quit",
+    ] as const) {
+      expect(isBridgePayload({
+        kind: "request",
+        requestId: `request:${method}`,
+        idempotencyKey: `idempotency:${method}`,
+        method,
+        params: {},
+      })).toBe(true);
+    }
   });
 });

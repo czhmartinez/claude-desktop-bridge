@@ -228,6 +228,7 @@ export interface BridgeHostSnapshot {
   sessions: BridgeSessionInfo[];
   devices: BridgeDeviceInfo[];
   runtime: BridgeRuntimeStatus;
+  claudeDesktop?: ClaudeDesktopAppStatus;
   permissions: BridgePermissionInfo[];
   latestSeq: number;
 }
@@ -251,6 +252,9 @@ export type BridgeMethod =
   | "session.configure"
   | "session.fallback.confirm"
   | "message.delivery.resolve"
+  | "claude.desktop.status"
+  | "claude.desktop.launch"
+  | "claude.desktop.quit"
   | "turn.start"
   | "turn.steer"
   | "turn.interrupt"
