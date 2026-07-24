@@ -26,6 +26,8 @@ afterEach(async () => {
 class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
   busy = false;
   writer: boolean | undefined;
+  releasable = false;
+  releases = 0;
 
   constructor(readonly catalog: ClaudeCatalogSnapshot) {
     super();
@@ -37,6 +39,15 @@ class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
 
   hasDesktopWriter(): boolean {
     return this.writer ?? this.busy;
+  }
+
+  async releaseDesktopWriter(): Promise<boolean> {
+    if (!this.hasDesktopWriter()) return true;
+    if (!this.releasable) return false;
+    this.releases += 1;
+    this.writer = false;
+    this.busy = false;
+    return true;
   }
 
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void {
@@ -332,6 +343,9 @@ describe("SessionBroker", () => {
     const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
     const sessionsPath = join(root, "sessions.json");
     const queuePath = join(root, "queue.json");
+    const managedDesktop = new FakeManagedDesktop();
+    managedDesktop.enabled = false;
+    managedDesktop.ready = false;
     const runtimePaths = {
       sessions: join(root, "runtime-sessions"),
       tasks: join(root, "tasks"),
@@ -344,6 +358,7 @@ describe("SessionBroker", () => {
       observer,
       sessionsPath,
       queuePath,
+      managedDesktop,
       hostFactory: (options) => {
         const host = new FakeHost(options);
         hosts.push(host);
@@ -370,6 +385,7 @@ describe("SessionBroker", () => {
     observer.busy = false;
     observer.publish();
     await waitFor(() => hosts[0]?.sends === 1);
+    expect(managedDesktop.stopped).toBe(false);
     expect(hosts[0]!.options.resume).toBe(true);
     expect(hosts[0]!.options.model).toBe("claude-fable-5[1m]");
     expect(hosts[0]!.options.effort).toBe("high");
@@ -440,8 +456,14 @@ describe("SessionBroker", () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-writer-"));
     directories.push(root);
     const cwd = join(root, "project");
+    const projects = join(root, "projects");
     const sessionId = randomUUID();
-    await mkdir(cwd, { recursive: true });
+    const transcriptDirectory = join(projects, cwd.replace(/[:\\/]/gu, "-"));
+    await Promise.all([
+      mkdir(cwd, { recursive: true }),
+      mkdir(transcriptDirectory, { recursive: true }),
+    ]);
+    await writeFile(join(transcriptDirectory, `${sessionId}.jsonl`), "");
     const desktopSession = observed(sessionId, cwd);
     desktopSession.desktopProcessAlive = true;
     desktopSession.processAlive = true;
@@ -467,7 +489,7 @@ describe("SessionBroker", () => {
       paths: {
         sessions: join(root, "runtime-sessions"),
         tasks: join(root, "tasks"),
-        projects: join(root, "projects"),
+        projects,
         desktopSessions: [],
       },
       eventLog,
@@ -510,6 +532,84 @@ describe("SessionBroker", () => {
     desktopSession.activeProcesses = [];
     observer.publish();
     await waitFor(() => hosts[0]?.sends === 1);
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("releases a completed persistent Desktop writer before resuming the same session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-takeover-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    const sessionId = randomUUID();
+    const transcriptDirectory = join(projects, cwd.replace(/[:\\/]/gu, "-"));
+    await Promise.all([
+      mkdir(cwd, { recursive: true }),
+      mkdir(transcriptDirectory, { recursive: true }),
+    ]);
+    await writeFile(join(transcriptDirectory, `${sessionId}.jsonl`), "");
+    const desktopSession = observed(sessionId, cwd);
+    desktopSession.desktopProcessAlive = true;
+    desktopSession.processAlive = true;
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [desktopSession],
+      observedAt: Date.now(),
+    });
+    observer.writer = true;
+    observer.releasable = true;
+    const hosts: FakeHost[] = [];
+    const managedDesktop = new FakeManagedDesktop();
+    managedDesktop.enabled = false;
+    managedDesktop.ready = false;
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      managedDesktop,
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "request-takeover",
+      idempotencyKey: "command-takeover",
+      sessionId,
+      text: "Continue in the same transcript",
+      origin: "mobile",
+    });
+
+    await waitFor(() => hosts[0]?.sends === 1);
+    expect(observer.releases).toBe(1);
+    expect(managedDesktop.stopped).toBe(false);
+    expect(hosts[0]!.options).toMatchObject({ sessionId, resume: true });
+    expect(broker.session(sessionId)).toMatchObject({
+      ownership: "BRIDGE_RUNNING",
+      transport: "bridge-host",
+    });
+    expect(eventLog.replay().find((event) => (
+      event.type === "session.transport" && event.sessionId === sessionId
+    ))?.data).toMatchObject({
+      transport: "bridge-host",
+      handoff: "desktop-idle",
+    });
+
     await broker.close();
     await eventLog.close();
   });

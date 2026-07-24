@@ -181,7 +181,9 @@ export class DesktopConfigRepository {
       hostSecret: this.protector.unprotect(config.protectedHostSecret),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
-      managedDesktopEnabled: config.managedDesktopEnabled === true,
+      // Claude Desktop now requires an Anthropic-signed CDP authorization token.
+      // Migrate old experiments back to the supported third-party Host path.
+      managedDesktopEnabled: false,
       devices: config.devices.map((device) => ({
         deviceId: device.deviceId,
         name: device.name,

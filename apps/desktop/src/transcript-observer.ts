@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
-import { stat } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import type { ClaudeHistoryMessage } from "@bridge/protocol";
-import { parseClaudeTranscript } from "./claude-history.js";
+import { isClaudeTranscriptAtTurnBoundary, parseClaudeTranscript } from "./claude-history.js";
 import {
   scanClaudeCatalog,
   type ClaudeCatalogSnapshot,
@@ -9,6 +12,8 @@ import {
 } from "./claude-session-catalog.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
 import type { SessionEventLog } from "./session-event-log.js";
+
+const execFile = promisify(execFileCallback);
 
 export interface TranscriptObserverOptions {
   paths: ClaudeRuntimePaths;
@@ -66,6 +71,53 @@ export class TranscriptObserver extends EventEmitter {
     ));
   }
 
+  async releaseDesktopWriter(sessionId: string): Promise<boolean> {
+    const session = this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (!session?.desktopProcessAlive) return true;
+    if (this.isDesktopBusy(sessionId) || session.activeTask || !session.transcriptPath) return false;
+    if (!await isClaudeTranscriptAtTurnBoundary(session.transcriptPath)) return false;
+
+    const candidates = session.activeProcesses.filter((candidate) => (
+      candidate.processAlive &&
+      candidate.entrypoint.startsWith("claude-desktop") &&
+      candidate.pid !== undefined
+    ));
+    const verified: number[] = [];
+    for (const candidate of candidates) {
+      if (
+        await this.isRegisteredDesktopWriter(candidate.pid!, sessionId) &&
+        await this.isClaudeDesktopChild(candidate.pid!)
+      ) verified.push(candidate.pid!);
+    }
+    if (verified.length === 0) return false;
+
+    for (const pid of verified) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
+      }
+    }
+    const deadline = Date.now() + 5_000;
+    while (verified.some((pid) => this.processExists(pid)) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (verified.some((pid) => this.processExists(pid))) return false;
+
+    for (const active of session.activeProcesses) {
+      if (active.pid !== undefined && verified.includes(active.pid)) active.processAlive = false;
+    }
+    const live = session.activeProcesses.filter((candidate) => candidate.processAlive);
+    session.desktopProcessAlive = live.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
+    session.bridgeProcessAlive = live.some((candidate) => candidate.entrypoint === "claude-bridge");
+    session.processAlive = live.length > 0;
+    session.processConflict = session.desktopProcessAlive && session.bridgeProcessAlive;
+    session.activeTask = false;
+    this.catalogValue.observedAt = Date.now();
+    this.emit("catalog", this.catalogValue);
+    return !session.desktopProcessAlive;
+  }
+
   session(sessionId: string): ObservedClaudeSession | undefined {
     return this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
   }
@@ -74,6 +126,63 @@ export class TranscriptObserver extends EventEmitter {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
     while (this.running) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  private processExists(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+
+  private async isRegisteredDesktopWriter(pid: number, sessionId: string): Promise<boolean> {
+    try {
+      const value = JSON.parse(
+        await readFile(join(this.options.paths.sessions, `${pid}.json`), "utf8"),
+      ) as Record<string, unknown>;
+      return (
+        value.pid === pid &&
+        value.sessionId === sessionId &&
+        typeof value.entrypoint === "string" &&
+        value.entrypoint.startsWith("claude-desktop")
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private async isClaudeDesktopChild(pid: number): Promise<boolean> {
+    if (process.platform !== "darwin") return false;
+    let currentPid = pid;
+    for (let depth = 0; depth < 10 && currentPid > 1; depth += 1) {
+      let stdout: string;
+      try {
+        ({ stdout } = await execFile("/bin/ps", [
+          "-p",
+          String(currentPid),
+          "-o",
+          "ppid=,command=",
+        ], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+        }));
+      } catch {
+        return false;
+      }
+      const match = /^\s*(\d+)\s+(.+)$/su.exec(stdout.trim());
+      if (!match) return false;
+      const command = match[2]!;
+      if (depth === 0 && (
+        !command.includes("--output-format stream-json") ||
+        !command.includes("--input-format stream-json") ||
+        !/\/claude(?:\s|$)/u.test(command)
+      )) return false;
+      if (/\/Applications\/Claude\.app\/Contents\/MacOS\/Claude(?:\s|$)/u.test(command)) return true;
+      currentPid = Number(match[1]);
+    }
+    return false;
   }
 
   private async poll(): Promise<void> {

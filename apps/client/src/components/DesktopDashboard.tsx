@@ -17,10 +17,8 @@ import {
   Moon,
   Plus,
   QrCode,
-  RefreshCw,
   Send,
   Settings2,
-  ShieldCheck,
   Smartphone,
   Sun,
   Trash2,
@@ -59,18 +57,18 @@ function formatLastSeen(value: number | undefined, online: boolean): string {
 
 function sessionState(session: BridgeSessionInfo): string {
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
-  if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待通道确认";
+  if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
   if (session.turnState === "running") return "运行中";
   if (session.turnState === "queued") return "排队中";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.ownership === "DESKTOP_OBSERVED") return "桌面只读";
+  if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
   return "待机";
 }
 
 function transportLabel(session: BridgeSessionInfo): string {
   return session.transport === "claude-desktop-managed"
     ? "Claude Desktop 同步"
-    : "Bridge 独立";
+    : "同会话接管";
 }
 
 function sessionProfile(session: BridgeSessionInfo): string {
@@ -98,7 +96,6 @@ function DesktopSessions({
   const [sending, setSending] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
-  const [fallbackConfirmOpen, setFallbackConfirmOpen] = useState(false);
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
   const [title, setTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -308,8 +305,7 @@ function DesktopSessions({
             {selected.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
               <div className="desktop-channel-banner">
                 <AlertTriangle size={18} />
-                <span><strong>Claude Desktop 尚未处于受管模式</strong>为避免第二个进程写入同一会话，当前消息不会发送。</span>
-                <button type="button" className="secondary-button" onClick={() => setFallbackConfirmOpen(true)}>改用独立会话</button>
+                <span><strong>正在等待同会话接管</strong>Claude Desktop 当前任务结束后，Bridge 会自动恢复这条会话。</span>
               </div>
             )}
             {selected.ownership === "OWNERSHIP_CONFLICT" && (
@@ -391,20 +387,6 @@ function DesktopSessions({
           onClose={() => setConfigurationOpen(false)}
         />
       )}
-      <ConfirmationDialog
-        open={fallbackConfirmOpen}
-        title="切换为 Bridge 独立会话？"
-        description="Bridge 会先正常退出 Claude Desktop，再恢复同一 transcript。独立会话运行期间，Claude Desktop 不会实时刷新。"
-        confirmLabel="确认切换"
-        onCancel={() => setFallbackConfirmOpen(false)}
-        onConfirm={() => {
-          if (!selected) return;
-          void apiRequest({
-            method: "session.fallback.confirm",
-            params: { sessionId: selected.sessionId },
-          }).finally(() => setFallbackConfirmOpen(false));
-        }}
-      />
     </section>
   );
 }
@@ -468,25 +450,16 @@ function DesktopDevices({
 function DesktopStatus({
   snapshot,
   onLaunchChange,
-  onManagedChange,
-  onManagedRestart,
   onExport,
 }: {
   snapshot: DesktopControlSnapshot;
   onLaunchChange(enabled: boolean): Promise<void>;
-  onManagedChange(enabled: boolean): Promise<void>;
-  onManagedRestart(): Promise<void>;
   onExport(): Promise<void>;
 }) {
-  const integration = snapshot.runtime.desktopIntegration;
-  const hasFallback = snapshot.sessions.some((session) => session.fallbackConfirmed);
-  const integrationTitle = hasFallback
-    ? "已降级"
-    : integration.state === "ready"
-      ? "Claude Desktop 同步控制"
-      : integration.state === "incompatible"
-        ? "版本不兼容"
-        : "需受管重启";
+  const takeoverReady = snapshot.runtime.state === "ready" || snapshot.runtime.state === "working";
+  const takeoverTitle = takeoverReady
+    ? snapshot.runtime.state === "working" ? "正在接管" : "自动接管已就绪"
+    : snapshot.runtime.state === "auth-required" ? "等待第三方凭据" : "运行时不可用";
   return (
     <section className="desktop-page">
       <header className="desktop-page-heading">
@@ -494,24 +467,13 @@ function DesktopStatus({
         <button type="button" className="secondary-button" onClick={() => void onExport()}><Download size={17} />导出诊断</button>
       </header>
       <div className="status-grid-v2">
-        <section className={`managed-status-card ${integration.state}`}>
-          <span>Desktop 同通道</span>
-          <strong>{integrationTitle}</strong>
-          <p>{hasFallback ? "部分会话正在使用 Bridge 独立通道，Claude Desktop 不会实时刷新。" : integration.detail}</p>
-          <small>
-            {integration.appVersion ? `Claude ${integration.appVersion}` : "macOS 实验功能"}
-            {integration.buildFingerprint ? ` · ${integration.buildFingerprint}` : ""}
-          </small>
-          {integration.lastError && <code>{integration.lastError}</code>}
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={!snapshot.managedDesktopEnabled || !integration.canRestart}
-            onClick={() => void onManagedRestart()}
-          >
-            <RefreshCw size={16} />
-            {integration.state === "incompatible" ? "重新检查兼容性" : "重启并连接"}
-          </button>
+        <section className={`managed-status-card ${takeoverReady ? "ready" : "disconnected"}`}>
+          <span>会话所有权</span>
+          <strong>{takeoverTitle}</strong>
+          <p>{takeoverReady
+            ? "Claude Desktop 执行时排队，空闲后恢复相同 sessionId 与 transcript。"
+            : snapshot.runtime.detail}</p>
+          <small>第三方 Host · 无 CDP · 无焦点或剪贴板控制</small>
         </section>
         <section>
           <span>Claude 通道</span>
@@ -539,11 +501,6 @@ function DesktopStatus({
         </section>
       </div>
       <section className="status-settings">
-        <label className="toggle-row">
-          <span><strong>Claude Desktop 同步控制</strong><small>通过受管私有通道共享同一进程与事件流</small></span>
-          <input type="checkbox" checked={snapshot.managedDesktopEnabled} onChange={(event) => void onManagedChange(event.target.checked)} />
-          <i aria-hidden="true" />
-        </label>
         <label className="toggle-row">
           <span><strong>开机自动运行</strong><small>登录系统后 Bridge 自动待机</small></span>
           <input type="checkbox" checked={snapshot.launchAtLogin} onChange={(event) => void onLaunchChange(event.target.checked)} />
@@ -613,8 +570,6 @@ export function DesktopDashboard({ theme, onToggleTheme }: { theme: Theme; onTog
           <DesktopStatus
             snapshot={snapshot}
             onLaunchChange={async (enabled) => setSnapshot(await api.setLaunchAtLogin(enabled))}
-            onManagedChange={async (enabled) => setSnapshot(await api.setManagedDesktopEnabled(enabled))}
-            onManagedRestart={async () => setSnapshot(await api.restartManagedClaude())}
             onExport={async () => { await api.exportDiagnostics(); }}
           />
         )}

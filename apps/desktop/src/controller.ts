@@ -26,7 +26,6 @@ import {
 } from "./config.js";
 import type { SessionBroker } from "./session-broker.js";
 import type { SessionEventLog } from "./session-event-log.js";
-import type { ClaudeDesktopManager } from "./claude-desktop-manager.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
 
 export interface LocalBridgeRequest {
@@ -155,14 +154,13 @@ export class DesktopController extends EventEmitter {
     private readonly relayConnectUrl: string,
     private readonly broker: SessionBroker,
     private readonly eventLog: SessionEventLog,
-    private readonly managedDesktop: ClaudeDesktopManager,
   ) {
     super();
   }
 
   async initialize(): Promise<void> {
     this.config = await this.repository.loadOrCreate();
-    await this.managedDesktop.setEnabled(this.config.managedDesktopEnabled);
+    this.config.managedDesktopEnabled = false;
     this.config.launchAtLogin = await isLaunchAtLoginEnabled(this.app);
     await this.repository.save(this.config);
     this.hostCrypto = await BridgeCrypto.fromHostSecret({
@@ -280,22 +278,6 @@ export class DesktopController extends EventEmitter {
     await setLaunchAtLogin(this.app, enabled);
     this.config.launchAtLogin = enabled;
     await this.repository.save(this.config);
-    return this.publish();
-  }
-
-  async setManagedDesktopEnabled(enabled: boolean): Promise<DesktopControlSnapshot> {
-    if (!this.config) throw new Error("Desktop controller is not initialized");
-    this.config.managedDesktopEnabled = enabled;
-    await this.repository.save(this.config);
-    await this.managedDesktop.setEnabled(enabled);
-    return this.publish();
-  }
-
-  async restartManagedClaude(): Promise<DesktopControlSnapshot> {
-    const integration = await this.managedDesktop.restartManaged();
-    if (integration.state === "ready") {
-      await this.broker.activateManagedTransport();
-    }
     return this.publish();
   }
 
@@ -501,12 +483,6 @@ export class DesktopController extends EventEmitter {
       return { configuration, session: this.broker.session(sessionId) };
     }
     if (request.method === "session.fallback.confirm") {
-      if (origin !== "desktop") {
-        throw new BridgeRequestError(
-          "LOCAL_CONFIRMATION_REQUIRED",
-          "切换为 Bridge 独立会话必须在电脑端确认。",
-        );
-      }
       return {
         session: await this.broker.confirmFallback(stringParam(params, "sessionId")!),
       };

@@ -131,6 +131,7 @@ export interface TranscriptObserverRuntime {
   readonly catalog: ClaudeCatalogSnapshot;
   isDesktopBusy(sessionId: string, now?: number): boolean;
   hasDesktopWriter(sessionId: string): boolean;
+  releaseDesktopWriter(sessionId: string): Promise<boolean>;
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void;
 }
 
@@ -205,6 +206,7 @@ const DEFAULT_CONTEXT_TOKENS = 262_144;
 const LONG_CONTEXT_TOKENS = 1_000_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 8_000;
 const RUNTIME_RETRY_DELAY_MS = 2_000;
+const SESSION_RELEASE_DELAY_MS = 15_000;
 
 function compact(value: string, max = 160): string {
   const normalized = value.replace(/\s+/gu, " ").trim();
@@ -252,6 +254,7 @@ export class SessionBroker extends EventEmitter {
   private initialized = false;
   private closed = false;
   private runtimeRetryTimer: NodeJS.Timeout | undefined;
+  private readonly takeoverRetryTimers = new Map<string, NodeJS.Timeout>();
   private runtimeRefresh: Promise<boolean> | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
   private eventQueue: Promise<void> = Promise.resolve();
@@ -429,7 +432,7 @@ export class SessionBroker extends EventEmitter {
         ? `${this.activeTurns} 个会话正在处理。`
         : this.managedTransport?.ready
           ? "Claude Desktop 同步通道已就绪。"
-          : "第三方 Claude Host 通道已就绪。",
+          : "第三方 Claude Host 同会话接管已就绪。",
       ...(this.runtime.version ? { version: this.runtime.version } : {}),
       credentialSource: "third-party-host",
       activeTurns: this.activeTurns,
@@ -482,11 +485,6 @@ export class SessionBroker extends EventEmitter {
         this.managedTransport?.ready &&
         (desktopSessionId || state?.managed || bridge),
       );
-      const needsFallbackConfirmation = pendingCount > 0
-        && Boolean(source)
-        && Boolean(this.options.managedDesktop)
-        && !managed
-        && !bridge?.fallbackConfirmedAt;
       const ownership = source?.processConflict
         ? "OWNERSHIP_CONFLICT"
         : state?.ownership
@@ -494,9 +492,7 @@ export class SessionBroker extends EventEmitter {
             ? this.options.observer.isDesktopBusy(sessionId)
               ? "DESKTOP_MANAGED_RUNNING"
               : "DESKTOP_MANAGED_IDLE"
-            : needsFallbackConfirmation
-              ? "FALLBACK_CONFIRMATION_REQUIRED"
-              : "DESKTOP_OBSERVED");
+            : "DESKTOP_OBSERVED");
       const turnState = state?.turnState
         ?? (source && this.options.observer.isDesktopBusy(sessionId) ? "running" : "idle");
       const profile = this.effectiveProfile(sessionId, cwd);
@@ -842,8 +838,9 @@ export class SessionBroker extends EventEmitter {
     await this.initialize();
     const session = this.session(sessionId);
     if (!session) throw new Error("Session not found");
-    if (!this.options.managedDesktop) throw new Error("Claude Desktop 受管模式不可用");
-    await this.options.managedDesktop.stopClaudeForFallback();
+    if (this.options.observer.hasDesktopWriter(sessionId)) {
+      throw new Error("Claude Desktop 仍在执行当前会话，结束后 Bridge 会自动接管");
+    }
     const stored = this.bridgeSessions.get(sessionId) ?? {
       sessionId,
       cwd: session.cwd,
@@ -868,7 +865,7 @@ export class SessionBroker extends EventEmitter {
       data: {
         transport: "bridge-host",
         confirmedFallback: true,
-        warning: "Bridge 独立会话，Claude Desktop 不会实时刷新",
+        detail: "Bridge 使用相同 sessionId 和 transcript 接管",
       },
     });
     this.emit("changed");
@@ -1023,6 +1020,8 @@ export class SessionBroker extends EventEmitter {
     if (this.closed) return;
     this.closed = true;
     this.clearRuntimeRetry();
+    for (const timer of this.takeoverRetryTimers.values()) clearTimeout(timer);
+    this.takeoverRetryTimers.clear();
     for (const state of this.runtimeStates.values()) {
       if (state.releaseTimer) clearTimeout(state.releaseTimer);
       await state.host?.close();
@@ -1102,9 +1101,7 @@ export class SessionBroker extends EventEmitter {
         this.activeTurns = Math.max(0, this.activeTurns - 1);
       }
       state.turnState = "queued";
-      state.ownership = this.options.managedDesktop?.enabled
-        ? "FALLBACK_CONFIRMATION_REQUIRED"
-        : "DESKTOP_OBSERVED";
+      state.ownership = "DESKTOP_OBSERVED";
       await this.failQueuedTurn(turn, error instanceof Error ? error.message : String(error));
       await this.recordOwnership(turn.sessionId, state.ownership);
     }
@@ -1123,18 +1120,6 @@ export class SessionBroker extends EventEmitter {
       conflictState.turnState = "queued";
       this.runtimeStates.set(turn.sessionId, conflictState);
       await this.recordOwnership(turn.sessionId, conflictState.ownership);
-      return;
-    }
-    const bridge = this.bridgeSessions.get(turn.sessionId);
-    if (observed && this.options.managedDesktop && !bridge?.fallbackConfirmedAt) {
-      const waiting = this.runtimeStates.get(turn.sessionId) ?? {
-        ownership: "FALLBACK_CONFIRMATION_REQUIRED" as const,
-        turnState: "queued" as const,
-      };
-      waiting.ownership = "FALLBACK_CONFIRMATION_REQUIRED";
-      waiting.turnState = "queued";
-      this.runtimeStates.set(turn.sessionId, waiting);
-      await this.recordOwnership(turn.sessionId, waiting.ownership);
       return;
     }
     const state = this.runtimeStates.get(turn.sessionId) ?? {
@@ -1462,7 +1447,7 @@ export class SessionBroker extends EventEmitter {
     ) return;
     state.releaseTimer = setTimeout(() => {
       void this.releaseSession(sessionId);
-    }, 10 * 60_000);
+    }, SESSION_RELEASE_DELAY_MS);
   }
 
   private async handleManagedUncertain(event: ManagedDeliveryUncertain): Promise<void> {
@@ -1732,7 +1717,7 @@ export class SessionBroker extends EventEmitter {
     if (!state.managed) {
       state.releaseTimer = setTimeout(() => {
         void this.releaseSession(sessionId);
-      }, 10 * 60_000);
+      }, SESSION_RELEASE_DELAY_MS);
     }
     this.emit("changed");
     await this.pump();
@@ -1840,26 +1825,30 @@ export class SessionBroker extends EventEmitter {
         continue;
       }
       if (this.options.observer.hasDesktopWriter(turn.sessionId)) {
-        const waiting = state ?? {
-          ownership: "DESKTOP_OBSERVED" as const,
-          turnState: "queued" as const,
-        };
-        waiting.ownership = this.options.managedDesktop?.enabled
-          ? "FALLBACK_CONFIRMATION_REQUIRED"
-          : "DESKTOP_OBSERVED";
-        waiting.turnState = "queued";
-        this.runtimeStates.set(turn.sessionId, waiting);
-        continue;
-      }
-      if (observed && this.options.managedDesktop && !fallbackConfirmed) {
-        const waiting = state ?? {
-          ownership: "FALLBACK_CONFIRMATION_REQUIRED" as const,
-          turnState: "queued" as const,
-        };
-        waiting.ownership = "FALLBACK_CONFIRMATION_REQUIRED";
-        waiting.turnState = "queued";
-        this.runtimeStates.set(turn.sessionId, waiting);
-        continue;
+        const released = await this.options.observer.releaseDesktopWriter(turn.sessionId);
+        if (released && !this.options.observer.hasDesktopWriter(turn.sessionId)) {
+          this.clearTakeoverRetry(turn.sessionId);
+          await this.record({
+            sessionId: turn.sessionId,
+            itemId: turn.commandId,
+            origin: "system",
+            type: "session.transport",
+            data: {
+              transport: "bridge-host",
+              handoff: "desktop-idle",
+            },
+          });
+        } else {
+          const waiting = state ?? {
+            ownership: "DESKTOP_OBSERVED" as const,
+            turnState: "queued" as const,
+          };
+          waiting.ownership = "DESKTOP_OBSERVED";
+          waiting.turnState = "queued";
+          this.runtimeStates.set(turn.sessionId, waiting);
+          this.scheduleTakeoverRetry(turn.sessionId);
+          continue;
+        }
       }
       if (!this.runtime?.executablePath || !this.runtime.credentialPath) continue;
       await this.acquire(turn);
@@ -1874,6 +1863,23 @@ export class SessionBroker extends EventEmitter {
       void this.refreshRuntime();
     }, this.options.runtimeRetryDelayMs ?? RUNTIME_RETRY_DELAY_MS);
     this.runtimeRetryTimer.unref?.();
+  }
+
+  private scheduleTakeoverRetry(sessionId: string): void {
+    if (this.closed || this.takeoverRetryTimers.has(sessionId)) return;
+    const timer = setTimeout(() => {
+      this.takeoverRetryTimers.delete(sessionId);
+      void this.pump();
+    }, 1_500);
+    timer.unref?.();
+    this.takeoverRetryTimers.set(sessionId, timer);
+  }
+
+  private clearTakeoverRetry(sessionId: string): void {
+    const timer = this.takeoverRetryTimers.get(sessionId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.takeoverRetryTimers.delete(sessionId);
   }
 
   private clearRuntimeRetry(): void {
@@ -1898,11 +1904,7 @@ export class SessionBroker extends EventEmitter {
           ? this.options.observer.isDesktopBusy(observed.sessionId)
             ? "DESKTOP_MANAGED_RUNNING"
             : "DESKTOP_MANAGED_IDLE"
-          : this.options.managedDesktop &&
-              this.pending.some((turn) => turn.sessionId === observed.sessionId) &&
-              !fallbackConfirmed
-            ? "FALLBACK_CONFIRMATION_REQUIRED"
-            : "DESKTOP_OBSERVED";
+          : "DESKTOP_OBSERVED";
         state.turnState = this.options.observer.isDesktopBusy(observed.sessionId) ? "running" : "idle";
       }
     }

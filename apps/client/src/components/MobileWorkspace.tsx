@@ -61,12 +61,12 @@ function relativeTime(value: number): string {
 
 function ownershipLabel(session: BridgeSessionInfo): string {
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
-  if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待电脑确认";
+  if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
   if (session.turnState === "running") return "运行中";
   if (session.turnState === "queued") return `${session.pendingCount} 条排队`;
   if (session.turnState === "waiting") return "需处理";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.ownership === "DESKTOP_OBSERVED") return "桌面只读";
+  if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
   return "待机";
 }
 
@@ -772,7 +772,7 @@ export function MobileWorkspace({
         {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
           <div className="session-channel-warning">
             <AlertTriangle size={17} />
-            <span><strong>需要在电脑端确认通道</strong>启用同步控制，或在电脑端确认切换为 Bridge 独立会话。</span>
+            <span><strong>正在等待同会话接管</strong>电脑端当前任务结束后会自动发送，无需额外操作。</span>
           </div>
         )}
         {selectedSession.ownership === "OWNERSHIP_CONFLICT" && (

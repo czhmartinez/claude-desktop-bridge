@@ -92,6 +92,21 @@ describe("desktop configuration", () => {
     expect((await localDefault.load())?.relayUrl).toBe("wss://relay.example/ws");
   });
 
+  it("disables the retired managed Desktop experiment during upgrade", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await repository.loadOrCreate();
+    created.managedDesktopEnabled = true;
+    await repository.save(created);
+
+    expect((await repository.load())?.managedDesktopEnabled).toBe(false);
+  });
+
   it("archives a v1 config and requires one-time re-pairing", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   findClaudeTranscriptFile,
+  isClaudeTranscriptAtTurnBoundary,
   parseClaudeTranscript,
   readClaudeSessionContextEstimate,
   readClaudeSessionHistory,
@@ -60,6 +61,35 @@ describe("Claude transcript history", () => {
       messages: [],
       truncated: false,
     });
+  });
+
+  it("only marks a completed assistant branch as a safe ownership boundary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-boundary-"));
+    directories.push(root);
+    const completed = join(root, "completed.jsonl");
+    const waiting = join(root, "waiting.jsonl");
+    await writeFile(completed, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "Run" } }),
+      line({
+        type: "assistant",
+        uuid: "assistant-1",
+        parentUuid: "user-1",
+        message: { role: "assistant", content: "Done", stop_reason: "end_turn" },
+      }),
+      line({ type: "attachment", uuid: "attachment-1", parentUuid: "assistant-1", attachment: { type: "summary" } }),
+    ].join("\n"), "utf8");
+    await writeFile(waiting, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "Run" } }),
+      line({
+        type: "assistant",
+        uuid: "assistant-1",
+        parentUuid: "user-1",
+        message: { role: "assistant", content: [{ type: "tool_use", name: "Write" }], stop_reason: "tool_use" },
+      }),
+    ].join("\n"), "utf8");
+
+    await expect(isClaudeTranscriptAtTurnBoundary(completed)).resolves.toBe(true);
+    await expect(isClaudeTranscriptAtTurnBoundary(waiting)).resolves.toBe(false);
   });
 
   it("caps large histories below the encrypted relay frame budget", async () => {

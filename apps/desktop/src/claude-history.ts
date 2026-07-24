@@ -19,6 +19,14 @@ interface TranscriptNode {
   createdAt: number;
 }
 
+interface TranscriptTurnNode {
+  index: number;
+  uuid: string;
+  parentUuid?: string;
+  type?: "user" | "assistant";
+  stopReason?: string;
+}
+
 export interface ClaudeHistoryReadResult {
   available: boolean;
   messages: ClaudeHistoryMessage[];
@@ -254,6 +262,59 @@ export async function parseClaudeTranscript(
     messages.push({ id: node.uuid, role: node.role, text: node.text, createdAt: node.createdAt });
   }
   return { available: true, ...trimHistory(messages, options) };
+}
+
+export async function isClaudeTranscriptAtTurnBoundary(path: string): Promise<boolean> {
+  const nodes = new Map<string, TranscriptTurnNode>();
+  const referencedParents = new Set<string>();
+  let index = 0;
+  try {
+    const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
+    for await (const line of lines) {
+      index += 1;
+      let value: unknown;
+      try {
+        value = JSON.parse(line) as unknown;
+      } catch {
+        continue;
+      }
+      if (!isRecord(value) || typeof value.uuid !== "string" || !value.uuid) continue;
+      const parentUuid = typeof value.parentUuid === "string" && value.parentUuid ? value.parentUuid : undefined;
+      if (parentUuid) referencedParents.add(parentUuid);
+      const message = isRecord(value.message) ? value.message : undefined;
+      nodes.set(value.uuid, {
+        index,
+        uuid: value.uuid,
+        ...(parentUuid ? { parentUuid } : {}),
+        ...(value.type === "user" || value.type === "assistant" ? { type: value.type } : {}),
+        ...(message && typeof message.stop_reason === "string"
+          ? { stopReason: message.stop_reason }
+          : {}),
+      });
+    }
+  } catch {
+    return false;
+  }
+
+  let current = [...nodes.values()]
+    .filter((node) => !referencedParents.has(node.uuid))
+    .sort((left, right) => right.index - left.index)[0];
+  const seen = new Set<string>();
+  while (current && !seen.has(current.uuid)) {
+    seen.add(current.uuid);
+    if (current.type === "user") return false;
+    if (current.type === "assistant") {
+      return [
+        "end_turn",
+        "max_tokens",
+        "stop_sequence",
+        "refusal",
+        "model_context_window_exceeded",
+      ].includes(current.stopReason ?? "");
+    }
+    current = current.parentUuid ? nodes.get(current.parentUuid) : undefined;
+  }
+  return false;
 }
 
 export async function readClaudeSessionHistory(

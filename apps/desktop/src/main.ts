@@ -8,7 +8,6 @@ import { claudeRuntimePaths, connectorPaths, defaultDesktopName, networkReachabl
 import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
-import { ClaudeDesktopManager } from "./claude-desktop-manager.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PAIRING_BASE__: string;
@@ -52,21 +51,12 @@ async function desktopMain(): Promise<void> {
   const runtimePaths = claudeRuntimePaths();
   const observer = new TranscriptObserver({ paths: runtimePaths, eventLog });
   await observer.start();
-  const managedDesktop = new ClaudeDesktopManager({
-    userDataPath,
-    helperEntryPath: join(__dirname, "claude-desktop-helper.cjs"),
-    enabled: false,
-    hasActiveDesktopTask: () => observer.catalog.sessions.some((session) => (
-      session.activeTask || observer.isDesktopBusy(session.sessionId)
-    )),
-  });
   const broker = new SessionBroker({
     paths: runtimePaths,
     eventLog,
     observer,
     sessionsPath: join(userDataPath, "sessions-v2.json"),
     queuePath: join(userDataPath, "turn-queue-v2.json"),
-    managedDesktop,
   });
   const controller = new DesktopController(
     app,
@@ -75,7 +65,6 @@ async function desktopMain(): Promise<void> {
     CONFIGURED_RELAY,
     broker,
     eventLog,
-    managedDesktop,
   );
 
   let mainWindow: BrowserWindow | undefined;
@@ -108,26 +97,6 @@ async function desktopMain(): Promise<void> {
   handle("bridge:create-pairing", () => controller.createPairing());
   handle("bridge:revoke-device", (deviceId: string) => controller.revokeDevice(deviceId));
   handle("bridge:set-launch-at-login", (enabled: boolean) => controller.setLaunchAtLogin(Boolean(enabled)));
-  handle("bridge:set-managed-desktop-enabled", (enabled: boolean) => (
-    controller.setManagedDesktopEnabled(Boolean(enabled))
-  ));
-  handle("bridge:restart-managed-claude", async () => {
-    const options: Electron.MessageBoxOptions = {
-      type: "warning",
-      title: "重启并连接 Claude Desktop",
-      message: "Bridge 将先检查当前 Claude Desktop 是否支持受管通道",
-      detail: "仅在兼容时才会正常退出并重新打开 Claude Desktop。Bridge 不会绕过应用签名、强制终止进程或自动降级为独立会话。",
-      buttons: ["重启并连接", "取消"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    };
-    const result = mainWindow
-      ? await dialog.showMessageBox(mainWindow, options)
-      : await dialog.showMessageBox(options);
-    if (result.response !== 0) return controller.snapshot();
-    return controller.restartManagedClaude();
-  });
   handle("bridge:request", (request: LocalBridgeRequest) => controller.dispatchLocal(request));
   handle("bridge:export-diagnostics", async () => {
     const result = await dialog.showSaveDialog({
@@ -211,7 +180,6 @@ async function desktopMain(): Promise<void> {
     controller.close();
     void (async () => {
       await broker.close().catch(() => undefined);
-      await managedDesktop.close().catch(() => undefined);
       await observer.close().catch(() => undefined);
       await eventLog.close().catch(() => undefined);
       app.quit();
