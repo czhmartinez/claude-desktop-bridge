@@ -23,7 +23,23 @@ const mainBanner = {
 
 // Never let native helpers from an older build leak into a new package.
 await rm(resolve(dist, "native"), { recursive: true, force: true });
+await rm(resolve(dist, "node_modules"), { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
+const nodeDataChannelSource = resolve(root, "../../node_modules/node-datachannel");
+const nodeDataChannelTarget = resolve(dist, "node_modules/node-datachannel");
+await mkdir(resolve(nodeDataChannelTarget, "build"), { recursive: true });
+await Promise.all([
+  cp(resolve(nodeDataChannelSource, "dist"), resolve(nodeDataChannelTarget, "dist"), {
+    recursive: true,
+  }),
+  cp(
+    resolve(nodeDataChannelSource, "build/Release"),
+    resolve(nodeDataChannelTarget, "build/Release"),
+    { recursive: true },
+  ),
+  cp(resolve(nodeDataChannelSource, "package.json"), resolve(nodeDataChannelTarget, "package.json")),
+  cp(resolve(nodeDataChannelSource, "LICENSE"), resolve(nodeDataChannelTarget, "LICENSE")),
+]);
 await Promise.all([
   build({
     entryPoints: [resolve(root, "src/main.ts")],

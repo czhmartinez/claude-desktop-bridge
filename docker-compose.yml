@@ -34,6 +34,34 @@ services:
       dockerfile: deploy/web.Dockerfile
     restart: unless-stopped
 
+  stun:
+    image: coturn/coturn:4.14.0-r0
+    restart: unless-stopped
+    command:
+      - -n
+      - --stun-only
+      - --fingerprint
+      - --no-tls
+      - --no-dtls
+      - --log-file=stdout
+      - --listening-port=3478
+      - --pidfile=/tmp/turnserver.pid
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+    read_only: true
+    tmpfs:
+      - /var/lib/coturn
+      - /tmp:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "turnutils_stunclient", "127.0.0.1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped

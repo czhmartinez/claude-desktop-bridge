@@ -27,6 +27,16 @@ curl https://你的域名/ready
 选项；面向普通用户的安装包应写入 Bridge 托管 Relay。Relay 数据位于
 `/data/bridge-relay.db`，WAL 和每日七份备份都必须位于持久卷。
 
+0.3.1 同时启动 STUN-only Coturn。域名 A 记录必须指向服务器，腾讯云安全组和
+主机防火墙需放行 TCP/UDP `3478`；无需开放 TURN 的 `49152-65535` 端口范围。
+客户端从 `BRIDGE_SERVICE_ORIGIN` 的主机名自动派生
+`stun:你的域名:3478`。可用以下命令验证监听状态：
+
+```bash
+docker compose ps stun
+docker compose logs --tail=50 stun
+```
+
 ## 3. 推送配置
 
 Android 需要 Firebase `google-services.json`、FCM HTTP v1 服务账号和签名
@@ -102,9 +112,17 @@ Notifications 和 provisioning profile。没有 Apple Developer 条件时只能�
 每个平台至少覆盖：
 
 - 空闲会话主动启动、桌面繁忙排队、断线一小时恢复和重复投递。
+- P2P 成功后 Relay 不出现业务 Envelope；ICE 五秒失败、DataChannel 中断和
+  Wi-Fi/5G 切换后自动回退 WSS，未确认指令仍只执行一次。
 - 历史分页、实时 delta、工具进度、审批、提问、调整和停止。
 - App 前后台、锁屏唤醒、扫码过期、单次二维码和设备撤销。
 - 桌面 `file://` 资源、托盘、开机启动、睡眠恢复和升级覆盖。
+
+桌面原生 WebRTC 运行时使用真实 DataChannel 门禁测试：
+
+```bash
+npm run test:webrtc:native
+```
 - 活动应用、键盘焦点和剪贴板不变，系统中无辅助功能授权请求。
 
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网

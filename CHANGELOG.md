@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+- Add opportunistic WebRTC DataChannel transport between each paired phone and desktop.
+- Keep the encrypted WSS Relay connected for signaling, presence, offline delivery and fallback.
+- Encrypt SDP, ICE candidates and delayed acknowledgements inside the existing device envelope.
+- Fall back to Relay after five seconds or immediately when a direct channel drops, preserving
+  envelope IDs and exactly-once command semantics.
+- Chunk direct encrypted envelopes with SHA-256 verification and DataChannel backpressure control.
+- Bundle the native desktop WebRTC runtime and add a self-hosted STUN-only Coturn service.
+
+Claude session ownership, Agent SDK runtime, history, approvals, model and effort behavior remain unchanged.
+
 ## 0.3.0
 
 - Add public end-to-end encrypted WSS Relay transport with automatic LAN fallback.

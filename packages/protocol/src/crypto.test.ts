@@ -145,4 +145,25 @@ describe("BridgeCrypto v2", () => {
       })).toBe(true);
     }
   });
+
+  it("validates encrypted WebRTC signaling payloads", () => {
+    expect(isBridgePayload({
+      kind: "peer-signal",
+      connectionId: "peer-1",
+      action: "offer",
+      description: { type: "offer", sdp: "v=0" },
+    })).toBe(true);
+    expect(isBridgePayload({
+      kind: "peer-signal",
+      connectionId: "peer-1",
+      action: "candidate",
+      candidate: { candidate: "candidate:1", sdpMLineIndex: 0 },
+    })).toBe(true);
+    expect(isBridgePayload({
+      kind: "peer-signal",
+      connectionId: "peer-1",
+      action: "offer",
+      description: { type: "answer", sdp: "v=0" },
+    })).toBe(false);
+  });
 });

@@ -10,6 +10,10 @@ import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
+import {
+  cleanupDesktopPeerConnection,
+  loadDesktopPeerConnection,
+} from "./webrtc-runtime.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -71,6 +75,16 @@ async function desktopMain(): Promise<void> {
     queuePath: join(userDataPath, "turn-queue-v2.json"),
   });
   const claudeDesktop = new ClaudeDesktopLifecycle();
+  let RTCPeerConnectionImpl: typeof RTCPeerConnection | undefined;
+  try {
+    RTCPeerConnectionImpl = loadDesktopPeerConnection();
+  } catch (error) {
+    process.stderr.write(
+      `Bridge WebRTC unavailable; Relay fallback remains active: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`,
+    );
+  }
   const controller = new DesktopController(
     app,
     repository,
@@ -79,6 +93,7 @@ async function desktopMain(): Promise<void> {
     broker,
     eventLog,
     claudeDesktop,
+    RTCPeerConnectionImpl,
   );
 
   let mainWindow: BrowserWindow | undefined;
@@ -225,6 +240,7 @@ async function desktopMain(): Promise<void> {
       await broker.close().catch(() => undefined);
       await observer.close().catch(() => undefined);
       await eventLog.close().catch(() => undefined);
+      cleanupDesktopPeerConnection();
       app.quit();
     })();
   });

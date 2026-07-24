@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -16,6 +16,7 @@
     "test": "npm run test -ws --if-present",
     "test:coverage": "npm run test:coverage -ws --if-present",
     "test:visual": "node scripts/visual-qa.mjs",
+    "test:webrtc:native": "cross-env BRIDGE_WEBRTC_REAL=1 npm test -w @bridge/desktop -- --run src/webrtc-runtime.test.ts",
     "test:desktop:packaged": "node scripts/packaged-desktop-qa.mjs",
     "test:desktop:pairing": "node scripts/desktop-pairing-e2e.mjs",
     "test:android:installed": "node scripts/android-installed-e2e.mjs",

@@ -6,6 +6,8 @@ import {
   PROTOCOL_VERSION,
   RelayTransport,
   TransportRouter,
+  WebRtcTransport,
+  bridgeIceServers,
   buildPairingUrl,
   cryptoWithRelayEndpoint,
   relayPathForUrl,
@@ -185,6 +187,7 @@ export class DesktopController extends EventEmitter {
     private readonly broker: SessionBroker,
     private readonly eventLog: SessionEventLog,
     private readonly claudeDesktop: ClaudeDesktopLifecycle,
+    private readonly RTCPeerConnectionImpl?: typeof RTCPeerConnection,
   ) {
     super();
   }
@@ -439,7 +442,18 @@ export class DesktopController extends EventEmitter {
         resolveCrypto: (envelope) => this.deviceCryptos.get(envelope.fromDeviceId),
       }),
     }));
-    const socket = new TransportRouter(candidates);
+    const relay = new TransportRouter(candidates);
+    const socket: BridgeTransport = this.RTCPeerConnectionImpl
+      ? new WebRtcTransport({
+          relay,
+          crypto: this.hostCrypto,
+          role: "desktop",
+          RTCPeerConnectionImpl: this.RTCPeerConnectionImpl,
+          iceServers: bridgeIceServers(this.config.serviceOrigin),
+          resolveCrypto: (envelope) => this.deviceCryptos.get(envelope.fromDeviceId),
+          resolvePeerCrypto: (deviceId) => this.deviceCryptos.get(deviceId),
+        })
+      : relay;
     this.socket = socket;
     socket.onState((connection) => {
       this.connection = connection;

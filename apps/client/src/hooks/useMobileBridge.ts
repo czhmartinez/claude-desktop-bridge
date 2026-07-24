@@ -2,7 +2,9 @@ import {
   BridgeCrypto,
   RelayTransport,
   TransportRouter,
+  WebRtcTransport,
   bridgeEndpoint,
+  bridgeIceServers,
   cryptoWithRelayEndpoint,
   normalizeBridgeEndpoints,
   randomId,
@@ -850,7 +852,16 @@ export function useMobileBridge() {
         path: endpoint.kind,
       }),
     }));
-    const socket = new TransportRouter(candidates);
+    const relay = new TransportRouter(candidates);
+    const socket: BridgeTransport = typeof globalThis.RTCPeerConnection === "function"
+      ? new WebRtcTransport({
+          relay,
+          crypto,
+          role: "mobile",
+          RTCPeerConnectionImpl: globalThis.RTCPeerConnection,
+          iceServers: bridgeIceServers(storedHost?.serviceOrigin ?? ""),
+        })
+      : relay;
     socketRef.current = socket;
     let bootstrapPending = bootstrap;
     const isCurrent = () => socketRef.current === socket;

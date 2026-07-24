@@ -34,6 +34,9 @@ Desktop 窗口不承诺即时刷新，释放后仍可重新打开同一份完整
 - 公网、局域网端点自动切换，旧版配对保留 room、设备 ID 和密钥，无需重新扫码。
 - SQLite WAL 离线密文队列、七天保留、128 MB 房间上限、健康检查、指标与每日备份。
 - 大图片加密后按 384 KiB 分块，断线只补传 Relay 缺失分块，完整哈希校验后才 ACK。
+- WebRTC DataChannel 直连：公网 Relay 只交换端到端加密的 SDP/ICE 信令，直连成功后
+  指令、事件、ACK 与附件不再经过 Relay；五秒未建立或中途断开即回退 WSS。
+- 自托管 STUN 帮助家庭宽带与手机网络完成 ICE 穿透，不启用 TURN 数据转发。
 - 电脑端“会话 / 设备 / 状态”控制台、托盘、开机启动和脱敏诊断导出。
 - 首次升级归档 0.1 队列，并只移除 Bridge 自己写入的 MCP 与 HTTP Hooks。
 
@@ -84,7 +87,8 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-生产环境必须提供固定 HTTPS/WSS、FCM/APNs 凭据以及各平台签名和自动更新渠道。
+生产环境必须提供固定 HTTPS/WSS、TCP/UDP 3478 STUN、FCM/APNs 凭据以及各平台
+签名和自动更新渠道。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。
 
 License: MIT

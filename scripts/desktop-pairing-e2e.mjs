@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import {
   BridgeCrypto,
-  BridgeSocket,
+  RelayTransport,
+  WebRtcTransport,
+  bridgeIceServers,
   pairingBundleFromUrl,
   randomId,
+  relayPathForUrl,
 } from "@bridge/protocol";
 import { chromium } from "playwright-core";
 
 const endpoint = process.env.BRIDGE_DESKTOP_CDP ?? "http://127.0.0.1:9223";
+const nativeRequire = createRequire(import.meta.url);
+const { RTCPeerConnection } = nativeRequire("node-datachannel/polyfill");
+const nodeDataChannel = nativeRequire("node-datachannel");
+nodeDataChannel.preload?.();
 const browser = await chromium.connectOverCDP(endpoint);
 let mobile;
 try {
@@ -20,7 +28,19 @@ try {
   const pairing = pairingBundleFromUrl(desktopSnapshot.pairingUrl);
   assert.ok(pairing, "Desktop pairing URL was invalid");
   const crypto = await BridgeCrypto.fromPairing(pairing);
-  mobile = new BridgeSocket({ crypto, role: "mobile", reconnect: false });
+  const relay = new RelayTransport({
+    crypto,
+    role: "mobile",
+    reconnect: false,
+    path: relayPathForUrl(crypto.identity.relayUrl),
+  });
+  mobile = new WebRtcTransport({
+    relay,
+    crypto,
+    role: "mobile",
+    RTCPeerConnectionImpl: RTCPeerConnection,
+    iceServers: bridgeIceServers(pairing.serviceOrigin ?? ""),
+  });
   const requestId = randomId();
 
   const result = await new Promise((resolve, reject) => {
@@ -33,6 +53,10 @@ try {
     };
     mobile.onState((connection) => {
       if (connection !== "connected") return;
+    });
+    const stopMetrics = mobile.onMetrics((metrics) => {
+      if (metrics.path !== "direct") return;
+      stopMetrics();
       void mobile.send({
         kind: "request",
         requestId,
@@ -40,6 +64,7 @@ try {
         method: "project.list",
         params: {
           client: { name: "Pairing E2E", platform: "web" },
+          padding: "x".repeat(200_000),
         },
       }, "desktop").catch(reject);
     });
@@ -60,6 +85,8 @@ try {
   assert.equal(result.snapshot.host.hostId, desktopSnapshot.host.hostId);
   assert.equal(result.response.ok, true);
   assert.ok(Array.isArray(result.response.result?.projects));
+  const transportPath = mobile.path;
+  assert.equal(transportPath, "direct");
   const revokedNotice = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("Revoked device remained connected")), 5_000);
     const stop = mobile.onFrame((frame) => {
@@ -75,9 +102,11 @@ try {
     ok: true,
     host: result.snapshot.host.name,
     projects: result.response.result.projects.length,
+    transport: transportPath,
     deviceRevoked: true,
   }, null, 2)}\n`);
 } finally {
   mobile?.close();
   await browser.close();
+  nodeDataChannel.cleanup?.();
 }

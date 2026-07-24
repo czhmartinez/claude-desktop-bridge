@@ -6,3 +6,4 @@ export * from "./socket.js";
 export * from "./transport.js";
 export * from "./types.js";
 export * from "./validation.js";
+export * from "./webrtc-transport.js";

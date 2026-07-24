@@ -1,4 +1,4 @@
-# Bridge 0.2 安全模型
+# Bridge 0.3.1 安全模型
 
 ## 已保护
 
@@ -29,6 +29,11 @@ Relay 必须看到房间 ID、设备 ID、时间、密文长度、在线状态�
 FCM/APNs 请求只包含无正文唤醒标记。推送服务不会收到会话 ID、标题、摘要或消息
 文本。
 
+WebRTC 的 SDP、ICE candidate 与断线 ACK 也封装在设备 AES-GCM 信封中，Relay
+只能看到短时密文。直连数据同时受 WebRTC DTLS 和 Bridge AES-GCM 双层保护。
+STUN 能看到发起 Binding 的公网 IP 和端口，但不接收 Claude 指令、回复或附件。
+当前版本不使用 TURN；无法直连时继续使用端到端加密 WSS Relay。
+
 ## 本机边界
 
 `TranscriptObserver` 需要只读访问当前用户的 Claude 会话 JSONL 与元数据。
@@ -42,6 +47,8 @@ Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会
 ## 生产要求
 
 - 公网只允许 HTTPS/WSS，并设置严格的 `BRIDGE_ALLOWED_ORIGINS`。
+- STUN 只开放 TCP/UDP 3478，不开放 TURN relay 端口范围；云安全组对其设置连接
+  速率保护。
 - Relay 使用 SQLite WAL 持久卷，密文默认保留七天，每房间最多 2,000 条或 128 MB；
   每日备份保留七份。
 - Relay 数据目录、FCM 服务账号和 APNs 私钥不得进入镜像或源码。

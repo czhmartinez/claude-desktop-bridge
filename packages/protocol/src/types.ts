@@ -1,6 +1,7 @@
 export const PROTOCOL_VERSION = 2 as const;
 export const PAIRING_SCHEMA_VERSION = 3 as const;
 export const ENVELOPE_CHUNK_BYTES = 384 * 1024;
+export const MAX_ENVELOPE_CHUNKS = 384;
 
 export type BridgeRole = "desktop" | "mobile" | "agent";
 export type MessageTarget = BridgeRole;
@@ -372,11 +373,37 @@ export interface BridgeSnapshotPayload {
   snapshot: BridgeHostSnapshot;
 }
 
+export type BridgePeerSignalAction =
+  | "offer"
+  | "answer"
+  | "candidate"
+  | "end-of-candidates"
+  | "ack"
+  | "bye";
+
+export interface BridgePeerSignalPayload {
+  kind: "peer-signal";
+  connectionId: string;
+  action: BridgePeerSignalAction;
+  description?: {
+    type: "offer" | "answer";
+    sdp: string;
+  };
+  candidate?: {
+    candidate: string;
+    sdpMid?: string | null;
+    sdpMLineIndex?: number | null;
+    usernameFragment?: string | null;
+  };
+  ids?: string[];
+}
+
 export type BridgePayload =
   | BridgeRequest
   | BridgeResponse
   | BridgeEventPayload
-  | BridgeSnapshotPayload;
+  | BridgeSnapshotPayload
+  | BridgePeerSignalPayload;
 
 export interface EnvelopeHeader {
   version: typeof PROTOCOL_VERSION;

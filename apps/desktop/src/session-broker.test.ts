@@ -399,7 +399,10 @@ describe("SessionBroker", () => {
     expect(duplicate.commandId).toBe(first.commandId);
     expect(hosts[0]!.sends).toBe(1);
     hosts[0]!.complete();
-    await waitFor(() => eventLog.replay().some((event) => event.type === "turn.completed"));
+    await waitFor(() => (
+      eventLog.replay().some((event) => event.type === "turn.completed") &&
+      broker.session(sessionId)?.turnState === "idle"
+    ));
     const completedDuplicate = await broker.startTurn({
       requestId: "request-duplicate-after-completion",
       idempotencyKey: "same-command",
