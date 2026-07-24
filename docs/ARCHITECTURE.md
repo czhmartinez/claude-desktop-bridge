@@ -1,4 +1,4 @@
-# Bridge 0.2 架构
+# Bridge 0.3 架构
 
 ## 产品边界
 
@@ -7,14 +7,18 @@ Bridge 是 Claude 会话客户端，不是远程桌面，也不是 Claude Deskto
 
 ```mermaid
 flowchart LR
-  M["Android / iOS"] <-->|"协议 v2 加密信封"| R["Relay"]
-  D["Bridge Desktop"] <-->|"协议 v2 加密信封"| R
+  M["Android / iOS"] <-->|"WebRTC DataChannel"| D["Bridge Desktop"]
+  M <-->|"公网 WSS / 局域网 WS"| T["TransportRouter"]
+  D <-->|"公网 WSS / 局域网 WS"| T
+  T <-->|"协议 v2 加密信封"| R["Relay"]
+  M -.->|"STUN Binding"| S["STUN"]
+  D -.->|"STUN Binding"| S
   D --> B["SessionBroker"]
   B --> H["ClaudeSessionHost"]
   H <-->|"Agent SDK Streaming Input"| C["Claude Host"]
   O["TranscriptObserver"] -->|"只读 JSONL 与元数据"| B
   B --> E[("SessionEventLog JSONL")]
-  R -. "仅见路由元数据与密文" .-> Q[("按设备离线队列")]
+  R -. "仅见路由元数据与密文" .-> Q[("SQLite WAL 按设备离线队列")]
 ```
 
 Bridge 接管后，电脑端 Bridge 和手机共享同一会话、同一执行进程和同一事件流。
@@ -30,7 +34,9 @@ Claude Desktop 当前窗口不承诺即时刷新；释放后仍可从相同 `ses
 | `SessionEventLog` | 追加式 JSONL、单调 `seq`、delta 合并、history/cursor |
 | `PermissionBroker` | `canUseTool` 与 `AskUserQuestion` 的首次有效答复 |
 | `packages/protocol` | 请求/响应/事件/快照、AES-GCM、设备定向 ACK |
-| `apps/relay` | 鉴权、定向转发、离线密文、撤销和无正文推送唤醒 |
+| `BridgeTransport` | 公网与局域网使用同一 Envelope、ACK、幂等和事件 cursor |
+| `WebRtcTransport` | 加密信令、五秒直连竞争、DataChannel 分块、ACK 与无缝回退 |
+| `apps/relay` | 鉴权、SQLite 离线密文、分块、撤销、指标、备份和无正文推送 |
 | `apps/client` | 手机三层导航和电脑轻量控制台 |
 
 ## 会话所有权
@@ -67,6 +73,18 @@ Bridge 自身事件写入 `events-v2.jsonl`，最终消息、工具结果、审�
 
 FCM/APNs 只发送 `bridge-wake` 或 `content-available`，不包含会话 ID、消息摘要或
 正文。App 唤醒后再从 Relay 获取并端到端解密。
+
+配置和配对 schema v3 将 Relay 端点从加密身份中解耦。旧 `relayUrl` 自动保留为
+局域网候选，固定公网 WSS 优先；切换端点不会改变 `roomId`、设备凭据、Envelope
+ID 或事件 cursor。大信封先加密再按 64 KiB 分块，Relay 不参与解密；目标端完成
+SHA-256 校验、重组和 AES-GCM 解密后才发送最终 ACK。
+
+0.3.1 在可靠 Relay 之上增加 WebRTC DataChannel。手机通过加密 Envelope 发送
+SDP/ICE，Relay 无法读取候选地址；STUN 只返回公网映射，不承载 Bridge 业务数据。
+直连打开前仍使用 WSS，打开后相同 Envelope ID 直接传输；DataChannel 中断时，
+未确认 outbox 使用原 ID 回退 Relay，因此不会重复执行指令。首版不使用 TURN，
+ICE 五秒未成功即保持 WSS 路径。ICE 服务器为独立显式配置，不从 Relay 或
+`serviceOrigin` 的主机名推导。
 
 ## 运行时发现
 

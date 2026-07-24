@@ -7,10 +7,26 @@ services:
     environment:
       BRIDGE_RELAY_HOST: 0.0.0.0
       BRIDGE_RELAY_PORT: 8788
-      BRIDGE_RELAY_DATA: /data/relay-store.json
-      BRIDGE_ALLOWED_ORIGINS: https://${BRIDGE_DOMAIN}
+      BRIDGE_RELAY_DATA: /data/bridge-relay.db
+      BRIDGE_RELAY_BACKUP_DIR: /data/backups
+      BRIDGE_ALLOWED_ORIGINS: ${BRIDGE_ALLOWED_ORIGINS}
+      BRIDGE_TRUST_PROXY: 1
+      BRIDGE_FCM_PROJECT_ID: ${BRIDGE_FCM_PROJECT_ID:-}
+      BRIDGE_FCM_CLIENT_EMAIL: ${BRIDGE_FCM_CLIENT_EMAIL:-}
+      BRIDGE_FCM_PRIVATE_KEY: ${BRIDGE_FCM_PRIVATE_KEY:-}
+      BRIDGE_APNS_TEAM_ID: ${BRIDGE_APNS_TEAM_ID:-}
+      BRIDGE_APNS_KEY_ID: ${BRIDGE_APNS_KEY_ID:-}
+      BRIDGE_APNS_BUNDLE_ID: ${BRIDGE_APNS_BUNDLE_ID:-com.localbridge.mobile}
+      BRIDGE_APNS_PRIVATE_KEY: ${BRIDGE_APNS_PRIVATE_KEY:-}
+      BRIDGE_APNS_PRODUCTION: ${BRIDGE_APNS_PRODUCTION:-0}
     volumes:
       - relay-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8788/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   web:
     build:
@@ -18,12 +34,42 @@ services:
       dockerfile: deploy/web.Dockerfile
     restart: unless-stopped
 
+  stun:
+    image: coturn/coturn:4.14.0-r0
+    restart: unless-stopped
+    command:
+      - -n
+      - --stun-only
+      - --fingerprint
+      - --no-tls
+      - --no-dtls
+      - --log-file=stdout
+      - --listening-port=3478
+      - --pidfile=/tmp/turnserver.pid
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+    read_only: true
+    tmpfs:
+      - /var/lib/coturn
+      - /tmp:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "turnutils_stunclient", "127.0.0.1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped
     depends_on:
-      - relay
-      - web
+      relay:
+        condition: service_healthy
+      web:
+        condition: service_started
     environment:
       BRIDGE_DOMAIN: ${BRIDGE_DOMAIN}
     ports:

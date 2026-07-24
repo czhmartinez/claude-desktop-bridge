@@ -1,4 +1,4 @@
-# Bridge 0.2 发布手册
+# Bridge 0.3 发布手册
 
 ## 1. 发布闸门
 
@@ -20,10 +20,22 @@ cp .env.example .env
 # 修改域名、Origin 和推送凭据
 docker compose up -d --build
 curl https://你的域名/health
+curl https://你的域名/ready
 ```
 
 生产入口同时承载静态客户端与 `/ws`，必须使用固定 HTTPS/WSS。自托管属于高级
-选项；面向普通用户的安装包应写入 Bridge 托管 Relay。
+选项；面向普通用户的安装包应写入 Bridge 托管 Relay。Relay 数据位于
+`/data/bridge-relay.db`，WAL 和每日七份备份都必须位于持久卷。
+
+0.3.1 不再从 `BRIDGE_SERVICE_ORIGIN` 自动派生 STUN 地址。ICE 必须显式配置，
+例如 Cloudflare 的公共 STUN：
+
+```bash
+BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]'
+```
+
+自托管 Coturn 仍是高级选项；使用时再开放 TCP/UDP `3478`。TURN 长期密钥不得
+打进客户端，必须由服务端换取短期凭据后下发。
 
 ## 3. 推送配置
 
@@ -51,7 +63,10 @@ BRIDGE_APNS_PRODUCTION=1
 ## 4. 构建桌面端
 
 ```bash
-BRIDGE_RELAY_URL=wss://你的域名/ws \
+BRIDGE_RELAY_URL=ws://127.0.0.1:8788/ws \
+BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
+BRIDGE_SERVICE_ORIGIN=https://你的域名 \
+BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]' \
 BRIDGE_PAIRING_BASE_URL=https://你的域名 \
 npm run make -w @bridge/desktop
 ```
@@ -74,6 +89,10 @@ Linux 产出 ZIP/DEB/RPM。没有 Developer ID、Authenticode 或仓库签名时
 ## 5. 构建移动端
 
 ```bash
+VITE_BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
+VITE_BRIDGE_SERVICE_ORIGIN=https://你的域名 \
+VITE_BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]' \
+VITE_BRIDGE_PUSH_ENABLED=true \
 npm run build:android:debug
 npm run sync -w @bridge/mobile
 ```
@@ -95,9 +114,17 @@ Notifications 和 provisioning profile。没有 Apple Developer 条件时只能�
 每个平台至少覆盖：
 
 - 空闲会话主动启动、桌面繁忙排队、断线一小时恢复和重复投递。
+- P2P 成功后 Relay 不出现业务 Envelope；ICE 五秒失败、DataChannel 中断和
+  Wi-Fi/5G 切换后自动回退 WSS，未确认指令仍只执行一次。
 - 历史分页、实时 delta、工具进度、审批、提问、调整和停止。
 - App 前后台、锁屏唤醒、扫码过期、单次二维码和设备撤销。
 - 桌面 `file://` 资源、托盘、开机启动、睡眠恢复和升级覆盖。
+
+桌面原生 WebRTC 运行时使用真实 DataChannel 门禁测试：
+
+```bash
+npm run test:webrtc:native
+```
 - 活动应用、键盘焦点和剪贴板不变，系统中无辅助功能授权请求。
 
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网

@@ -1,7 +1,21 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { BridgeCrypto, PROTOCOL_VERSION } from "@bridge/protocol";
+import {
+  BridgeCrypto,
+  PROTOCOL_VERSION,
+  bridgeEndpoint,
+  isBridgeIceServer,
+  isBridgeEndpoint,
+  normalizeBridgeIceServers,
+  normalizeBridgeEndpoints,
+  relayPathForUrl,
+  selectBridgeEndpoint,
+  type BridgeEndpoint,
+  type BridgeIceServer,
+} from "@bridge/protocol";
+
+const CONFIG_VERSION = 3 as const;
 
 export interface SecretProtector {
   available(): boolean;
@@ -30,9 +44,10 @@ interface StoredDeviceConfig {
   pairedAt?: number;
   lastSeenAt?: number;
   revokedAt?: number;
+  publicRelayClaimedAt?: number;
 }
 
-interface DesktopConfigFile {
+interface DesktopConfigFileV2 {
   version: 2;
   protocolVersion: typeof PROTOCOL_VERSION;
   roomId: string;
@@ -46,6 +61,26 @@ interface DesktopConfigFile {
   devices: StoredDeviceConfig[];
 }
 
+interface DesktopConfigFileV3 {
+  version: typeof CONFIG_VERSION;
+  protocolVersion: typeof PROTOCOL_VERSION;
+  roomId: string;
+  serviceOrigin: string;
+  relayEndpoints: BridgeEndpoint[];
+  activeEndpoint: string;
+  iceServers?: BridgeIceServer[];
+  migratedAt?: number;
+  desktopName: string;
+  hostDeviceId: string;
+  protectedHostSecret: string;
+  createdAt: number;
+  launchAtLogin: boolean;
+  managedDesktopEnabled?: boolean;
+  devices: StoredDeviceConfig[];
+}
+
+type DesktopConfigFile = DesktopConfigFileV2 | DesktopConfigFileV3;
+
 export interface LoadedDeviceConfig {
   deviceId: string;
   name: string;
@@ -56,11 +91,19 @@ export interface LoadedDeviceConfig {
   pairedAt?: number;
   lastSeenAt?: number;
   revokedAt?: number;
+  publicRelayClaimedAt?: number;
 }
 
 export interface LoadedDesktopConfig {
+  configVersion: typeof CONFIG_VERSION;
   protocolVersion: typeof PROTOCOL_VERSION;
   roomId: string;
+  serviceOrigin: string;
+  relayEndpoints: BridgeEndpoint[];
+  activeEndpoint: string;
+  iceServers: BridgeIceServer[];
+  migratedAt?: number;
+  // Compatibility alias for renderer snapshots and older call sites.
   relayUrl: string;
   desktopName: string;
   hostDeviceId: string;
@@ -73,6 +116,9 @@ export interface LoadedDesktopConfig {
 
 export interface DesktopConfigDefaults {
   relayUrl: string;
+  publicRelayUrl?: string;
+  serviceOrigin?: string;
+  iceServers?: BridgeIceServer[];
   desktopName: string;
 }
 
@@ -80,14 +126,40 @@ export function bridgeLocalToken(hostSecret: string): string {
   return createHash("sha256").update("claude-bridge/local/v2\0").update(hostSecret).digest("base64url");
 }
 
+function assertDevice(device: StoredDeviceConfig): void {
+  if (
+    typeof device.deviceId !== "string" ||
+    typeof device.name !== "string" ||
+    typeof device.protectedSecret !== "string" ||
+    typeof device.createdAt !== "number" ||
+    typeof device.expiresAt !== "number"
+  ) throw new Error("Desktop device config is incomplete");
+}
+
 function assertConfig(value: unknown): DesktopConfigFile {
   if (!value || typeof value !== "object") throw new Error("Desktop config is not an object");
-  const config = value as Partial<DesktopConfigFile>;
+  const config = value as {
+    version?: unknown;
+    protocolVersion?: unknown;
+    roomId?: unknown;
+    relayUrl?: unknown;
+    serviceOrigin?: unknown;
+    relayEndpoints?: unknown;
+    activeEndpoint?: unknown;
+    iceServers?: unknown;
+    migratedAt?: unknown;
+    desktopName?: unknown;
+    hostDeviceId?: unknown;
+    protectedHostSecret?: unknown;
+    createdAt?: unknown;
+    launchAtLogin?: unknown;
+    managedDesktopEnabled?: unknown;
+    devices?: unknown;
+  };
   if (
-    config.version !== 2 ||
+    (config.version !== 2 && config.version !== CONFIG_VERSION) ||
     config.protocolVersion !== PROTOCOL_VERSION ||
     typeof config.roomId !== "string" ||
-    typeof config.relayUrl !== "string" ||
     typeof config.desktopName !== "string" ||
     typeof config.hostDeviceId !== "string" ||
     typeof config.protectedHostSecret !== "string" ||
@@ -95,16 +167,22 @@ function assertConfig(value: unknown): DesktopConfigFile {
     typeof config.launchAtLogin !== "boolean" ||
     !Array.isArray(config.devices)
   ) throw new Error("Desktop config is incomplete");
-  for (const device of config.devices) {
-    if (
-      typeof device.deviceId !== "string" ||
-      typeof device.name !== "string" ||
-      typeof device.protectedSecret !== "string" ||
-      typeof device.createdAt !== "number" ||
-      typeof device.expiresAt !== "number"
-    ) throw new Error("Desktop device config is incomplete");
+  for (const device of config.devices as StoredDeviceConfig[]) assertDevice(device);
+  if (config.version === 2) {
+    if (typeof config.relayUrl !== "string") throw new Error("Desktop relay config is incomplete");
+    return config as unknown as DesktopConfigFileV2;
   }
-  return config as DesktopConfigFile;
+  if (
+    typeof config.serviceOrigin !== "string" ||
+    !Array.isArray(config.relayEndpoints) ||
+    !config.relayEndpoints.every(isBridgeEndpoint) ||
+    typeof config.activeEndpoint !== "string" ||
+    (config.iceServers !== undefined && (
+      !Array.isArray(config.iceServers) ||
+      !config.iceServers.every(isBridgeIceServer)
+    ))
+  ) throw new Error("Desktop transport config is incomplete");
+  return config as unknown as DesktopConfigFileV3;
 }
 
 function isLoopbackRelay(value: string): boolean {
@@ -151,6 +229,91 @@ function shouldRefreshLocalRelay(stored: string, currentDefault: string): boolea
   }
 }
 
+function serviceOriginForRelay(relayUrl: string): string {
+  try {
+    const value = new URL(relayUrl);
+    value.protocol = value.protocol === "wss:" ? "https:" : "http:";
+    value.pathname = "/";
+    value.search = "";
+    value.hash = "";
+    return value.toString().replace(/\/$/u, "");
+  } catch {
+    return "";
+  }
+}
+
+function defaultEndpoints(defaults: DesktopConfigDefaults): BridgeEndpoint[] {
+  const endpoints: BridgeEndpoint[] = [];
+  if (defaults.publicRelayUrl) endpoints.push(bridgeEndpoint(defaults.publicRelayUrl, 10, "public"));
+  const defaultKind = relayPathForUrl(defaults.relayUrl);
+  endpoints.push(bridgeEndpoint(
+    defaults.relayUrl,
+    defaultKind === "public-relay" ? 10 : 20,
+    defaultKind === "public-relay" ? "public" : "lan",
+  ));
+  return normalizeBridgeEndpoints(endpoints);
+}
+
+function migrateV2(config: DesktopConfigFileV2, defaults: DesktopConfigDefaults): {
+  relayEndpoints: BridgeEndpoint[];
+  activeEndpoint: string;
+  serviceOrigin: string;
+  iceServers: BridgeIceServer[];
+  migratedAt: number;
+} {
+  const relayUrl = shouldRefreshLocalRelay(config.relayUrl, defaults.relayUrl)
+    ? defaults.relayUrl
+    : config.relayUrl;
+  const legacyKind = relayPathForUrl(relayUrl);
+  const relayEndpoints = normalizeBridgeEndpoints([
+    ...defaultEndpoints(defaults),
+    bridgeEndpoint(
+      relayUrl,
+      legacyKind === "public-relay" ? 10 : 30,
+      legacyKind === "public-relay" ? "public" : "legacy-lan",
+    ),
+  ]);
+  const active = relayEndpoints.find((endpoint) => endpoint.kind === "public-relay")
+    ?? selectBridgeEndpoint(relayEndpoints);
+  if (!active) throw new Error("No relay endpoint is configured");
+  return {
+    relayEndpoints,
+    activeEndpoint: active.id,
+    serviceOrigin: defaults.serviceOrigin ?? serviceOriginForRelay(active.url),
+    iceServers: normalizeBridgeIceServers(defaults.iceServers),
+    migratedAt: Date.now(),
+  };
+}
+
+function refreshV3Endpoints(
+  config: DesktopConfigFileV3,
+  defaults: DesktopConfigDefaults,
+): BridgeEndpoint[] {
+  const refreshed = config.relayEndpoints.map((endpoint) => (
+    endpoint.kind === "lan-relay" && shouldRefreshLocalRelay(endpoint.url, defaults.relayUrl)
+      ? { ...endpoint, url: defaults.relayUrl }
+      : endpoint
+  ));
+  return normalizeBridgeEndpoints([...defaultEndpoints(defaults), ...refreshed]);
+}
+
+function loadDevice(device: StoredDeviceConfig, protector: SecretProtector): LoadedDeviceConfig {
+  return {
+    deviceId: device.deviceId,
+    name: device.name,
+    platform: device.platform,
+    secret: protector.unprotect(device.protectedSecret),
+    createdAt: device.createdAt,
+    expiresAt: device.expiresAt,
+    ...(device.pairedAt !== undefined ? { pairedAt: device.pairedAt } : {}),
+    ...(device.lastSeenAt !== undefined ? { lastSeenAt: device.lastSeenAt } : {}),
+    ...(device.revokedAt !== undefined ? { revokedAt: device.revokedAt } : {}),
+    ...(device.publicRelayClaimedAt !== undefined
+      ? { publicRelayClaimedAt: device.publicRelayClaimedAt }
+      : {}),
+  };
+}
+
 export class DesktopConfigRepository {
   private saveQueue: Promise<void> = Promise.resolve();
 
@@ -169,32 +332,43 @@ export class DesktopConfigRepository {
       throw error;
     }
     const config = assertConfig(JSON.parse(raw));
-    const relayUrl = shouldRefreshLocalRelay(config.relayUrl, this.defaults.relayUrl)
-      ? this.defaults.relayUrl
-      : config.relayUrl;
+    const transport = config.version === 2
+      ? migrateV2(config, this.defaults)
+      : {
+          relayEndpoints: refreshV3Endpoints(config, this.defaults),
+          activeEndpoint: config.activeEndpoint,
+          serviceOrigin: this.defaults.publicRelayUrl
+            ? this.defaults.serviceOrigin || config.serviceOrigin || ""
+            : config.serviceOrigin || this.defaults.serviceOrigin || "",
+          iceServers: normalizeBridgeIceServers(
+            this.defaults.iceServers?.length ? this.defaults.iceServers : config.iceServers,
+          ),
+          ...(config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
+        };
+    const active = (
+      this.defaults.publicRelayUrl
+        ? transport.relayEndpoints.find((endpoint) => endpoint.kind === "public-relay")
+        : undefined
+    ) ?? selectBridgeEndpoint(transport.relayEndpoints, transport.activeEndpoint);
+    if (!active) throw new Error("No active relay endpoint is configured");
     return {
+      configVersion: CONFIG_VERSION,
       protocolVersion: PROTOCOL_VERSION,
       roomId: config.roomId,
-      relayUrl,
+      serviceOrigin: transport.serviceOrigin || serviceOriginForRelay(active.url),
+      relayEndpoints: transport.relayEndpoints,
+      activeEndpoint: active.id,
+      iceServers: transport.iceServers,
+      ...(transport.migratedAt !== undefined ? { migratedAt: transport.migratedAt } : {}),
+      relayUrl: active.url,
       desktopName: config.desktopName,
       hostDeviceId: config.hostDeviceId,
       hostSecret: this.protector.unprotect(config.protectedHostSecret),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
-      // Claude Desktop now requires an Anthropic-signed CDP authorization token.
-      // Migrate old experiments back to the supported third-party Host path.
+      // The unsupported managed Desktop experiment remains disabled during upgrade.
       managedDesktopEnabled: false,
-      devices: config.devices.map((device) => ({
-        deviceId: device.deviceId,
-        name: device.name,
-        platform: device.platform,
-        secret: this.protector.unprotect(device.protectedSecret),
-        createdAt: device.createdAt,
-        expiresAt: device.expiresAt,
-        ...(device.pairedAt !== undefined ? { pairedAt: device.pairedAt } : {}),
-        ...(device.lastSeenAt !== undefined ? { lastSeenAt: device.lastSeenAt } : {}),
-        ...(device.revokedAt !== undefined ? { revokedAt: device.revokedAt } : {}),
-      })),
+      devices: config.devices.map((device) => loadDevice(device, this.protector)),
     };
   }
 
@@ -209,11 +383,22 @@ export class DesktopConfigRepository {
   }
 
   async regenerate(launchAtLogin: boolean): Promise<LoadedDesktopConfig> {
-    const { crypto, secret } = await BridgeCrypto.createHost(this.defaults.relayUrl, this.defaults.desktopName);
+    const relayEndpoints = defaultEndpoints(this.defaults);
+    const active = selectBridgeEndpoint(
+      relayEndpoints,
+      relayEndpoints.find((endpoint) => endpoint.kind === "public-relay")?.id,
+    );
+    if (!active) throw new Error("No default relay endpoint is configured");
+    const { crypto, secret } = await BridgeCrypto.createHost(active.url, this.defaults.desktopName);
     const loaded: LoadedDesktopConfig = {
+      configVersion: CONFIG_VERSION,
       protocolVersion: PROTOCOL_VERSION,
       roomId: crypto.identity.roomId,
-      relayUrl: crypto.identity.relayUrl,
+      serviceOrigin: this.defaults.serviceOrigin ?? serviceOriginForRelay(active.url),
+      relayEndpoints,
+      activeEndpoint: active.id,
+      relayUrl: active.url,
+      iceServers: normalizeBridgeIceServers(this.defaults.iceServers),
       desktopName: crypto.identity.desktopName,
       hostDeviceId: crypto.identity.deviceId,
       hostSecret: secret,
@@ -227,11 +412,18 @@ export class DesktopConfigRepository {
   }
 
   async save(config: LoadedDesktopConfig): Promise<void> {
-    const stored: DesktopConfigFile = {
-      version: 2,
+    const endpoints = normalizeBridgeEndpoints(config.relayEndpoints);
+    const active = selectBridgeEndpoint(endpoints, config.activeEndpoint);
+    if (!active) throw new Error("No active relay endpoint is configured");
+    const stored: DesktopConfigFileV3 = {
+      version: CONFIG_VERSION,
       protocolVersion: PROTOCOL_VERSION,
       roomId: config.roomId,
-      relayUrl: config.relayUrl,
+      serviceOrigin: config.serviceOrigin,
+      relayEndpoints: endpoints,
+      activeEndpoint: active.id,
+      iceServers: normalizeBridgeIceServers(config.iceServers),
+      ...(config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
       desktopName: config.desktopName,
       hostDeviceId: config.hostDeviceId,
       protectedHostSecret: this.protector.protect(config.hostSecret),
@@ -248,6 +440,9 @@ export class DesktopConfigRepository {
         ...(device.pairedAt !== undefined ? { pairedAt: device.pairedAt } : {}),
         ...(device.lastSeenAt !== undefined ? { lastSeenAt: device.lastSeenAt } : {}),
         ...(device.revokedAt !== undefined ? { revokedAt: device.revokedAt } : {}),
+        ...(device.publicRelayClaimedAt !== undefined
+          ? { publicRelayClaimedAt: device.publicRelayClaimedAt }
+          : {}),
       })),
     };
     const contents = `${JSON.stringify(stored, null, 2)}\n`;

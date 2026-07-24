@@ -1,10 +1,11 @@
-# Bridge 0.2 安全模型
+# Bridge 0.3.1 安全模型
 
 ## 已保护
 
 - 正文与事件使用每设备独立的 AES-256-GCM 密钥端到端加密。
 - 房间、发送设备、目标设备、时间和过期时间属于认证数据，Relay 不能静默改写。
 - Relay 只保存鉴权摘要和密文；设备 ACK、离线队列和撤销均按 `deviceId` 隔离。
+- 大附件在端到端加密后分块，Relay 只能看到分块大小、序号和整体密文哈希。
 - 二维码十分钟内单次有效，并由 Relay 绑定到首次使用它的移动实例。
 - 在线撤销会立即移除 Relay 权限；手机删除主机时同时删除本地密钥和缓存。
 - 主机与设备密钥保存在权限为 `0600` 的本地配置中，不调用系统钥匙串，避免临时
@@ -28,6 +29,11 @@ Relay 必须看到房间 ID、设备 ID、时间、密文长度、在线状态�
 FCM/APNs 请求只包含无正文唤醒标记。推送服务不会收到会话 ID、标题、摘要或消息
 文本。
 
+WebRTC 的 SDP、ICE candidate 与断线 ACK 也封装在设备 AES-GCM 信封中，Relay
+只能看到短时密文。直连数据同时受 WebRTC DTLS 和 Bridge AES-GCM 双层保护。
+STUN 能看到发起 Binding 的公网 IP 和端口，但不接收 Claude 指令、回复或附件。
+当前版本不使用 TURN；无法直连时继续使用端到端加密 WSS Relay。
+
 ## 本机边界
 
 `TranscriptObserver` 需要只读访问当前用户的 Claude 会话 JSONL 与元数据。
@@ -41,6 +47,10 @@ Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会
 ## 生产要求
 
 - 公网只允许 HTTPS/WSS，并设置严格的 `BRIDGE_ALLOWED_ORIGINS`。
+- 默认公共 STUN 不承载业务数据。自托管 STUN/TURN 时只开放实际使用的端口并设置
+  速率保护；TURN 长期密钥只能留在服务端，客户端只接收短期凭据。
+- Relay 使用 SQLite WAL 持久卷，密文默认保留七天，每房间最多 2,000 条或 128 MB；
+  每日备份保留七份。
 - Relay 数据目录、FCM 服务账号和 APNs 私钥不得进入镜像或源码。
 - 配置 macOS notarization、Windows code signing、Android keystore 和 iOS
   provisioning profile。

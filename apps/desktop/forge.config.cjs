@@ -9,7 +9,9 @@ const platformIcon = process.platform === "darwin"
 
 module.exports = {
   packagerConfig: {
-    asar: true,
+    asar: {
+      unpack: "**/*.node",
+    },
     prune: false,
     name: "Bridge",
     executableName: "bridge",

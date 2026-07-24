@@ -6,6 +6,8 @@ import {
   encodePairingBundle,
   isBridgePayload,
   pairingBundleFromUrl,
+  toBase64Url,
+  utf8,
   type BridgeRequest,
 } from "./index.js";
 
@@ -83,6 +85,7 @@ describe("BridgeCrypto v2", () => {
       roomId: host.crypto.identity.roomId,
       relayUrl: host.crypto.identity.relayUrl,
       desktopName: host.crypto.identity.desktopName,
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
       now: 1_000,
     });
     const encoded = encodePairingBundle(pairing);
@@ -92,6 +95,42 @@ describe("BridgeCrypto v2", () => {
     expect(new URL(url).searchParams.get("source")).toBe("desktop");
     expect(pairingBundleFromUrl(url)).toEqual(pairing);
     expect(pairing.expiresAt - pairing.createdAt).toBe(10 * 60 * 1_000);
+    expect(pairing).toMatchObject({
+      version: 3,
+      protocolVersion: 2,
+      activeEndpoint: "public",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    });
+    expect(pairing.relayEndpoints).toHaveLength(1);
+  });
+
+  it("normalizes a 0.2 pairing bundle without rotating its device secret", () => {
+    const legacy = {
+      version: 2,
+      roomId: "legacy-room-12345678",
+      deviceId: "legacy-phone",
+      secret: "legacy-secret",
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      desktopName: "Legacy Mac",
+      createdAt: 1_000,
+      expiresAt: 601_000,
+      singleUse: true,
+    };
+    const normalized = decodePairingBundle(toBase64Url(utf8(JSON.stringify(legacy))));
+
+    expect(normalized).toMatchObject({
+      version: 3,
+      protocolVersion: 2,
+      roomId: legacy.roomId,
+      deviceId: legacy.deviceId,
+      secret: legacy.secret,
+      activeEndpoint: "legacy",
+      relayUrl: legacy.relayUrl,
+      iceServers: [],
+    });
+    expect(normalized.relayEndpoints).toEqual([
+      expect.objectContaining({ kind: "lan-relay", url: legacy.relayUrl }),
+    ]);
   });
 
   it("accepts authenticated Claude Desktop lifecycle requests", () => {
@@ -108,5 +147,26 @@ describe("BridgeCrypto v2", () => {
         params: {},
       })).toBe(true);
     }
+  });
+
+  it("validates encrypted WebRTC signaling payloads", () => {
+    expect(isBridgePayload({
+      kind: "peer-signal",
+      connectionId: "peer-1",
+      action: "offer",
+      description: { type: "offer", sdp: "v=0" },
+    })).toBe(true);
+    expect(isBridgePayload({
+      kind: "peer-signal",
+      connectionId: "peer-1",
+      action: "candidate",
+      candidate: { candidate: "candidate:1", sdpMLineIndex: 0 },
+    })).toBe(true);
+    expect(isBridgePayload({
+      kind: "peer-signal",
+      connectionId: "peer-1",
+      action: "offer",
+      description: { type: "answer", sdp: "v=0" },
+    })).toBe(false);
   });
 });

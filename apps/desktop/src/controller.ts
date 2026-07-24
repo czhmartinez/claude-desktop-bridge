@@ -1,16 +1,27 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   BridgeCrypto,
-  BridgeSocket,
+  PAIRING_SCHEMA_VERSION,
+  PROTOCOL_VERSION,
+  RelayTransport,
+  TransportRouter,
+  WebRtcTransport,
+  bridgeIceServers,
   buildPairingUrl,
+  cryptoWithRelayEndpoint,
+  relayPathForUrl,
   type BridgeAttachment,
   type BridgeDeviceInfo,
+  type BridgeEndpoint,
   type BridgeEffort,
   type BridgeEvent,
   type BridgePayload,
   type BridgeRequest,
   type BridgeResponse,
+  type BridgeTransport,
+  type BridgeTransportCandidate,
+  type BridgeTransportMetrics,
   type DesktopControlSnapshot,
   type DecryptedEnvelope,
   type EncryptedEnvelope,
@@ -95,13 +106,33 @@ function attachmentsParam(params: Record<string, unknown>): BridgeAttachment[] {
   });
 }
 
+function relayReadyUrl(endpoint: string): string {
+  const url = new URL(endpoint);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = "/ready";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function redactedEndpoint(endpoint: string): string {
+  const url = new URL(endpoint);
+  const fingerprint = createHash("sha256").update(url.host).digest("hex").slice(0, 10);
+  return `${url.protocol}//relay-${fingerprint}${url.pathname}`;
+}
+
 function pairingForDevice(config: LoadedDesktopConfig, device: LoadedDeviceConfig): PairingBundle {
   return {
-    version: 2,
+    version: PAIRING_SCHEMA_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
     roomId: config.roomId,
     deviceId: device.deviceId,
     secret: device.secret,
     relayUrl: config.relayUrl,
+    serviceOrigin: config.serviceOrigin,
+    relayEndpoints: config.relayEndpoints,
+    activeEndpoint: config.activeEndpoint,
+    iceServers: config.iceServers,
     desktopName: config.desktopName,
     createdAt: device.createdAt,
     expiresAt: device.expiresAt,
@@ -139,13 +170,15 @@ function errorResponse(requestId: string, error: unknown): BridgeResponse {
 export class DesktopController extends EventEmitter {
   private config: LoadedDesktopConfig | undefined;
   private hostCrypto: BridgeCrypto | undefined;
-  private socket: BridgeSocket | undefined;
+  private socket: BridgeTransport | undefined;
   private connection: SocketState = "idle";
   private currentPairingDeviceId: string | undefined;
   private readonly deviceCryptos = new Map<string, BridgeCrypto>();
   private readonly onlineDevices = new Set<string>();
   private readonly responseCache = new Map<string, BridgeResponse>();
   private lastSeenAt = Date.now();
+  private transportMetrics: BridgeTransportMetrics | undefined;
+  private relayHealthy = false;
 
   constructor(
     private readonly app: App,
@@ -155,6 +188,7 @@ export class DesktopController extends EventEmitter {
     private readonly broker: SessionBroker,
     private readonly eventLog: SessionEventLog,
     private readonly claudeDesktop: ClaudeDesktopLifecycle,
+    private readonly RTCPeerConnectionImpl?: typeof RTCPeerConnection,
   ) {
     super();
   }
@@ -166,7 +200,7 @@ export class DesktopController extends EventEmitter {
     await this.repository.save(this.config);
     this.hostCrypto = await BridgeCrypto.fromHostSecret({
       roomId: this.config.roomId,
-      relayUrl: this.relayConnectUrl,
+      relayUrl: this.config.relayUrl,
       desktopName: this.config.desktopName,
       deviceId: this.config.hostDeviceId,
       secret: this.config.hostSecret,
@@ -206,6 +240,16 @@ export class DesktopController extends EventEmitter {
       sessions: this.broker.listSessions(),
       devices: this.deviceSnapshots(),
       runtime: this.broker.runtimeStatus(),
+      transport: {
+        path: this.socket?.path ?? relayPathForUrl(this.config.relayUrl),
+        state: this.connection,
+        pendingCount: 0,
+        relayHealthy: this.relayHealthy,
+        ...(this.transportMetrics?.rttMs !== undefined ? { rttMs: this.transportMetrics.rttMs } : {}),
+        ...(this.transportMetrics?.lastConnectedAt !== undefined
+          ? { lastConnectedAt: this.transportMetrics.lastConnectedAt }
+          : {}),
+      },
       permissions: this.broker.permissionBroker.list().map((request) => ({
         requestId: request.requestId,
         sessionId: request.sessionId,
@@ -236,6 +280,10 @@ export class DesktopController extends EventEmitter {
       roomId: this.config.roomId,
       relayUrl: this.config.relayUrl,
       desktopName: this.config.desktopName,
+      serviceOrigin: this.config.serviceOrigin,
+      relayEndpoints: this.config.relayEndpoints,
+      activeEndpoint: this.config.activeEndpoint,
+      iceServers: this.config.iceServers,
     });
     const device: LoadedDeviceConfig = {
       deviceId: created.pairing.deviceId,
@@ -323,9 +371,12 @@ export class DesktopController extends EventEmitter {
       arch: process.arch,
       node: process.version,
       relay: {
-        endpoint: new URL(this.config.relayUrl).host,
-        connectionEndpoint: new URL(this.relayConnectUrl).host,
+        endpoint: redactedEndpoint(this.config.relayUrl),
+        connectionEndpoint: redactedEndpoint(this.relayConnectUrl),
         connection: this.connection,
+        path: this.socket?.path,
+        rttMs: this.transportMetrics?.rttMs,
+        healthy: this.relayHealthy,
       },
       runtime: this.broker.runtimeStatus(),
       counts: {
@@ -346,6 +397,7 @@ export class DesktopController extends EventEmitter {
     this.socket?.close();
     this.socket = undefined;
     this.connection = "closed";
+    this.relayHealthy = false;
     void this.publish();
   }
 
@@ -365,19 +417,66 @@ export class DesktopController extends EventEmitter {
 
   private async connect(): Promise<void> {
     if (!this.config || !this.hostCrypto) return;
-    const socket = new BridgeSocket({
-      crypto: this.hostCrypto,
-      role: "desktop",
-      createRoom: true,
-      resolveCrypto: (envelope) => this.deviceCryptos.get(envelope.fromDeviceId),
-    });
+    const localConnectUrl = relayPathForUrl(this.relayConnectUrl) === "lan-relay"
+      ? this.relayConnectUrl
+      : undefined;
+    const candidateEndpoints = this.config.relayEndpoints
+      .filter((endpoint): endpoint is BridgeEndpoint & {
+        kind: "public-relay" | "lan-relay";
+      } => endpoint.kind !== "direct")
+      .map((endpoint) => ({
+        endpoint,
+        connectUrl: endpoint.kind === "lan-relay" && localConnectUrl
+          ? localConnectUrl
+          : endpoint.url,
+      }));
+    const candidates: BridgeTransportCandidate[] = candidateEndpoints.map(({ endpoint, connectUrl }) => ({
+      id: endpoint.id,
+      path: endpoint.kind,
+      endpoint: connectUrl,
+      priority: endpoint.priority,
+      create: () => new RelayTransport({
+        crypto: cryptoWithRelayEndpoint(this.hostCrypto!, connectUrl),
+        role: "desktop",
+        createRoom: true,
+        reconnect: false,
+        path: endpoint.kind,
+        resolveCrypto: (envelope) => this.deviceCryptos.get(envelope.fromDeviceId),
+      }),
+    }));
+    const relay = new TransportRouter(candidates);
+    const socket: BridgeTransport = this.RTCPeerConnectionImpl
+      ? new WebRtcTransport({
+          relay,
+          crypto: this.hostCrypto,
+          role: "desktop",
+          RTCPeerConnectionImpl: this.RTCPeerConnectionImpl,
+          iceServers: bridgeIceServers(this.config.iceServers),
+          resolveCrypto: (envelope) => this.deviceCryptos.get(envelope.fromDeviceId),
+          resolvePeerCrypto: (deviceId) => this.deviceCryptos.get(deviceId),
+        })
+      : relay;
     this.socket = socket;
     socket.onState((connection) => {
       this.connection = connection;
       if (connection === "connected") {
         this.lastSeenAt = Date.now();
+        const active = candidateEndpoints.find((candidate) => candidate.connectUrl === socket.endpoint);
+        if (active && this.config && this.config.activeEndpoint !== active.endpoint.id) {
+          this.config.activeEndpoint = active.endpoint.id;
+          this.config.relayUrl = active.endpoint.url;
+          this.config.migratedAt = Date.now();
+          void this.repository.save(this.config);
+        }
         this.registerPendingDevices();
+        void this.checkRelayHealth(socket.endpoint);
+      } else if (connection === "closed" || connection === "reconnecting") {
+        this.relayHealthy = false;
       }
+      void this.publish();
+    });
+    socket.onMetrics((metrics) => {
+      this.transportMetrics = metrics;
       void this.publish();
     });
     socket.onFrame((frame) => {
@@ -404,6 +503,21 @@ export class DesktopController extends EventEmitter {
       void this.receiveMessage(message, encrypted);
     });
     socket.connect();
+  }
+
+  private async checkRelayHealth(endpoint: string): Promise<void> {
+    try {
+      const response = await fetch(relayReadyUrl(endpoint), {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(4_000),
+      });
+      if (this.socket?.endpoint !== endpoint) return;
+      this.relayHealthy = response.ok;
+    } catch {
+      if (this.socket?.endpoint !== endpoint) return;
+      this.relayHealthy = false;
+    }
+    await this.publish();
   }
 
   private async receiveMessage(message: DecryptedEnvelope, encrypted: EncryptedEnvelope): Promise<void> {
@@ -632,11 +746,27 @@ export class DesktopController extends EventEmitter {
     if (!this.config || !this.socket || this.connection !== "connected") return;
     const now = Date.now();
     for (const device of this.config.devices) {
-      if (device.revokedAt || device.expiresAt <= now || device.pairedAt) continue;
+      if (device.revokedAt) {
+        try {
+          this.socket.revokeDevice(device.deviceId);
+        } catch {
+          // Revocation is replayed whenever another endpoint becomes active.
+        }
+        continue;
+      }
       const crypto = this.deviceCryptos.get(device.deviceId);
       if (!crypto) continue;
       try {
-        this.socket.registerDevice(device.deviceId, crypto.identity.authToken, device.expiresAt);
+        if (device.pairedAt && this.socket.path === "public-relay") {
+          this.socket.registerDevice(
+            device.deviceId,
+            crypto.identity.authToken,
+            now + 7 * 24 * 60 * 60 * 1_000,
+            { migrate: true, pairedAt: device.pairedAt },
+          );
+        } else if (!device.pairedAt && device.expiresAt > now) {
+          this.socket.registerDevice(device.deviceId, crypto.identity.authToken, device.expiresAt);
+        }
       } catch {
         // Registration will be retried on the next reconnect.
       }
@@ -650,6 +780,7 @@ export class DesktopController extends EventEmitter {
     const now = Date.now();
     device.pairedAt ??= now;
     device.lastSeenAt = now;
+    if (this.socket?.path === "public-relay") device.publicRelayClaimedAt ??= now;
     const client = metadata?.client;
     if (client && typeof client === "object") {
       const value = client as Record<string, unknown>;

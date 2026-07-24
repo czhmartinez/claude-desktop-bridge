@@ -9,6 +9,14 @@
     reverse_proxy relay:8788
   }
 
+  handle /ready {
+    reverse_proxy relay:8788
+  }
+
+  handle /metrics {
+    reverse_proxy relay:8788
+  }
+
   handle {
     reverse_proxy web:80
   }

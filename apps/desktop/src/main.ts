@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { rename, writeFile } from "node:fs/promises";
+import { parseBridgeIceServers, relayPathForUrl } from "@bridge/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from "electron";
 import { DesktopConfigRepository, fileSecretProtector } from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
@@ -9,15 +10,31 @@ import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
+import {
+  cleanupDesktopPeerConnection,
+  loadDesktopPeerConnection,
+} from "./webrtc-runtime.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
+declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PAIRING_BASE__: string;
+declare const __BRIDGE_DEFAULT_SERVICE_ORIGIN__: string;
+declare const __BRIDGE_DEFAULT_ICE_SERVERS__: string;
 
 const CONFIGURED_RELAY = process.env.BRIDGE_RELAY_URL
   ?? __BRIDGE_DEFAULT_RELAY__;
 const DEFAULT_RELAY = networkReachableUrl(CONFIGURED_RELAY);
 const DEFAULT_PAIRING_BASE = process.env.BRIDGE_PAIRING_BASE_URL
   ?? networkReachableUrl(__BRIDGE_DEFAULT_PAIRING_BASE__);
+const CONFIGURED_PUBLIC_RELAY = (
+  process.env.BRIDGE_PUBLIC_RELAY_URL ?? __BRIDGE_DEFAULT_PUBLIC_RELAY__
+) || (relayPathForUrl(CONFIGURED_RELAY) === "public-relay" ? CONFIGURED_RELAY : undefined);
+const DEFAULT_SERVICE_ORIGIN = (
+  process.env.BRIDGE_SERVICE_ORIGIN ?? __BRIDGE_DEFAULT_SERVICE_ORIGIN__
+) || DEFAULT_PAIRING_BASE;
+const DEFAULT_ICE_SERVERS = parseBridgeIceServers(
+  process.env.BRIDGE_ICE_SERVERS ?? __BRIDGE_DEFAULT_ICE_SERVERS__,
+);
 
 function configPath(): string {
   const base = process.env.BRIDGE_USER_DATA ?? app.getPath("userData");
@@ -46,6 +63,9 @@ async function desktopMain(): Promise<void> {
 
   const repository = new DesktopConfigRepository(configPath(), fileSecretProtector(), {
     relayUrl: DEFAULT_RELAY,
+    ...(CONFIGURED_PUBLIC_RELAY ? { publicRelayUrl: CONFIGURED_PUBLIC_RELAY } : {}),
+    serviceOrigin: DEFAULT_SERVICE_ORIGIN,
+    iceServers: DEFAULT_ICE_SERVERS,
     desktopName: defaultDesktopName(),
   });
   const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));
@@ -60,6 +80,16 @@ async function desktopMain(): Promise<void> {
     queuePath: join(userDataPath, "turn-queue-v2.json"),
   });
   const claudeDesktop = new ClaudeDesktopLifecycle();
+  let RTCPeerConnectionImpl: typeof RTCPeerConnection | undefined;
+  try {
+    RTCPeerConnectionImpl = loadDesktopPeerConnection();
+  } catch (error) {
+    process.stderr.write(
+      `Bridge WebRTC unavailable; Relay fallback remains active: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`,
+    );
+  }
   const controller = new DesktopController(
     app,
     repository,
@@ -68,6 +98,7 @@ async function desktopMain(): Promise<void> {
     broker,
     eventLog,
     claudeDesktop,
+    RTCPeerConnectionImpl,
   );
 
   let mainWindow: BrowserWindow | undefined;
@@ -214,6 +245,7 @@ async function desktopMain(): Promise<void> {
       await broker.close().catch(() => undefined);
       await observer.close().catch(() => undefined);
       await eventLog.close().catch(() => undefined);
+      cleanupDesktopPeerConnection();
       app.quit();
     })();
   });

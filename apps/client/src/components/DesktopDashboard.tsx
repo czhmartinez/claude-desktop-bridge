@@ -67,6 +67,15 @@ function formatLastSeen(value: number | undefined, online: boolean): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(value);
 }
 
+function connectionLabel(snapshot: DesktopControlSnapshot): string {
+  if (snapshot.host.version.startsWith("0.2.")) return "需要升级";
+  if (snapshot.connection === "connecting" || snapshot.connection === "reconnecting") return "正在重连";
+  if (snapshot.connection !== "connected") return "主机离线";
+  if (snapshot.transport?.path === "direct") return "直连";
+  if (snapshot.transport?.path === "public-relay") return "安全中继";
+  return "局域网连接";
+}
+
 function sessionState(session: BridgeSessionInfo): string {
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
@@ -557,10 +566,18 @@ function DesktopStatus({
           {snapshot.runtime.version && <small>Claude {snapshot.runtime.version}</small>}
         </section>
         <section>
-          <span>Relay</span>
-          <strong>{snapshot.connection === "connected" ? "已连接" : "正在重连"}</strong>
-          <p>{new URL(snapshot.host.relayUrl).host}</p>
-          <small>{new URL(snapshot.host.relayUrl).protocol === "wss:" ? "出站 WSS" : "局域网 WS"} · 端到端加密</small>
+          <span>连接路径</span>
+          <strong>{connectionLabel(snapshot)}</strong>
+          <p>
+            {snapshot.transport?.rttMs !== undefined
+              ? `${Math.round(snapshot.transport.rttMs)} ms 延迟`
+              : "正在测量延迟"}
+            {" · "}{snapshot.transport?.pendingCount ?? 0} 条待发送
+          </p>
+          <small>
+            {snapshot.transport?.relayHealthy ? "Relay 状态正常" : "Relay 健康检查未响应"}
+            {" · "}端到端加密
+          </small>
         </section>
         <section>
           <span>活动会话</span>
@@ -662,7 +679,7 @@ export function DesktopDashboard({ theme, onToggleTheme }: { theme: Theme; onTog
         </nav>
         <div className="desktop-host-chip">
           <Laptop size={17} />
-          <span><strong>{snapshot.host.name}</strong><small>{snapshot.connection === "connected" ? "Bridge 在线" : "正在重连"}</small></span>
+          <span><strong>{snapshot.host.name}</strong><small>{connectionLabel(snapshot)}</small></span>
         </div>
         <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
           {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
