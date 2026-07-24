@@ -1,15 +1,23 @@
 # Claude Bridge
 
 这段是我自己写的：
-天下苦Claude久矣，3天内封了我5个Max订阅账号，A➗你是真的➗
-但是架不住Claude Desktop确实好用，尤其是K3发布之后把接进了Claude Desktop，实际体验直追原生Cladue Desktop+Fable5
+
+天下苦Claude久矣，3天内封了我5个Max订阅账号，A➗你是真的➗。
+
+但是架不住Claude Desktop确实好用，尤其是K3发布之后把接进了Claude Desktop，实际体验直追原生Cladue Desktop+Fable5。
+
 CCDesktop 3P有个硬伤就是没法 remote control（沟槽的A➗把这个功能跟CD1P绑死了。。。你把我号封了我还怎么用 remote control）
+
 很想找回之前使用官方订阅时躺在床上控制电脑端开发的那种松弛感，干脆自己搓一个（Codex你给点力啊）
+
 第一阶段先确保能在局域网环境下使用，基于我现在 Macbook+Android 这种奇妙搭配，做到之前 remote control 能做到的一切
+
 （沟槽的A➗做了私有协议没法做到会话3端实时同步，退而求其次，bridge 电脑端和手机端实时同步，CCDesktop 能做到重启后同步bridge 全部进度）
+
 下一阶段 V0.3 开始研究怎么跨网实现
 
 下面是Codex写的：
+
 Bridge 0.2 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
 共享同一个 Claude `sessionId`、同一个持久执行进程和同一条有序事件流。
 
