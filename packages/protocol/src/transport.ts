@@ -1,5 +1,5 @@
 import { BridgeCrypto } from "./crypto.js";
-import type { SendOptions, SocketState } from "./socket.js";
+import type { DeviceRegistrationOptions, SendOptions, SocketState } from "./socket.js";
 import type {
   BridgePayload,
   DecryptedEnvelope,
@@ -30,7 +30,12 @@ export interface BridgeTransport {
   send(payload: BridgePayload, to: MessageTarget, options?: SendOptions): Promise<string>;
   sendEnvelope(envelope: EncryptedEnvelope): void;
   ack(ids: string[]): void;
-  registerDevice(deviceId: string, authToken: string, expiresAt: number): void;
+  registerDevice(
+    deviceId: string,
+    authToken: string,
+    expiresAt: number,
+    options?: DeviceRegistrationOptions,
+  ): void;
   revokeDevice(deviceId: string): void;
   registerPushToken(platform: "android" | "ios", pushToken: string): void;
   onMessage(
@@ -71,6 +76,9 @@ export class TransportRouter implements BridgeTransport {
   private errorListeners = new Set<ErrorListener>();
   private metricsListeners = new Set<MetricsListener>();
   private detachActive: Array<() => void> = [];
+  private candidateTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private cycleAttempt = 0;
 
   constructor(candidates: BridgeTransportCandidate[]) {
     if (candidates.length === 0) throw new Error("At least one transport candidate is required");
@@ -95,6 +103,7 @@ export class TransportRouter implements BridgeTransport {
 
   connect(): void {
     this.stopped = false;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.active && this.active.state !== "closed") {
       this.active.connect();
       return;
@@ -104,6 +113,7 @@ export class TransportRouter implements BridgeTransport {
 
   close(): void {
     this.stopped = true;
+    this.clearTimers();
     this.detach();
     this.active?.close();
     this.active = undefined;
@@ -123,8 +133,13 @@ export class TransportRouter implements BridgeTransport {
     this.active?.ack(ids);
   }
 
-  registerDevice(deviceId: string, authToken: string, expiresAt: number): void {
-    (this.active ?? unavailable()).registerDevice(deviceId, authToken, expiresAt);
+  registerDevice(
+    deviceId: string,
+    authToken: string,
+    expiresAt: number,
+    options?: DeviceRegistrationOptions,
+  ): void {
+    (this.active ?? unavailable()).registerDevice(deviceId, authToken, expiresAt, options);
   }
 
   revokeDevice(deviceId: string): void {
@@ -170,6 +185,7 @@ export class TransportRouter implements BridgeTransport {
   }
 
   private activate(index: number): void {
+    this.clearCandidateTimer();
     this.detach();
     this.active?.close();
     this.activeIndex = index % this.candidates.length;
@@ -191,21 +207,64 @@ export class TransportRouter implements BridgeTransport {
       }),
       transport.onState((state) => {
         this.emitState(state);
+        if (state === "connected") {
+          this.clearCandidateTimer();
+          this.cycleAttempt = 0;
+        }
         if (
           state === "closed" &&
           !this.stopped &&
-          this.candidates.length > 1 &&
           transport === this.active
         ) {
-          this.activate(this.activeIndex + 1);
+          this.advance();
         }
       }),
     ];
     transport.connect();
+    this.candidateTimer = setTimeout(() => {
+      if (
+        this.stopped ||
+        transport !== this.active ||
+        transport.state === "connected"
+      ) return;
+      this.detach();
+      transport.close();
+      this.advance();
+    }, 8_000);
+  }
+
+  private advance(): void {
+    this.clearCandidateTimer();
+    if (this.activeIndex + 1 < this.candidates.length) {
+      this.activate(this.activeIndex + 1);
+      return;
+    }
+    this.detach();
+    this.active?.close();
+    this.active = undefined;
+    this.activeIndex = -1;
+    this.cycleAttempt += 1;
+    this.emitState("reconnecting");
+    const delay = Math.min(30_000, 750 * 2 ** Math.min(this.cycleAttempt - 1, 5));
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      if (!this.stopped) this.activate(0);
+    }, delay);
   }
 
   private detach(): void {
     for (const stop of this.detachActive.splice(0)) stop();
+  }
+
+  private clearCandidateTimer(): void {
+    if (this.candidateTimer) clearTimeout(this.candidateTimer);
+    this.candidateTimer = undefined;
+  }
+
+  private clearTimers(): void {
+    this.clearCandidateTimer();
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
   }
 
   private emitState(state: SocketState): void {

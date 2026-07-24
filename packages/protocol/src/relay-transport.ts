@@ -1,7 +1,9 @@
 import type { BridgeCrypto } from "./crypto.js";
+import { relayPathForUrl } from "./endpoints.js";
 import {
   BridgeSocket,
   type BridgeSocketOptions,
+  type DeviceRegistrationOptions,
   type SendOptions,
   type SocketState,
 } from "./socket.js";
@@ -30,37 +32,6 @@ type StateListener = (state: SocketState) => void;
 type FrameListener = (frame: ServerFrame) => void;
 type ErrorListener = (error: Error) => void;
 type MetricsListener = (metrics: BridgeTransportMetrics) => void;
-
-function isPrivateIpv4(hostname: string): boolean {
-  const octets = hostname.split(".").map(Number);
-  if (
-    octets.length !== 4 ||
-    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
-  ) return false;
-  const [first, second] = octets;
-  return (
-    first === 10 ||
-    (first === 172 && second! >= 16 && second! <= 31) ||
-    (first === 192 && second === 168) ||
-    (first === 169 && second === 254) ||
-    (first === 100 && second! >= 64 && second! <= 127)
-  );
-}
-
-export function relayPathForUrl(value: string): Exclude<BridgeTransportPath, "direct"> {
-  try {
-    const url = new URL(value);
-    const local = (
-      url.hostname === "localhost" ||
-      url.hostname === "127.0.0.1" ||
-      url.hostname === "[::1]" ||
-      isPrivateIpv4(url.hostname)
-    );
-    return local ? "lan-relay" : "public-relay";
-  } catch {
-    return "lan-relay";
-  }
-}
 
 export class RelayTransport implements BridgeTransport {
   readonly path: Exclude<BridgeTransportPath, "direct">;
@@ -131,8 +102,13 @@ export class RelayTransport implements BridgeTransport {
     this.socket.ack(ids);
   }
 
-  registerDevice(deviceId: string, authToken: string, expiresAt: number): void {
-    this.socket.registerDevice(deviceId, authToken, expiresAt);
+  registerDevice(
+    deviceId: string,
+    authToken: string,
+    expiresAt: number,
+    options?: DeviceRegistrationOptions,
+  ): void {
+    this.socket.registerDevice(deviceId, authToken, expiresAt, options);
   }
 
   revokeDevice(deviceId: string): void {

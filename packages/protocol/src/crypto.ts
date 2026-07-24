@@ -8,7 +8,15 @@ import {
   utf8,
 } from "./encoding.js";
 import {
+  bridgeEndpoint,
+  isBridgeEndpoint,
+  normalizeBridgeEndpoints,
+  selectBridgeEndpoint,
+} from "./endpoints.js";
+import {
+  PAIRING_SCHEMA_VERSION,
   PROTOCOL_VERSION,
+  type BridgeEndpoint,
   type BridgePayload,
   type BridgeRole,
   type DecryptedEnvelope,
@@ -21,6 +29,38 @@ import {
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 10 * 60 * 1000;
+
+function serviceOriginForRelay(relayUrl: string): string {
+  try {
+    const value = new URL(relayUrl);
+    value.protocol = value.protocol === "wss:" ? "https:" : "http:";
+    value.pathname = "/";
+    value.search = "";
+    value.hash = "";
+    return value.toString().replace(/\/$/u, "");
+  } catch {
+    return "";
+  }
+}
+
+function pairingEndpoint(
+  relayEndpoints: BridgeEndpoint[] | undefined,
+  relayUrl: string,
+  activeEndpoint: string | undefined,
+): { endpoints: BridgeEndpoint[]; active: BridgeEndpoint } {
+  const fallback = bridgeEndpoint(
+    relayUrl,
+    relayEndpoints?.length ? 100 : 10,
+    relayEndpoints?.length ? "legacy" : undefined,
+  );
+  const endpoints = normalizeBridgeEndpoints([
+    ...(relayEndpoints ?? []),
+    fallback,
+  ]);
+  const active = selectBridgeEndpoint(endpoints, activeEndpoint);
+  if (!active) throw new Error("Pairing requires a relay endpoint");
+  return { endpoints, active };
+}
 
 async function deriveKeyMaterial(secret: Uint8Array<ArrayBuffer>, roomId: string): Promise<{
   encryptionKey: CryptoKey;
@@ -132,6 +172,9 @@ export class BridgeCrypto {
     roomId: string;
     relayUrl: string;
     desktopName: string;
+    serviceOrigin?: string;
+    relayEndpoints?: BridgeEndpoint[];
+    activeEndpoint?: string;
     deviceId?: string;
     now?: number;
   }): Promise<{ pairing: PairingBundle; desktopCrypto: BridgeCrypto }> {
@@ -139,12 +182,21 @@ export class BridgeCrypto {
     const deviceId = options.deviceId ?? randomId(12);
     const createdAt = options.now ?? Date.now();
     const { encryptionKey, authToken } = await deriveKeyMaterial(secret, options.roomId);
+    const { endpoints, active } = pairingEndpoint(
+      options.relayEndpoints,
+      options.relayUrl,
+      options.activeEndpoint,
+    );
     const pairing: PairingBundle = {
-      version: PROTOCOL_VERSION,
+      version: PAIRING_SCHEMA_VERSION,
+      protocolVersion: PROTOCOL_VERSION,
       roomId: options.roomId,
       deviceId,
       secret: toBase64Url(secret),
-      relayUrl: options.relayUrl,
+      relayUrl: active.url,
+      serviceOrigin: options.serviceOrigin ?? serviceOriginForRelay(active.url),
+      relayEndpoints: endpoints,
+      activeEndpoint: active.id,
       desktopName: options.desktopName,
       createdAt,
       expiresAt: createdAt + PAIRING_TTL_MS,
@@ -170,18 +222,23 @@ export class BridgeCrypto {
     pairing: PairingBundle,
     options: string | { deviceId?: string; ignoreExpiry?: boolean; instanceId?: string } = {},
   ): Promise<BridgeCrypto> {
-    if (pairing.version !== PROTOCOL_VERSION) throw new Error("Unsupported pairing version");
+    if (
+      pairing.version !== PAIRING_SCHEMA_VERSION ||
+      pairing.protocolVersion !== PROTOCOL_VERSION
+    ) throw new Error("Unsupported pairing version");
     const normalized = typeof options === "string" ? { deviceId: options, ignoreExpiry: true } : options;
     if (!normalized.ignoreExpiry && pairing.expiresAt <= Date.now()) throw new Error("Pairing code has expired");
     const secret = fromBase64Url(pairing.secret);
     if (secret.byteLength !== 32) throw new Error("Invalid pairing secret");
     const { encryptionKey, authToken } = await deriveKeyMaterial(secret, pairing.roomId);
+    const relayUrl = selectBridgeEndpoint(pairing.relayEndpoints, pairing.activeEndpoint)?.url
+      ?? pairing.relayUrl;
     return new BridgeCrypto({
       encryptionKey,
       identity: {
         version: PROTOCOL_VERSION,
         roomId: pairing.roomId,
-        relayUrl: pairing.relayUrl,
+        relayUrl,
         desktopName: pairing.desktopName,
         deviceId: normalized.deviceId ?? pairing.deviceId,
         authToken,
@@ -256,10 +313,24 @@ export function encodePairingBundle(pairing: PairingBundle): string {
   return toBase64Url(utf8(JSON.stringify(pairing)));
 }
 
-export function decodePairingBundle(value: string): PairingBundle {
-  const parsed = JSON.parse(decodeUtf8(fromBase64Url(value))) as Partial<PairingBundle>;
+export function normalizePairingBundle(value: unknown): PairingBundle {
+  if (!value || typeof value !== "object") throw new Error("Invalid pairing bundle");
+  const parsed = value as {
+    version?: unknown;
+    protocolVersion?: unknown;
+    roomId?: unknown;
+    deviceId?: unknown;
+    secret?: unknown;
+    relayUrl?: unknown;
+    serviceOrigin?: unknown;
+    relayEndpoints?: unknown;
+    activeEndpoint?: unknown;
+    desktopName?: unknown;
+    createdAt?: unknown;
+    expiresAt?: unknown;
+    singleUse?: unknown;
+  };
   if (
-    parsed.version !== PROTOCOL_VERSION ||
     typeof parsed.roomId !== "string" ||
     typeof parsed.deviceId !== "string" ||
     typeof parsed.secret !== "string" ||
@@ -271,7 +342,56 @@ export function decodePairingBundle(value: string): PairingBundle {
   ) {
     throw new Error("Invalid pairing bundle");
   }
-  return parsed as PairingBundle;
+  if (parsed.version === PROTOCOL_VERSION) {
+    const endpoint = bridgeEndpoint(parsed.relayUrl, 100, "legacy");
+    return {
+      version: PAIRING_SCHEMA_VERSION,
+      protocolVersion: PROTOCOL_VERSION,
+      roomId: parsed.roomId,
+      deviceId: parsed.deviceId,
+      secret: parsed.secret,
+      relayUrl: parsed.relayUrl,
+      serviceOrigin: serviceOriginForRelay(parsed.relayUrl),
+      relayEndpoints: [endpoint],
+      activeEndpoint: endpoint.id,
+      desktopName: parsed.desktopName,
+      createdAt: parsed.createdAt,
+      expiresAt: parsed.expiresAt,
+      singleUse: true,
+    };
+  }
+  if (
+    parsed.version !== PAIRING_SCHEMA_VERSION ||
+    parsed.protocolVersion !== PROTOCOL_VERSION ||
+    typeof parsed.serviceOrigin !== "string" ||
+    !Array.isArray(parsed.relayEndpoints) ||
+    !parsed.relayEndpoints.every(isBridgeEndpoint) ||
+    typeof parsed.activeEndpoint !== "string"
+  ) {
+    throw new Error("Invalid pairing bundle");
+  }
+  const endpoints = normalizeBridgeEndpoints(parsed.relayEndpoints);
+  const active = selectBridgeEndpoint(endpoints, parsed.activeEndpoint);
+  if (!active) throw new Error("Invalid pairing endpoints");
+  return {
+    version: PAIRING_SCHEMA_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
+    roomId: parsed.roomId,
+    deviceId: parsed.deviceId,
+    secret: parsed.secret,
+    relayUrl: active.url,
+    serviceOrigin: parsed.serviceOrigin,
+    relayEndpoints: endpoints,
+    activeEndpoint: active.id,
+    desktopName: parsed.desktopName,
+    createdAt: parsed.createdAt,
+    expiresAt: parsed.expiresAt,
+    singleUse: true,
+  };
+}
+
+export function decodePairingBundle(value: string): PairingBundle {
+  return normalizePairingBundle(JSON.parse(decodeUtf8(fromBase64Url(value))));
 }
 
 export function buildPairingUrl(baseUrl: string, pairing: PairingBundle): string {

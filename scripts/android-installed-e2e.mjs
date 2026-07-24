@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { encodePairingBundle, pairingBundleFromUrl } from "@bridge/protocol";
+import { bridgeEndpoint, encodePairingBundle, pairingBundleFromUrl } from "@bridge/protocol";
 import { chromium } from "playwright-core";
 
 const desktopCdp = process.env.BRIDGE_DESKTOP_CDP ?? "http://127.0.0.1:9223";
@@ -85,6 +85,8 @@ try {
   const pairing = pairingBundleFromUrl(pairingSnapshot.pairingUrl);
   assert.ok(pairing, "Desktop pairing bundle was not available");
   pairing.relayUrl = androidRelay;
+  pairing.relayEndpoints = [bridgeEndpoint(androidRelay, 10, "android")];
+  pairing.activeEndpoint = "android";
 
   await androidPage.screenshot(resolve(artifacts, "01-pairing.png"));
   const encodedPairing = encodePairingBundle(pairing);

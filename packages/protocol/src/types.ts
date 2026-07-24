@@ -1,9 +1,36 @@
 export const PROTOCOL_VERSION = 2 as const;
+export const PAIRING_SCHEMA_VERSION = 3 as const;
 
 export type BridgeRole = "desktop" | "mobile" | "agent";
 export type MessageTarget = BridgeRole;
 
+export type BridgeEndpointKind = "public-relay" | "lan-relay" | "direct";
+
+export interface BridgeEndpoint {
+  id: string;
+  kind: BridgeEndpointKind;
+  url: string;
+  priority: number;
+}
+
 export interface PairingBundle {
+  version: typeof PAIRING_SCHEMA_VERSION;
+  protocolVersion: typeof PROTOCOL_VERSION;
+  roomId: string;
+  deviceId: string;
+  secret: string;
+  // Kept as a compatibility alias for 0.2 clients and exported diagnostics.
+  relayUrl: string;
+  serviceOrigin: string;
+  relayEndpoints: BridgeEndpoint[];
+  activeEndpoint: string;
+  desktopName: string;
+  createdAt: number;
+  expiresAt: number;
+  singleUse: true;
+}
+
+export interface LegacyPairingBundle {
   version: typeof PROTOCOL_VERSION;
   roomId: string;
   deviceId: string;
@@ -388,6 +415,8 @@ export interface ClientDeviceRegister {
   deviceId: string;
   authToken: string;
   expiresAt: number;
+  migrate?: boolean;
+  pairedAt?: number;
 }
 
 export interface ClientDeviceRevoke {

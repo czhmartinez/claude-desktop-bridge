@@ -1,9 +1,14 @@
 import {
   BridgeCrypto,
   RelayTransport,
+  TransportRouter,
+  bridgeEndpoint,
+  cryptoWithRelayEndpoint,
+  normalizeBridgeEndpoints,
   randomId,
   type BridgeAttachment,
   type BridgeDeliveryState,
+  type BridgeEndpoint,
   type BridgeEffort,
   type BridgeEvent,
   type BridgeHistoryPage,
@@ -15,6 +20,7 @@ import {
   type BridgeSessionConfiguration,
   type BridgeSessionInfo,
   type BridgeTransport,
+  type BridgeTransportCandidate,
   type ClaudeDesktopAppStatus,
   type DecryptedEnvelope,
   type EncryptedEnvelope,
@@ -766,6 +772,12 @@ export function useMobileBridge() {
     socketRef.current = undefined;
     cryptoRef.current = crypto;
     const roomId = crypto.identity.roomId;
+    const storedHost = await bridgeVault.getHost(roomId);
+    const relayEndpoints = normalizeBridgeEndpoints(
+      storedHost?.relayEndpoints ?? [bridgeEndpoint(crypto.identity.relayUrl, 100, "legacy")],
+    ).filter((endpoint): endpoint is BridgeEndpoint & {
+      kind: "public-relay" | "lan-relay";
+    } => endpoint.kind !== "direct");
     setState((current) => ({
       ...current,
       loading: false,
@@ -796,19 +808,34 @@ export function useMobileBridge() {
     }));
     if (stored.snapshot) updateHostCache(roomId, stored.snapshot, stored.permissions);
 
-    if (Capacitor.isNativePlatform() && isLoopbackRelay(crypto.identity.relayUrl)) {
+    if (
+      Capacitor.isNativePlatform() &&
+      relayEndpoints.every((endpoint) => isLoopbackRelay(endpoint.url))
+    ) {
       setState((current) => ({
         ...current,
         connection: "closed",
         connectionIssue: {
           code: "pairing-invalid",
-          message: "这条配对来自旧版电脑端，请删除后用 Bridge 0.2 二维码重新配对。",
+          message: "这条配对没有手机可访问的网络地址，请更新电脑端 Bridge 后重试。",
         },
       }));
       return;
     }
 
-    const socket = new RelayTransport({ crypto, role: "mobile" });
+    const candidates: BridgeTransportCandidate[] = relayEndpoints.map((endpoint) => ({
+      id: endpoint.id,
+      path: endpoint.kind,
+      endpoint: endpoint.url,
+      priority: endpoint.priority,
+      create: () => new RelayTransport({
+        crypto: cryptoWithRelayEndpoint(crypto, endpoint.url),
+        role: "mobile",
+        reconnect: false,
+        path: endpoint.kind,
+      }),
+    }));
+    const socket = new TransportRouter(candidates);
     socketRef.current = socket;
     let bootstrapPending = bootstrap;
     const isCurrent = () => socketRef.current === socket;
@@ -818,6 +845,19 @@ export function useMobileBridge() {
       if (connection === "connected") {
         if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
         setState((current) => ({ ...current, connectionIssue: undefined }));
+        const active = relayEndpoints.find((endpoint) => endpoint.url === socket.endpoint);
+        if (active) {
+          void bridgeVault.setActiveEndpoint(roomId, active.id).then((host) => {
+            if (!host) return;
+            cryptoByRoomRef.current.set(roomId, host.crypto);
+            setState((current) => ({
+              ...current,
+              hosts: current.hosts.map((candidate) => candidate.roomId === roomId
+                ? { ...candidate, relayUrl: host.relayUrl, needsRepair: false }
+                : candidate),
+            }));
+          }).catch(() => undefined);
+        }
         void (async () => {
           for (const envelope of await bridgeVault.listOutbox(roomId)) {
             try {
@@ -920,7 +960,7 @@ export function useMobileBridge() {
           message: "无法连接这台电脑，请确认电脑 Bridge 在线并检查网络。",
         },
       }));
-    }, 10_000);
+    }, Math.max(12_000, relayEndpoints.length * 8_000 + 2_000));
   }, [handlePayload, resumeEvents, updateHostCache]);
 
   useEffect(() => {
@@ -956,7 +996,10 @@ export function useMobileBridge() {
 
   const pair = useCallback(async (pairing: PairingBundle): Promise<boolean> => {
     setState((current) => ({ ...current, loading: true, error: undefined }));
-    if (Capacitor.isNativePlatform() && isLoopbackRelay(pairing.relayUrl)) {
+    if (
+      Capacitor.isNativePlatform() &&
+      pairing.relayEndpoints.every((endpoint) => isLoopbackRelay(endpoint.url))
+    ) {
       setState((current) => ({
         ...current,
         loading: false,
@@ -971,6 +1014,9 @@ export function useMobileBridge() {
         roomId: crypto.identity.roomId,
         desktopName: crypto.identity.desktopName,
         relayUrl: crypto.identity.relayUrl,
+        serviceOrigin: pairing.serviceOrigin,
+        relayEndpoints: pairing.relayEndpoints,
+        activeEndpoint: pairing.activeEndpoint,
         updatedAt: Date.now(),
         crypto,
       });

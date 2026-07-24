@@ -86,7 +86,9 @@ export function parseClientFrame(input: string): ClientFrame {
     value.type === "device-register" &&
     typeof value.deviceId === "string" &&
     typeof value.authToken === "string" &&
-    typeof value.expiresAt === "number"
+    typeof value.expiresAt === "number" &&
+    (value.migrate === undefined || typeof value.migrate === "boolean") &&
+    (value.pairedAt === undefined || typeof value.pairedAt === "number")
   ) return value as unknown as ClientFrame;
   if (value.type === "device-revoke" && typeof value.deviceId === "string") {
     return value as unknown as ClientFrame;

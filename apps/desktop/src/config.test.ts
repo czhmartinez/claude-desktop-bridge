@@ -92,6 +92,64 @@ describe("desktop configuration", () => {
     expect((await localDefault.load())?.relayUrl).toBe("wss://relay.example/ws");
   });
 
+  it("migrates a v2 LAN config to public-first schema v3 without rotating credentials", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    await writeFile(path, JSON.stringify({
+      version: 2,
+      protocolVersion: 2,
+      roomId: "room-legacy-12345678",
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      desktopName: "Test PC",
+      hostDeviceId: "desktop-1",
+      protectedHostSecret: protector.protect("host-secret"),
+      createdAt: 1_000,
+      launchAtLogin: false,
+      devices: [{
+        deviceId: "phone-1",
+        name: "Android",
+        platform: "android",
+        protectedSecret: protector.protect("phone-secret"),
+        createdAt: 1_100,
+        expiresAt: 601_100,
+        pairedAt: 2_000,
+      }],
+    }));
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://10.0.0.8:8788/ws",
+      publicRelayUrl: "wss://bridge.example/ws",
+      serviceOrigin: "https://bridge.example",
+      desktopName: "Test PC",
+    });
+
+    const loaded = await repository.loadOrCreate();
+    expect(loaded).toMatchObject({
+      configVersion: 3,
+      roomId: "room-legacy-12345678",
+      relayUrl: "wss://bridge.example/ws",
+      activeEndpoint: "public",
+      serviceOrigin: "https://bridge.example",
+      hostSecret: "host-secret",
+    });
+    expect(loaded.devices[0]).toMatchObject({
+      deviceId: "phone-1",
+      secret: "phone-secret",
+      pairedAt: 2_000,
+    });
+    expect(loaded.relayEndpoints).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "public", kind: "public-relay" }),
+      expect.objectContaining({ kind: "lan-relay", url: "ws://10.0.0.8:8788/ws" }),
+    ]));
+
+    await repository.save(loaded);
+    const persisted = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    expect(persisted.version).toBe(3);
+    expect(persisted).not.toHaveProperty("relayUrl");
+    expect(JSON.stringify(persisted)).not.toContain("host-secret");
+    expect(JSON.stringify(persisted)).not.toContain("phone-secret");
+  });
+
   it("disables the retired managed Desktop experiment during upgrade", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);

@@ -110,6 +110,7 @@ describe("BridgeTransport", () => {
     router.ack(["envelope-1"]);
     expect(publicRelay.ack).toHaveBeenCalledWith(["envelope-1"]);
     expect(lanRelay.state).toBe("idle");
+    router.close();
   });
 
   it("moves to the next candidate when the active transport closes", () => {
@@ -125,6 +126,7 @@ describe("BridgeTransport", () => {
 
     expect(router.path).toBe("lan-relay");
     expect(second.state).toBe("connecting");
+    router.close();
   });
 
   it("changes only the relay endpoint when preparing a crypto identity for failover", async () => {

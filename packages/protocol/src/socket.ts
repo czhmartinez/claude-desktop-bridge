@@ -27,6 +27,11 @@ export interface SendOptions {
   ttlMs?: number;
 }
 
+export interface DeviceRegistrationOptions {
+  migrate?: boolean;
+  pairedAt?: number;
+}
+
 export type MessageListener = (message: DecryptedEnvelope, encrypted: EncryptedEnvelope) => void;
 export type StateListener = (state: SocketState) => void;
 export type FrameListener = (frame: ServerFrame) => void;
@@ -122,12 +127,24 @@ export class BridgeSocket {
     this.ws.send(JSON.stringify({ type: "ack", ids }));
   }
 
-  registerDevice(deviceId: string, authToken: string, expiresAt: number): void {
+  registerDevice(
+    deviceId: string,
+    authToken: string,
+    expiresAt: number,
+    options: DeviceRegistrationOptions = {},
+  ): void {
     if (this.role !== "desktop") throw new Error("Only desktop hosts can register devices");
     if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
       throw new Error("Bridge is not connected");
     }
-    this.ws.send(JSON.stringify({ type: "device-register", deviceId, authToken, expiresAt }));
+    this.ws.send(JSON.stringify({
+      type: "device-register",
+      deviceId,
+      authToken,
+      expiresAt,
+      ...(options.migrate ? { migrate: true } : {}),
+      ...(options.pairedAt !== undefined ? { pairedAt: options.pairedAt } : {}),
+    }));
   }
 
   revokeDevice(deviceId: string): void {

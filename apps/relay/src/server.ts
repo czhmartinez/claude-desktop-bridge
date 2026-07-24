@@ -10,6 +10,7 @@ const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_ENVELOPE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CLOCK_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 const MAX_PAIRING_WINDOW_MS = 10 * 60 * 1000;
+const MAX_MIGRATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface AuthenticatedClient {
   connectionId: string;
@@ -274,11 +275,19 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
             sendError(ws, "FORBIDDEN", "Only the host can register a device");
             return;
           }
+          const registrationWindow = frame.migrate
+            ? MAX_MIGRATION_WINDOW_MS
+            : MAX_PAIRING_WINDOW_MS + 30_000;
           if (
             frame.expiresAt <= now ||
-            frame.expiresAt - now > MAX_PAIRING_WINDOW_MS + 30_000 ||
+            frame.expiresAt - now > registrationWindow ||
             frame.authToken.length < 32 ||
-            frame.authToken.length > 128
+            frame.authToken.length > 128 ||
+            (frame.migrate && (
+              typeof frame.pairedAt !== "number" ||
+              frame.pairedAt <= 0 ||
+              frame.pairedAt > now
+            ))
           ) {
             sendError(ws, "INVALID_PAIRING", "Pairing registration is invalid");
             return;
@@ -290,6 +299,9 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
             authHash: authHash(frame.authToken),
             createdAt: now,
             expiresAt: frame.expiresAt,
+            ...(frame.migrate && frame.pairedAt ? {
+              claimedAt: frame.pairedAt,
+            } : {}),
           });
           safeSend(ws, { type: "device-registered", deviceId: frame.deviceId, expiresAt: frame.expiresAt });
           return;

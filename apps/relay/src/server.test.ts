@@ -265,4 +265,58 @@ describe("relay v2", () => {
 
     expect(wakes).toEqual([pair.device.pairing.deviceId]);
   });
+
+  it("moves an already paired device to a new public relay without a new secret", async () => {
+    const firstRelay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(firstRelay);
+    const pair = await connectedPair(firstRelay.url);
+    pair.desktopSocket.close();
+    pair.mobileSocket.close();
+
+    const publicRelay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(publicRelay);
+    const movedHostCrypto = new BridgeCrypto({
+      encryptionKey: pair.host.crypto.encryptionKey,
+      identity: { ...pair.host.crypto.identity, relayUrl: publicRelay.url },
+    });
+    const movedMobileCrypto = new BridgeCrypto({
+      encryptionKey: pair.mobileCrypto.encryptionKey,
+      identity: { ...pair.mobileCrypto.identity, relayUrl: publicRelay.url },
+    });
+    const desktop = new BridgeSocket({
+      crypto: movedHostCrypto,
+      role: "desktop",
+      createRoom: true,
+      reconnect: false,
+      resolveCrypto: () => pair.desktopDeviceCrypto,
+    });
+    const mobile = new BridgeSocket({ crypto: movedMobileCrypto, role: "mobile", reconnect: false });
+    sockets.push(desktop, mobile);
+    desktop.connect();
+    await waitForState(desktop);
+    desktop.registerDevice(
+      pair.device.pairing.deviceId,
+      pair.device.desktopCrypto.identity.authToken,
+      Date.now() + 7 * 24 * 60 * 60 * 1_000,
+      { migrate: true, pairedAt: Date.now() - 1_000 },
+    );
+    await waitForFrame(desktop, (frame) => frame.type === "device-registered");
+
+    mobile.connect();
+    await waitForState(mobile);
+    const received = nextMessage(desktop);
+    await mobile.send(turnRequest("Continue after migration"), "desktop");
+    expect((await received).payload).toMatchObject({
+      kind: "request",
+      method: "turn.start",
+    });
+  });
 });

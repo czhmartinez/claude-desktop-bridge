@@ -1,12 +1,17 @@
 import {
   BridgeCrypto,
+  bridgeEndpoint,
+  cryptoWithRelayEndpoint,
+  normalizeBridgeEndpoints,
+  selectBridgeEndpoint,
+  type BridgeEndpoint,
   type EncryptedEnvelope,
   type PairingBundle,
   type StoredIdentity,
 } from "@bridge/protocol";
 
 const DATABASE_NAME = "claude-bridge";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const LEGACY_IDENTITY_KEY = "current";
 const HOST_KEY_PREFIX = "host:";
 const MESSAGE_LIMIT = 5_000;
@@ -15,6 +20,10 @@ interface StoredCrypto {
   key: string;
   identity: StoredIdentity;
   encryptionKey: CryptoKey;
+  serviceOrigin?: string;
+  relayEndpoints?: BridgeEndpoint[];
+  activeEndpoint?: string;
+  migratedAt?: number;
   updatedAt?: number;
 }
 
@@ -27,8 +36,52 @@ export interface StoredBridgeHost {
   roomId: string;
   desktopName: string;
   relayUrl: string;
+  serviceOrigin: string;
+  relayEndpoints: BridgeEndpoint[];
+  activeEndpoint: string;
+  migratedAt?: number;
   updatedAt: number;
   crypto: BridgeCrypto;
+}
+
+const PACKAGED_PUBLIC_RELAY = String(import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "").trim();
+const PACKAGED_SERVICE_ORIGIN = String(import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "").trim();
+
+function serviceOriginForRelay(relayUrl: string): string {
+  try {
+    const value = new URL(relayUrl);
+    value.protocol = value.protocol === "wss:" ? "https:" : "http:";
+    value.pathname = "/";
+    value.search = "";
+    value.hash = "";
+    return value.toString().replace(/\/$/u, "");
+  } catch {
+    return "";
+  }
+}
+
+function transportForStored(stored: StoredCrypto): {
+  serviceOrigin: string;
+  relayEndpoints: BridgeEndpoint[];
+  activeEndpoint: string;
+  relayUrl: string;
+} {
+  const relayEndpoints = normalizeBridgeEndpoints([
+    ...(PACKAGED_PUBLIC_RELAY ? [bridgeEndpoint(PACKAGED_PUBLIC_RELAY, 10, "public")] : []),
+    ...(stored.relayEndpoints ?? []),
+    bridgeEndpoint(stored.identity.relayUrl, 100, "legacy"),
+  ]);
+  const active = selectBridgeEndpoint(
+    relayEndpoints,
+    PACKAGED_PUBLIC_RELAY ? "public" : stored.activeEndpoint,
+  );
+  if (!active) throw new Error("No relay endpoint is available");
+  return {
+    serviceOrigin: stored.serviceOrigin || PACKAGED_SERVICE_ORIGIN || serviceOriginForRelay(active.url),
+    relayEndpoints,
+    activeEndpoint: active.id,
+    relayUrl: active.url,
+  };
 }
 
 function hostKey(roomId: string): string {
@@ -89,6 +142,9 @@ export class BridgeVault {
       key: hostKey(crypto.identity.roomId),
       identity: crypto.identity,
       encryptionKey: crypto.encryptionKey,
+      serviceOrigin: pairing.serviceOrigin,
+      relayEndpoints: pairing.relayEndpoints,
+      activeEndpoint: pairing.activeEndpoint,
       updatedAt: Date.now(),
     } satisfies StoredCrypto);
     await transactionDone(transaction);
@@ -104,12 +160,21 @@ export class BridgeVault {
       const existing = hosts.get(stored.identity.roomId);
       const updatedAt = stored.updatedAt ?? 0;
       if (existing && existing.updatedAt > updatedAt) continue;
+      const transport = transportForStored(stored);
+      const crypto = cryptoWithRelayEndpoint(
+        new BridgeCrypto({ identity: stored.identity, encryptionKey: stored.encryptionKey }),
+        transport.relayUrl,
+      );
       hosts.set(stored.identity.roomId, {
         roomId: stored.identity.roomId,
         desktopName: stored.identity.desktopName,
-        relayUrl: stored.identity.relayUrl,
+        relayUrl: transport.relayUrl,
+        serviceOrigin: transport.serviceOrigin,
+        relayEndpoints: transport.relayEndpoints,
+        activeEndpoint: transport.activeEndpoint,
+        ...(stored.migratedAt !== undefined ? { migratedAt: stored.migratedAt } : {}),
         updatedAt,
-        crypto: new BridgeCrypto({ identity: stored.identity, encryptionKey: stored.encryptionKey }),
+        crypto,
       });
     }
     return [...hosts.values()].sort((left, right) => right.updatedAt - left.updatedAt);
@@ -120,14 +185,57 @@ export class BridgeVault {
     const transaction = database.transaction("identity", "readwrite");
     const store = transaction.objectStore("identity");
     const legacy = await requestResult(store.get(LEGACY_IDENTITY_KEY)) as StoredCrypto | undefined;
+    const current = await requestResult(store.get(hostKey(crypto.identity.roomId))) as StoredCrypto | undefined;
+    const transport = current ? transportForStored(current) : {
+      serviceOrigin: PACKAGED_SERVICE_ORIGIN || serviceOriginForRelay(crypto.identity.relayUrl),
+      relayEndpoints: [bridgeEndpoint(crypto.identity.relayUrl, 100, "legacy")],
+      activeEndpoint: "legacy",
+      relayUrl: crypto.identity.relayUrl,
+    };
     store.put({
       key: hostKey(crypto.identity.roomId),
-      identity: crypto.identity,
+      identity: { ...crypto.identity, relayUrl: transport.relayUrl },
       encryptionKey: crypto.encryptionKey,
+      serviceOrigin: transport.serviceOrigin,
+      relayEndpoints: transport.relayEndpoints,
+      activeEndpoint: transport.activeEndpoint,
+      ...(current?.migratedAt !== undefined ? { migratedAt: current.migratedAt } : {}),
       updatedAt: Date.now(),
     } satisfies StoredCrypto);
     if (legacy?.identity.roomId === crypto.identity.roomId) store.delete(LEGACY_IDENTITY_KEY);
     await transactionDone(transaction);
+  }
+
+  async getHost(roomId: string): Promise<StoredBridgeHost | undefined> {
+    return (await this.listHosts()).find((host) => host.roomId === roomId);
+  }
+
+  async setActiveEndpoint(roomId: string, endpointId: string): Promise<StoredBridgeHost | undefined> {
+    const database = await this.open();
+    const transaction = database.transaction("identity", "readwrite");
+    const store = transaction.objectStore("identity");
+    const record = await requestResult(store.get(hostKey(roomId))) as StoredCrypto | undefined;
+    if (!record) {
+      await transactionDone(transaction);
+      return undefined;
+    }
+    const transport = transportForStored(record);
+    const selected = selectBridgeEndpoint(transport.relayEndpoints, endpointId);
+    if (!selected) {
+      transaction.abort();
+      throw new Error("Relay endpoint is unavailable");
+    }
+    store.put({
+      ...record,
+      identity: { ...record.identity, relayUrl: selected.url },
+      serviceOrigin: transport.serviceOrigin,
+      relayEndpoints: transport.relayEndpoints,
+      activeEndpoint: selected.id,
+      migratedAt: Date.now(),
+      updatedAt: Date.now(),
+    } satisfies StoredCrypto);
+    await transactionDone(transaction);
+    return this.getHost(roomId);
   }
 
   async saveMessage(envelope: EncryptedEnvelope): Promise<void> {

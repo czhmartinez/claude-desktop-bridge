@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { rename, writeFile } from "node:fs/promises";
+import { relayPathForUrl } from "@bridge/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from "electron";
 import { DesktopConfigRepository, fileSecretProtector } from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
@@ -11,13 +12,21 @@ import { TranscriptObserver } from "./transcript-observer.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
+declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PAIRING_BASE__: string;
+declare const __BRIDGE_DEFAULT_SERVICE_ORIGIN__: string;
 
 const CONFIGURED_RELAY = process.env.BRIDGE_RELAY_URL
   ?? __BRIDGE_DEFAULT_RELAY__;
 const DEFAULT_RELAY = networkReachableUrl(CONFIGURED_RELAY);
 const DEFAULT_PAIRING_BASE = process.env.BRIDGE_PAIRING_BASE_URL
   ?? networkReachableUrl(__BRIDGE_DEFAULT_PAIRING_BASE__);
+const CONFIGURED_PUBLIC_RELAY = (
+  process.env.BRIDGE_PUBLIC_RELAY_URL ?? __BRIDGE_DEFAULT_PUBLIC_RELAY__
+) || (relayPathForUrl(CONFIGURED_RELAY) === "public-relay" ? CONFIGURED_RELAY : undefined);
+const DEFAULT_SERVICE_ORIGIN = (
+  process.env.BRIDGE_SERVICE_ORIGIN ?? __BRIDGE_DEFAULT_SERVICE_ORIGIN__
+) || DEFAULT_PAIRING_BASE;
 
 function configPath(): string {
   const base = process.env.BRIDGE_USER_DATA ?? app.getPath("userData");
@@ -46,6 +55,8 @@ async function desktopMain(): Promise<void> {
 
   const repository = new DesktopConfigRepository(configPath(), fileSecretProtector(), {
     relayUrl: DEFAULT_RELAY,
+    ...(CONFIGURED_PUBLIC_RELAY ? { publicRelayUrl: CONFIGURED_PUBLIC_RELAY } : {}),
+    serviceOrigin: DEFAULT_SERVICE_ORIGIN,
     desktopName: defaultDesktopName(),
   });
   const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));
