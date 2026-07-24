@@ -859,7 +859,7 @@ export function useMobileBridge() {
           crypto,
           role: "mobile",
           RTCPeerConnectionImpl: globalThis.RTCPeerConnection,
-          iceServers: bridgeIceServers(storedHost?.serviceOrigin ?? ""),
+          iceServers: bridgeIceServers(storedHost?.iceServers),
         })
       : relay;
     socketRef.current = socket;
@@ -1078,6 +1078,7 @@ export function useMobileBridge() {
         serviceOrigin: pairing.serviceOrigin,
         relayEndpoints: pairing.relayEndpoints,
         activeEndpoint: pairing.activeEndpoint,
+        iceServers: pairing.iceServers,
         updatedAt: Date.now(),
         crypto,
       });

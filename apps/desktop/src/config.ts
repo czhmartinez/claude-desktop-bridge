@@ -5,11 +5,14 @@ import {
   BridgeCrypto,
   PROTOCOL_VERSION,
   bridgeEndpoint,
+  isBridgeIceServer,
   isBridgeEndpoint,
+  normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
   relayPathForUrl,
   selectBridgeEndpoint,
   type BridgeEndpoint,
+  type BridgeIceServer,
 } from "@bridge/protocol";
 
 const CONFIG_VERSION = 3 as const;
@@ -65,6 +68,7 @@ interface DesktopConfigFileV3 {
   serviceOrigin: string;
   relayEndpoints: BridgeEndpoint[];
   activeEndpoint: string;
+  iceServers?: BridgeIceServer[];
   migratedAt?: number;
   desktopName: string;
   hostDeviceId: string;
@@ -97,6 +101,7 @@ export interface LoadedDesktopConfig {
   serviceOrigin: string;
   relayEndpoints: BridgeEndpoint[];
   activeEndpoint: string;
+  iceServers: BridgeIceServer[];
   migratedAt?: number;
   // Compatibility alias for renderer snapshots and older call sites.
   relayUrl: string;
@@ -113,6 +118,7 @@ export interface DesktopConfigDefaults {
   relayUrl: string;
   publicRelayUrl?: string;
   serviceOrigin?: string;
+  iceServers?: BridgeIceServer[];
   desktopName: string;
 }
 
@@ -140,6 +146,7 @@ function assertConfig(value: unknown): DesktopConfigFile {
     serviceOrigin?: unknown;
     relayEndpoints?: unknown;
     activeEndpoint?: unknown;
+    iceServers?: unknown;
     migratedAt?: unknown;
     desktopName?: unknown;
     hostDeviceId?: unknown;
@@ -169,7 +176,11 @@ function assertConfig(value: unknown): DesktopConfigFile {
     typeof config.serviceOrigin !== "string" ||
     !Array.isArray(config.relayEndpoints) ||
     !config.relayEndpoints.every(isBridgeEndpoint) ||
-    typeof config.activeEndpoint !== "string"
+    typeof config.activeEndpoint !== "string" ||
+    (config.iceServers !== undefined && (
+      !Array.isArray(config.iceServers) ||
+      !config.iceServers.every(isBridgeIceServer)
+    ))
   ) throw new Error("Desktop transport config is incomplete");
   return config as unknown as DesktopConfigFileV3;
 }
@@ -247,6 +258,7 @@ function migrateV2(config: DesktopConfigFileV2, defaults: DesktopConfigDefaults)
   relayEndpoints: BridgeEndpoint[];
   activeEndpoint: string;
   serviceOrigin: string;
+  iceServers: BridgeIceServer[];
   migratedAt: number;
 } {
   const relayUrl = shouldRefreshLocalRelay(config.relayUrl, defaults.relayUrl)
@@ -268,6 +280,7 @@ function migrateV2(config: DesktopConfigFileV2, defaults: DesktopConfigDefaults)
     relayEndpoints,
     activeEndpoint: active.id,
     serviceOrigin: defaults.serviceOrigin ?? serviceOriginForRelay(active.url),
+    iceServers: normalizeBridgeIceServers(defaults.iceServers),
     migratedAt: Date.now(),
   };
 }
@@ -324,7 +337,12 @@ export class DesktopConfigRepository {
       : {
           relayEndpoints: refreshV3Endpoints(config, this.defaults),
           activeEndpoint: config.activeEndpoint,
-          serviceOrigin: config.serviceOrigin || this.defaults.serviceOrigin || "",
+          serviceOrigin: this.defaults.publicRelayUrl
+            ? this.defaults.serviceOrigin || config.serviceOrigin || ""
+            : config.serviceOrigin || this.defaults.serviceOrigin || "",
+          iceServers: normalizeBridgeIceServers(
+            this.defaults.iceServers?.length ? this.defaults.iceServers : config.iceServers,
+          ),
           ...(config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
         };
     const active = (
@@ -340,6 +358,7 @@ export class DesktopConfigRepository {
       serviceOrigin: transport.serviceOrigin || serviceOriginForRelay(active.url),
       relayEndpoints: transport.relayEndpoints,
       activeEndpoint: active.id,
+      iceServers: transport.iceServers,
       ...(transport.migratedAt !== undefined ? { migratedAt: transport.migratedAt } : {}),
       relayUrl: active.url,
       desktopName: config.desktopName,
@@ -379,6 +398,7 @@ export class DesktopConfigRepository {
       relayEndpoints,
       activeEndpoint: active.id,
       relayUrl: active.url,
+      iceServers: normalizeBridgeIceServers(this.defaults.iceServers),
       desktopName: crypto.identity.desktopName,
       hostDeviceId: crypto.identity.deviceId,
       hostSecret: secret,
@@ -402,6 +422,7 @@ export class DesktopConfigRepository {
       serviceOrigin: config.serviceOrigin,
       relayEndpoints: endpoints,
       activeEndpoint: active.id,
+      iceServers: normalizeBridgeIceServers(config.iceServers),
       ...(config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
       desktopName: config.desktopName,
       hostDeviceId: config.hostDeviceId,

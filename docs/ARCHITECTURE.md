@@ -76,14 +76,15 @@ FCM/APNs 只发送 `bridge-wake` 或 `content-available`，不包含会话 ID、
 
 配置和配对 schema v3 将 Relay 端点从加密身份中解耦。旧 `relayUrl` 自动保留为
 局域网候选，固定公网 WSS 优先；切换端点不会改变 `roomId`、设备凭据、Envelope
-ID 或事件 cursor。大信封先加密再按 384 KiB 分块，Relay 不参与解密；目标端完成
+ID 或事件 cursor。大信封先加密再按 64 KiB 分块，Relay 不参与解密；目标端完成
 SHA-256 校验、重组和 AES-GCM 解密后才发送最终 ACK。
 
 0.3.1 在可靠 Relay 之上增加 WebRTC DataChannel。手机通过加密 Envelope 发送
 SDP/ICE，Relay 无法读取候选地址；STUN 只返回公网映射，不承载 Bridge 业务数据。
 直连打开前仍使用 WSS，打开后相同 Envelope ID 直接传输；DataChannel 中断时，
 未确认 outbox 使用原 ID 回退 Relay，因此不会重复执行指令。首版不使用 TURN，
-ICE 五秒未成功即保持 WSS 路径。
+ICE 五秒未成功即保持 WSS 路径。ICE 服务器为独立显式配置，不从 Relay 或
+`serviceOrigin` 的主机名推导。
 
 ## 运行时发现
 

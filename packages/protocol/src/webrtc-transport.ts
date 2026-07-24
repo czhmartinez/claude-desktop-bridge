@@ -164,21 +164,6 @@ function directMessageText(data: unknown): Promise<string | undefined> {
   return Promise.resolve(undefined);
 }
 
-export function bridgeIceServers(serviceOrigin: string): RTCIceServer[] {
-  try {
-    const hostname = new URL(serviceOrigin).hostname;
-    if (
-      !hostname ||
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "[::1]"
-    ) return [];
-    return [{ urls: `stun:${hostname}:3478` }];
-  } catch {
-    return [];
-  }
-}
-
 export class WebRtcTransport implements BridgeTransport {
   private readonly relay: BridgeTransport;
   private readonly crypto: BridgeCrypto;

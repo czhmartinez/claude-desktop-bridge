@@ -120,6 +120,7 @@ describe("desktop configuration", () => {
       relayUrl: "ws://10.0.0.8:8788/ws",
       publicRelayUrl: "wss://bridge.example/ws",
       serviceOrigin: "https://bridge.example",
+      iceServers: [{ urls: "stun:stun.example:3478" }],
       desktopName: "Test PC",
     });
 
@@ -130,6 +131,7 @@ describe("desktop configuration", () => {
       relayUrl: "wss://bridge.example/ws",
       activeEndpoint: "public",
       serviceOrigin: "https://bridge.example",
+      iceServers: [{ urls: "stun:stun.example:3478" }],
       hostSecret: "host-secret",
     });
     expect(loaded.devices[0]).toMatchObject({
@@ -148,6 +150,35 @@ describe("desktop configuration", () => {
     expect(persisted).not.toHaveProperty("relayUrl");
     expect(JSON.stringify(persisted)).not.toContain("host-secret");
     expect(JSON.stringify(persisted)).not.toContain("phone-secret");
+  });
+
+  it("refreshes public service and ICE defaults for an existing schema v3 pairing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const local = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      desktopName: "Test PC",
+    });
+    const created = await local.loadOrCreate();
+    await local.save(created);
+
+    const publicBuild = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      publicRelayUrl: "wss://relay.alioxis.uk/ws",
+      serviceOrigin: "https://relay.alioxis.uk",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      desktopName: "Test PC",
+    });
+    const loaded = await publicBuild.load();
+
+    expect(loaded).toMatchObject({
+      roomId: created.roomId,
+      hostSecret: created.hostSecret,
+      relayUrl: "wss://relay.alioxis.uk/ws",
+      serviceOrigin: "https://relay.alioxis.uk",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    });
   });
 
   it("disables the retired managed Desktop experiment during upgrade", async () => {

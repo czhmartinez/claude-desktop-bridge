@@ -3,6 +3,7 @@ import {
   BridgeCrypto,
   WebRtcTransport,
   bridgeIceServers,
+  parseBridgeIceServers,
   type BridgePayload,
   type BridgeTransport,
   type BridgeTransportMetrics,
@@ -468,10 +469,27 @@ describe("WebRtcTransport", () => {
     mobile.close();
   });
 
-  it("derives a self-hosted STUN endpoint without exposing one for local development", () => {
-    expect(bridgeIceServers("https://bridge.example.com")).toEqual([
-      { urls: "stun:bridge.example.com:3478" },
+  it("uses explicit ICE servers without deriving them from the Relay hostname", () => {
+    const configured = parseBridgeIceServers(JSON.stringify([
+      { urls: "stun:stun.cloudflare.com:3478" },
+      {
+        urls: ["turns:turn.example.com:443?transport=tcp"],
+        username: "short-lived-user",
+        credential: "short-lived-credential",
+      },
+    ]));
+    expect(bridgeIceServers(configured)).toEqual([
+      { urls: "stun:stun.cloudflare.com:3478" },
+      {
+        urls: ["turns:turn.example.com:443?transport=tcp"],
+        username: "short-lived-user",
+        credential: "short-lived-credential",
+      },
     ]);
-    expect(bridgeIceServers("http://localhost:5188")).toEqual([]);
+    expect(parseBridgeIceServers("stun:one.example:3478, stun:two.example:3478")).toEqual([
+      { urls: "stun:one.example:3478" },
+      { urls: "stun:two.example:3478" },
+    ]);
+    expect(bridgeIceServers([])).toEqual([]);
   });
 });

@@ -132,6 +132,7 @@ function pairingForDevice(config: LoadedDesktopConfig, device: LoadedDeviceConfi
     serviceOrigin: config.serviceOrigin,
     relayEndpoints: config.relayEndpoints,
     activeEndpoint: config.activeEndpoint,
+    iceServers: config.iceServers,
     desktopName: config.desktopName,
     createdAt: device.createdAt,
     expiresAt: device.expiresAt,
@@ -282,6 +283,7 @@ export class DesktopController extends EventEmitter {
       serviceOrigin: this.config.serviceOrigin,
       relayEndpoints: this.config.relayEndpoints,
       activeEndpoint: this.config.activeEndpoint,
+      iceServers: this.config.iceServers,
     });
     const device: LoadedDeviceConfig = {
       deviceId: created.pairing.deviceId,
@@ -449,7 +451,7 @@ export class DesktopController extends EventEmitter {
           crypto: this.hostCrypto,
           role: "desktop",
           RTCPeerConnectionImpl: this.RTCPeerConnectionImpl,
-          iceServers: bridgeIceServers(this.config.serviceOrigin),
+          iceServers: bridgeIceServers(this.config.iceServers),
           resolveCrypto: (envelope) => this.deviceCryptos.get(envelope.fromDeviceId),
           resolvePeerCrypto: (deviceId) => this.deviceCryptos.get(deviceId),
         })

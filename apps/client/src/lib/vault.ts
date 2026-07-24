@@ -2,9 +2,12 @@ import {
   BridgeCrypto,
   bridgeEndpoint,
   cryptoWithRelayEndpoint,
+  normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
+  parseBridgeIceServers,
   selectBridgeEndpoint,
   type BridgeEndpoint,
+  type BridgeIceServer,
   type EncryptedEnvelope,
   type PairingBundle,
   type StoredIdentity,
@@ -23,6 +26,7 @@ interface StoredCrypto {
   serviceOrigin?: string;
   relayEndpoints?: BridgeEndpoint[];
   activeEndpoint?: string;
+  iceServers?: BridgeIceServer[];
   migratedAt?: number;
   updatedAt?: number;
 }
@@ -39,13 +43,21 @@ export interface StoredBridgeHost {
   serviceOrigin: string;
   relayEndpoints: BridgeEndpoint[];
   activeEndpoint: string;
+  iceServers: BridgeIceServer[];
   migratedAt?: number;
   updatedAt: number;
   crypto: BridgeCrypto;
 }
 
-const PACKAGED_PUBLIC_RELAY = String(import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "").trim();
-const PACKAGED_SERVICE_ORIGIN = String(import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "").trim();
+const PACKAGED_PUBLIC_RELAY = String(
+  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "wss://relay.alioxis.uk/ws",
+).trim();
+const PACKAGED_SERVICE_ORIGIN = String(
+  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "https://relay.alioxis.uk",
+).trim();
+const PACKAGED_ICE_SERVERS = parseBridgeIceServers(String(
+  import.meta.env.VITE_BRIDGE_ICE_SERVERS ?? '[{"urls":"stun:stun.cloudflare.com:3478"}]',
+));
 
 function serviceOriginForRelay(relayUrl: string): string {
   try {
@@ -65,6 +77,7 @@ function transportForStored(stored: StoredCrypto): {
   relayEndpoints: BridgeEndpoint[];
   activeEndpoint: string;
   relayUrl: string;
+  iceServers: BridgeIceServer[];
 } {
   const relayEndpoints = normalizeBridgeEndpoints([
     ...(PACKAGED_PUBLIC_RELAY ? [bridgeEndpoint(PACKAGED_PUBLIC_RELAY, 10, "public")] : []),
@@ -77,10 +90,13 @@ function transportForStored(stored: StoredCrypto): {
   );
   if (!active) throw new Error("No relay endpoint is available");
   return {
-    serviceOrigin: stored.serviceOrigin || PACKAGED_SERVICE_ORIGIN || serviceOriginForRelay(active.url),
+    serviceOrigin: PACKAGED_SERVICE_ORIGIN || stored.serviceOrigin || serviceOriginForRelay(active.url),
     relayEndpoints,
     activeEndpoint: active.id,
     relayUrl: active.url,
+    iceServers: normalizeBridgeIceServers(
+      stored.iceServers?.length ? stored.iceServers : PACKAGED_ICE_SERVERS,
+    ),
   };
 }
 
@@ -145,6 +161,7 @@ export class BridgeVault {
       serviceOrigin: pairing.serviceOrigin,
       relayEndpoints: pairing.relayEndpoints,
       activeEndpoint: pairing.activeEndpoint,
+      iceServers: pairing.iceServers,
       updatedAt: Date.now(),
     } satisfies StoredCrypto);
     await transactionDone(transaction);
@@ -172,6 +189,7 @@ export class BridgeVault {
         serviceOrigin: transport.serviceOrigin,
         relayEndpoints: transport.relayEndpoints,
         activeEndpoint: transport.activeEndpoint,
+        iceServers: transport.iceServers,
         ...(stored.migratedAt !== undefined ? { migratedAt: stored.migratedAt } : {}),
         updatedAt,
         crypto,
@@ -186,12 +204,11 @@ export class BridgeVault {
     const store = transaction.objectStore("identity");
     const legacy = await requestResult(store.get(LEGACY_IDENTITY_KEY)) as StoredCrypto | undefined;
     const current = await requestResult(store.get(hostKey(crypto.identity.roomId))) as StoredCrypto | undefined;
-    const transport = current ? transportForStored(current) : {
-      serviceOrigin: PACKAGED_SERVICE_ORIGIN || serviceOriginForRelay(crypto.identity.relayUrl),
-      relayEndpoints: [bridgeEndpoint(crypto.identity.relayUrl, 100, "legacy")],
-      activeEndpoint: "legacy",
-      relayUrl: crypto.identity.relayUrl,
-    };
+    const transport = transportForStored(current ?? {
+      key: hostKey(crypto.identity.roomId),
+      identity: crypto.identity,
+      encryptionKey: crypto.encryptionKey,
+    });
     store.put({
       key: hostKey(crypto.identity.roomId),
       identity: { ...crypto.identity, relayUrl: transport.relayUrl },
@@ -199,6 +216,7 @@ export class BridgeVault {
       serviceOrigin: transport.serviceOrigin,
       relayEndpoints: transport.relayEndpoints,
       activeEndpoint: transport.activeEndpoint,
+      iceServers: transport.iceServers,
       ...(current?.migratedAt !== undefined ? { migratedAt: current.migratedAt } : {}),
       updatedAt: Date.now(),
     } satisfies StoredCrypto);

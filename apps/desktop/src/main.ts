@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { rename, writeFile } from "node:fs/promises";
-import { relayPathForUrl } from "@bridge/protocol";
+import { parseBridgeIceServers, relayPathForUrl } from "@bridge/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from "electron";
 import { DesktopConfigRepository, fileSecretProtector } from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
@@ -19,6 +19,7 @@ declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PAIRING_BASE__: string;
 declare const __BRIDGE_DEFAULT_SERVICE_ORIGIN__: string;
+declare const __BRIDGE_DEFAULT_ICE_SERVERS__: string;
 
 const CONFIGURED_RELAY = process.env.BRIDGE_RELAY_URL
   ?? __BRIDGE_DEFAULT_RELAY__;
@@ -31,6 +32,9 @@ const CONFIGURED_PUBLIC_RELAY = (
 const DEFAULT_SERVICE_ORIGIN = (
   process.env.BRIDGE_SERVICE_ORIGIN ?? __BRIDGE_DEFAULT_SERVICE_ORIGIN__
 ) || DEFAULT_PAIRING_BASE;
+const DEFAULT_ICE_SERVERS = parseBridgeIceServers(
+  process.env.BRIDGE_ICE_SERVERS ?? __BRIDGE_DEFAULT_ICE_SERVERS__,
+);
 
 function configPath(): string {
   const base = process.env.BRIDGE_USER_DATA ?? app.getPath("userData");
@@ -61,6 +65,7 @@ async function desktopMain(): Promise<void> {
     relayUrl: DEFAULT_RELAY,
     ...(CONFIGURED_PUBLIC_RELAY ? { publicRelayUrl: CONFIGURED_PUBLIC_RELAY } : {}),
     serviceOrigin: DEFAULT_SERVICE_ORIGIN,
+    iceServers: DEFAULT_ICE_SERVERS,
     desktopName: defaultDesktopName(),
   });
   const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));

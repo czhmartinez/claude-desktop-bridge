@@ -17,6 +17,7 @@ import {
   PAIRING_SCHEMA_VERSION,
   PROTOCOL_VERSION,
   type BridgeEndpoint,
+  type BridgeIceServer,
   type BridgePayload,
   type BridgeRole,
   type DecryptedEnvelope,
@@ -26,6 +27,7 @@ import {
   type PairingBundle,
   type StoredIdentity,
 } from "./types.js";
+import { normalizeBridgeIceServers } from "./ice.js";
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 10 * 60 * 1000;
@@ -175,6 +177,7 @@ export class BridgeCrypto {
     serviceOrigin?: string;
     relayEndpoints?: BridgeEndpoint[];
     activeEndpoint?: string;
+    iceServers?: BridgeIceServer[];
     deviceId?: string;
     now?: number;
   }): Promise<{ pairing: PairingBundle; desktopCrypto: BridgeCrypto }> {
@@ -197,6 +200,7 @@ export class BridgeCrypto {
       serviceOrigin: options.serviceOrigin ?? serviceOriginForRelay(active.url),
       relayEndpoints: endpoints,
       activeEndpoint: active.id,
+      iceServers: normalizeBridgeIceServers(options.iceServers),
       desktopName: options.desktopName,
       createdAt,
       expiresAt: createdAt + PAIRING_TTL_MS,
@@ -325,6 +329,7 @@ export function normalizePairingBundle(value: unknown): PairingBundle {
     serviceOrigin?: unknown;
     relayEndpoints?: unknown;
     activeEndpoint?: unknown;
+    iceServers?: unknown;
     desktopName?: unknown;
     createdAt?: unknown;
     expiresAt?: unknown;
@@ -354,6 +359,7 @@ export function normalizePairingBundle(value: unknown): PairingBundle {
       serviceOrigin: serviceOriginForRelay(parsed.relayUrl),
       relayEndpoints: [endpoint],
       activeEndpoint: endpoint.id,
+      iceServers: [],
       desktopName: parsed.desktopName,
       createdAt: parsed.createdAt,
       expiresAt: parsed.expiresAt,
@@ -383,6 +389,7 @@ export function normalizePairingBundle(value: unknown): PairingBundle {
     serviceOrigin: parsed.serviceOrigin,
     relayEndpoints: endpoints,
     activeEndpoint: active.id,
+    iceServers: normalizeBridgeIceServers(parsed.iceServers),
     desktopName: parsed.desktopName,
     createdAt: parsed.createdAt,
     expiresAt: parsed.expiresAt,

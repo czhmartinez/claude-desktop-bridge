@@ -1,6 +1,6 @@
 export const PROTOCOL_VERSION = 2 as const;
 export const PAIRING_SCHEMA_VERSION = 3 as const;
-export const ENVELOPE_CHUNK_BYTES = 384 * 1024;
+export const ENVELOPE_CHUNK_BYTES = 64 * 1024;
 export const MAX_ENVELOPE_CHUNKS = 384;
 
 export type BridgeRole = "desktop" | "mobile" | "agent";
@@ -15,6 +15,12 @@ export interface BridgeEndpoint {
   priority: number;
 }
 
+export interface BridgeIceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
 export interface PairingBundle {
   version: typeof PAIRING_SCHEMA_VERSION;
   protocolVersion: typeof PROTOCOL_VERSION;
@@ -26,6 +32,7 @@ export interface PairingBundle {
   serviceOrigin: string;
   relayEndpoints: BridgeEndpoint[];
   activeEndpoint: string;
+  iceServers: BridgeIceServer[];
   desktopName: string;
   createdAt: number;
   expiresAt: number;

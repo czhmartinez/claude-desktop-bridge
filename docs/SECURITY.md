@@ -47,8 +47,8 @@ Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会
 ## 生产要求
 
 - 公网只允许 HTTPS/WSS，并设置严格的 `BRIDGE_ALLOWED_ORIGINS`。
-- STUN 只开放 TCP/UDP 3478，不开放 TURN relay 端口范围；云安全组对其设置连接
-  速率保护。
+- 默认公共 STUN 不承载业务数据。自托管 STUN/TURN 时只开放实际使用的端口并设置
+  速率保护；TURN 长期密钥只能留在服务端，客户端只接收短期凭据。
 - Relay 使用 SQLite WAL 持久卷，密文默认保留七天，每房间最多 2,000 条或 128 MB；
   每日备份保留七份。
 - Relay 数据目录、FCM 服务账号和 APNs 私钥不得进入镜像或源码。

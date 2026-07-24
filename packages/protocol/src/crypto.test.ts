@@ -85,6 +85,7 @@ describe("BridgeCrypto v2", () => {
       roomId: host.crypto.identity.roomId,
       relayUrl: host.crypto.identity.relayUrl,
       desktopName: host.crypto.identity.desktopName,
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
       now: 1_000,
     });
     const encoded = encodePairingBundle(pairing);
@@ -98,6 +99,7 @@ describe("BridgeCrypto v2", () => {
       version: 3,
       protocolVersion: 2,
       activeEndpoint: "public",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
     });
     expect(pairing.relayEndpoints).toHaveLength(1);
   });
@@ -124,6 +126,7 @@ describe("BridgeCrypto v2", () => {
       secret: legacy.secret,
       activeEndpoint: "legacy",
       relayUrl: legacy.relayUrl,
+      iceServers: [],
     });
     expect(normalized.relayEndpoints).toEqual([
       expect.objectContaining({ kind: "lan-relay", url: legacy.relayUrl }),

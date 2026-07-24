@@ -9,9 +9,16 @@ const mainOnly = process.argv.includes("--main-only");
 const alias = { "@bridge/protocol": resolve(root, "../../packages/protocol/src/index.ts") };
 const sharedDefine = {
   __BRIDGE_DEFAULT_RELAY__: JSON.stringify(process.env.BRIDGE_RELAY_URL ?? "ws://127.0.0.1:8788/ws"),
-  __BRIDGE_DEFAULT_PUBLIC_RELAY__: JSON.stringify(process.env.BRIDGE_PUBLIC_RELAY_URL ?? ""),
+  __BRIDGE_DEFAULT_PUBLIC_RELAY__: JSON.stringify(
+    process.env.BRIDGE_PUBLIC_RELAY_URL ?? "wss://relay.alioxis.uk/ws",
+  ),
   __BRIDGE_DEFAULT_PAIRING_BASE__: JSON.stringify(process.env.BRIDGE_PAIRING_BASE_URL ?? "http://localhost:5188"),
-  __BRIDGE_DEFAULT_SERVICE_ORIGIN__: JSON.stringify(process.env.BRIDGE_SERVICE_ORIGIN ?? ""),
+  __BRIDGE_DEFAULT_SERVICE_ORIGIN__: JSON.stringify(
+    process.env.BRIDGE_SERVICE_ORIGIN ?? "https://relay.alioxis.uk",
+  ),
+  __BRIDGE_DEFAULT_ICE_SERVERS__: JSON.stringify(
+    process.env.BRIDGE_ICE_SERVERS ?? '[{"urls":"stun:stun.cloudflare.com:3478"}]',
+  ),
 };
 const mainDefine = {
   ...sharedDefine,

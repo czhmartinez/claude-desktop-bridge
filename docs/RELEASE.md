@@ -27,15 +27,15 @@ curl https://你的域名/ready
 选项；面向普通用户的安装包应写入 Bridge 托管 Relay。Relay 数据位于
 `/data/bridge-relay.db`，WAL 和每日七份备份都必须位于持久卷。
 
-0.3.1 同时启动 STUN-only Coturn。域名 A 记录必须指向服务器，腾讯云安全组和
-主机防火墙需放行 TCP/UDP `3478`；无需开放 TURN 的 `49152-65535` 端口范围。
-客户端从 `BRIDGE_SERVICE_ORIGIN` 的主机名自动派生
-`stun:你的域名:3478`。可用以下命令验证监听状态：
+0.3.1 不再从 `BRIDGE_SERVICE_ORIGIN` 自动派生 STUN 地址。ICE 必须显式配置，
+例如 Cloudflare 的公共 STUN：
 
 ```bash
-docker compose ps stun
-docker compose logs --tail=50 stun
+BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]'
 ```
+
+自托管 Coturn 仍是高级选项；使用时再开放 TCP/UDP `3478`。TURN 长期密钥不得
+打进客户端，必须由服务端换取短期凭据后下发。
 
 ## 3. 推送配置
 
@@ -66,6 +66,7 @@ BRIDGE_APNS_PRODUCTION=1
 BRIDGE_RELAY_URL=ws://127.0.0.1:8788/ws \
 BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
 BRIDGE_SERVICE_ORIGIN=https://你的域名 \
+BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]' \
 BRIDGE_PAIRING_BASE_URL=https://你的域名 \
 npm run make -w @bridge/desktop
 ```
@@ -90,6 +91,7 @@ Linux 产出 ZIP/DEB/RPM。没有 Developer ID、Authenticode 或仓库签名时
 ```bash
 VITE_BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
 VITE_BRIDGE_SERVICE_ORIGIN=https://你的域名 \
+VITE_BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]' \
 VITE_BRIDGE_PUSH_ENABLED=true \
 npm run build:android:debug
 npm run sync -w @bridge/mobile
