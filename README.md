@@ -2,11 +2,11 @@
 
 这段是我自己写的：
 
-天下苦Claude久矣，3天内封了我5个Max订阅账号，A➗你是真的➗。
+天下苦Anthropic久矣，3天内封了我5个Max订阅账号，A➗你是真的➗。
 
-但是架不住Claude Desktop确实好用，尤其是K3发布之后把接进了Claude Desktop，实际体验直追原生Cladue Desktop+Fable5。
+但是架不住Claude Desktop确实好用(她真的不一样），尤其是K3发布之后接进了Claude Desktop，实际体验直追原生Cladue Desktop+Fable5，远超kimi自家应用体验，kimi的桌面端真的是一坨。
 
-CCDesktop 3P有个硬伤就是没法 remote control（沟槽的A➗把这个功能跟CD1P绑死了。。。你把我号封了我还怎么用 remote control）
+然鹅CD3P有个硬伤就是没法remote control，遍寻github好像也没有专门给CD解决remote control的方案，比较成熟的方案都是给cc的（沟槽的A➗把这个功能跟CD1P绑死了，你把我号封了我还怎么用 remote control）。
 
 很想找回之前使用官方订阅时躺在床上控制电脑端开发的那种松弛感，干脆自己搓一个（Codex你给点力啊）
 
