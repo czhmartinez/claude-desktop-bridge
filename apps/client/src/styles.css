@@ -3395,6 +3395,20 @@ button:disabled {
   font-size: 11px;
 }
 
+.status-settings > label {
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 16px;
+}
+
+.status-settings > label > span {
+  min-width: 0;
+}
+
+.status-settings > label > i {
+  flex: none;
+}
+
 .status-settings > div strong {
   color: var(--text);
 }
