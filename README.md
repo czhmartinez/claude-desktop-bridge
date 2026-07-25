@@ -79,8 +79,14 @@ Desktop 窗口不承诺即时刷新，但可以随时打开并只读查看同一
 Actions 中标注 `adhoc-ci` 的安装包只用于构建验证；Release 附件使用本机稳定签名，
 用于保留 macOS Files & Folders 授权。
 
-**固定发布规则：**本地开发只负责更新代码与 README、提交并推送。新版本 tag、
-GitHub Release 和附件发布统一交给 GitHub Copilot；本地不介入，也不检查发布是否成功。
+版本号文件推送到 `main` 后，`release.yml` 会先校验根包、全部 workspace、
+`package-lock.json`、Android `versionName` 和 iOS `MARKETING_VERSION` 完全一致，
+再执行完整验证、生成提交日志并创建 tag 和 GitHub Release。该流程不会把 ad-hoc
+macOS 构建冒充正式安装包，也不会自动上传未签名附件。
+
+**固定发布规则：**本地开发只负责更新代码与 README、提交并推送。新版本号升级由
+GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
+发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
 ## 0.3.5 已实现
 

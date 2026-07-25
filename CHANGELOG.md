@@ -2,6 +2,8 @@
 
 ## 0.3.5
 
+- Add a fail-closed release workflow that validates every package and native app version, runs the
+  complete verification suite, generates commit notes, and creates a missing tag and GitHub Release.
 - Treat opening or focusing a Claude Desktop session as read-only observation rather than a
   competing writer, so simply viewing a Bridge-controlled session does not interrupt its turn.
 - Replace process-presence conflicts with an external-write lease that advances only when the
