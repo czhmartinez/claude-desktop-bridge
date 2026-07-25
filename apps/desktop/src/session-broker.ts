@@ -249,6 +249,7 @@ export class SessionBroker extends EventEmitter {
   private readonly sessionConfigurations = new Map<string, StoredSessionConfiguration>();
   private readonly modelCache = new Map<string, BridgeModelInfo>();
   private readonly hostStarts = new Map<string, Promise<SessionHostRuntime>>();
+  private readonly conflictTasks = new Map<string, Promise<void>>();
   private readonly pending: QueuedTurn[] = [];
   private readonly completedKeys = new Set<string>();
   private readonly terminalTurns = new Map<string, TerminalTurnReceipt>();
@@ -1945,22 +1946,68 @@ export class SessionBroker extends EventEmitter {
     sessionId: string,
     processes: ClaudeCatalogSnapshot["sessions"][number]["activeProcesses"],
   ): Promise<void> {
-    const state = this.runtimeStates.get(sessionId) ?? {
-      ownership: "OWNERSHIP_CONFLICT" as const,
+    const existing = this.conflictTasks.get(sessionId);
+    if (existing) return existing;
+    const task = this.resolveOwnershipConflict(sessionId, processes)
+      .finally(() => {
+        if (this.conflictTasks.get(sessionId) === task) this.conflictTasks.delete(sessionId);
+      });
+    this.conflictTasks.set(sessionId, task);
+    return task;
+  }
+
+  private async resolveOwnershipConflict(
+    sessionId: string,
+    processes: ClaudeCatalogSnapshot["sessions"][number]["activeProcesses"],
+  ): Promise<void> {
+    const existingState = this.runtimeStates.get(sessionId);
+    const state = existingState ?? {
+      ownership: "DESKTOP_OBSERVED" as const,
       turnState: "waiting" as const,
     };
-    const wasConflict = state.ownership === "OWNERSHIP_CONFLICT";
+    const wasConflict = existingState?.ownership === "OWNERSHIP_CONFLICT";
+    const host = state.host;
+    const active = state.active;
+    if (state.releaseTimer) {
+      clearTimeout(state.releaseTimer);
+      delete state.releaseTimer;
+    }
+    delete state.host;
     state.ownership = "OWNERSHIP_CONFLICT";
-    state.turnState = "waiting";
+    state.turnState = active?.transport === "bridge-host"
+      || this.pending.some((turn) => turn.sessionId === sessionId && turn.state === "queued")
+      ? "queued"
+      : "waiting";
     this.runtimeStates.set(sessionId, state);
-    if (state.host) {
-      await state.host.interrupt().catch(() => undefined);
-      await state.host.close().catch(() => undefined);
-      delete state.host;
+
+    if (active?.transport === "bridge-host") {
+      this.permissionBroker.cancelSession(sessionId);
+      delete state.active;
+      active.state = "queued";
+      delete active.turnId;
+      delete active.sessionAcceptedAt;
+      this.activeTurns = Math.max(0, this.activeTurns - 1);
+      await this.saveQueue();
+      await host?.close().catch(() => undefined);
+      await this.record({
+        sessionId,
+        itemId: active.commandId,
+        origin: "system",
+        type: "turn.queued",
+        data: {
+          commandId: active.commandId,
+          requestId: active.requestId,
+          idempotencyKey: active.idempotencyKey,
+          delivery: "host-received",
+          retrying: true,
+          reason: "ownership-conflict",
+          attempt: active.attempts,
+        },
+      });
+    } else {
+      await host?.close().catch(() => undefined);
     }
-    if (state.managed && state.active) {
-      await this.managedTransport?.interrupt(sessionId).catch(() => undefined);
-    }
+
     if (!wasConflict) {
       await this.record({
         sessionId,
@@ -1980,6 +2027,7 @@ export class SessionBroker extends EventEmitter {
       await this.recordOwnership(sessionId, state.ownership);
     }
     this.emit("changed");
+    this.scheduleTakeoverRetry(sessionId);
   }
 
   private async recordOwnership(sessionId: string, ownership: BridgeOwnershipState): Promise<void> {

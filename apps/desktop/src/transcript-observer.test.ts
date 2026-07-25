@@ -20,6 +20,102 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 }
 
 describe("TranscriptObserver", () => {
+  it("quits the Claude Desktop main process instead of terminating its session child", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-release-"));
+    directories.push(root);
+    const paths = {
+      sessions: join(root, "sessions"),
+      tasks: join(root, "tasks"),
+      projects: join(root, "projects"),
+      desktopSessions: [],
+    };
+    await Promise.all([
+      mkdir(paths.sessions, { recursive: true }),
+      mkdir(paths.tasks, { recursive: true }),
+      mkdir(paths.projects, { recursive: true }),
+    ]);
+    const sessionId = "session-release";
+    const childPid = 43284;
+    const mainPid = 73;
+    const cwd = join(root, "work");
+    const transcript = join(root, "completed.jsonl");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(paths.sessions, `${childPid}.json`), JSON.stringify({
+      pid: childPid,
+      sessionId,
+      cwd,
+      startedAt: Date.now(),
+      entrypoint: "claude-desktop-3p",
+    }));
+    await writeFile(transcript, [
+      JSON.stringify({
+        type: "user",
+        uuid: "user-1",
+        parentUuid: null,
+        message: { role: "user", content: "Run" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        uuid: "assistant-1",
+        parentUuid: "user-1",
+        message: { role: "assistant", content: "Done", stop_reason: "end_turn" },
+      }),
+    ].join("\n"));
+    let running = true;
+    const signalled: number[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({
+      paths,
+      eventLog,
+      idleGraceMs: 0,
+      resolveDesktopMainProcessId: async (pid) => pid === childPid ? mainPid : undefined,
+      signalProcess: (pid) => {
+        signalled.push(pid);
+        running = false;
+      },
+      processExists: () => running,
+      sleep: async () => undefined,
+    });
+    observer.catalog.sessions.push({
+      sessionId,
+      desktopSessionId: "desktop-release",
+      projectId: "project-release",
+      projectName: "work",
+      cwd,
+      title: "Release test",
+      source: "desktop",
+      transport: "bridge-host",
+      ownership: "DESKTOP_OBSERVED",
+      turnState: "idle",
+      lastActivityAt: Date.now() - 10_000,
+      pendingCount: 0,
+      transcriptPath: transcript,
+      transcriptMtimeMs: Date.now() - 10_000,
+      processAlive: true,
+      desktopProcessAlive: true,
+      bridgeProcessAlive: false,
+      processConflict: false,
+      activeProcesses: [{
+        pid: childPid,
+        cwd,
+        startedAt: Date.now() - 10_000,
+        processAlive: true,
+        entrypoint: "claude-desktop-3p",
+        source: "registration",
+      }],
+      activeTask: false,
+    });
+
+    await expect(observer.releaseDesktopWriter(sessionId)).resolves.toBe(true);
+    expect(signalled).toEqual([mainPid]);
+    expect(observer.catalog.sessions[0]).toMatchObject({
+      desktopProcessAlive: false,
+      processAlive: false,
+    });
+    await observer.close();
+    await eventLog.close();
+  });
+
   it("publishes an updated observed message when an assistant chain grows", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-"));
     directories.push(root);

@@ -21,6 +21,10 @@ export interface TranscriptObserverOptions {
   pollIntervalMs?: number;
   catalogIntervalMs?: number;
   idleGraceMs?: number;
+  resolveDesktopMainProcessId?(pid: number): Promise<number | undefined>;
+  signalProcess?(pid: number): void;
+  processExists?(pid: number): boolean;
+  sleep?(durationMs: number): Promise<void>;
 }
 
 export class TranscriptObserver extends EventEmitter {
@@ -82,30 +86,43 @@ export class TranscriptObserver extends EventEmitter {
       candidate.entrypoint.startsWith("claude-desktop") &&
       candidate.pid !== undefined
     ));
-    const verified: number[] = [];
+    const verifiedChildren: number[] = [];
+    const desktopMainPids = new Set<number>();
     for (const candidate of candidates) {
-      if (
-        await this.isRegisteredDesktopWriter(candidate.pid!, sessionId) &&
-        await this.isClaudeDesktopChild(candidate.pid!)
-      ) verified.push(candidate.pid!);
+      if (!await this.isRegisteredDesktopWriter(candidate.pid!, sessionId)) continue;
+      const mainPid = await (
+        this.options.resolveDesktopMainProcessId
+          ? this.options.resolveDesktopMainProcessId(candidate.pid!)
+          : this.claudeDesktopMainProcessId(candidate.pid!)
+      );
+      if (mainPid === undefined) continue;
+      verifiedChildren.push(candidate.pid!);
+      desktopMainPids.add(mainPid);
     }
-    if (verified.length === 0) return false;
+    if (desktopMainPids.size === 0) return false;
 
-    for (const pid of verified) {
+    for (const pid of desktopMainPids) {
       try {
-        process.kill(pid, "SIGTERM");
+        (this.options.signalProcess ?? ((target) => process.kill(target, "SIGTERM")))(pid);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
       }
     }
+    const processIds = [...desktopMainPids, ...verifiedChildren];
     const deadline = Date.now() + 5_000;
-    while (verified.some((pid) => this.processExists(pid)) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    while (processIds.some((pid) => this.processExists(pid)) && Date.now() < deadline) {
+      await (this.options.sleep ?? ((durationMs) => (
+        new Promise((resolve) => setTimeout(resolve, durationMs))
+      )))(100);
     }
-    if (verified.some((pid) => this.processExists(pid))) return false;
+    if (processIds.some((pid) => this.processExists(pid))) return false;
 
     for (const active of session.activeProcesses) {
-      if (active.pid !== undefined && verified.includes(active.pid)) active.processAlive = false;
+      if (
+        active.entrypoint.startsWith("claude-desktop") &&
+        active.pid !== undefined &&
+        verifiedChildren.includes(active.pid)
+      ) active.processAlive = false;
     }
     const live = session.activeProcesses.filter((candidate) => candidate.processAlive);
     session.desktopProcessAlive = live.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
@@ -129,6 +146,7 @@ export class TranscriptObserver extends EventEmitter {
   }
 
   private processExists(pid: number): boolean {
+    if (this.options.processExists) return this.options.processExists(pid);
     try {
       process.kill(pid, 0);
       return true;
@@ -153,8 +171,8 @@ export class TranscriptObserver extends EventEmitter {
     }
   }
 
-  private async isClaudeDesktopChild(pid: number): Promise<boolean> {
-    if (process.platform !== "darwin") return false;
+  private async claudeDesktopMainProcessId(pid: number): Promise<number | undefined> {
+    if (process.platform !== "darwin") return undefined;
     let currentPid = pid;
     for (let depth = 0; depth < 10 && currentPid > 1; depth += 1) {
       let stdout: string;
@@ -169,20 +187,20 @@ export class TranscriptObserver extends EventEmitter {
           maxBuffer: 1024 * 1024,
         }));
       } catch {
-        return false;
+        return undefined;
       }
       const match = /^\s*(\d+)\s+(.+)$/su.exec(stdout.trim());
-      if (!match) return false;
+      if (!match) return undefined;
       const command = match[2]!;
       if (depth === 0 && (
         !command.includes("--output-format stream-json") ||
         !command.includes("--input-format stream-json") ||
         !/\/claude(?:\s|$)/u.test(command)
-      )) return false;
-      if (/\/Applications\/Claude\.app\/Contents\/MacOS\/Claude(?:\s|$)/u.test(command)) return true;
+      )) return undefined;
+      if (/\/Applications\/Claude\.app\/Contents\/MacOS\/Claude(?:\s|$)/u.test(command)) return currentPid;
       currentPid = Number(match[1]);
     }
-    return false;
+    return undefined;
   }
 
   private async poll(): Promise<void> {

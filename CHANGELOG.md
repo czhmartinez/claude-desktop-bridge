@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.3
+
+- Quit the idle Claude Desktop main application before takeover instead of terminating its
+  Claude Code session child, preventing the visible `process exited with code 143` failure.
+- Preserve an active mobile command when competing writers are detected: close only the Bridge
+  writer, keep the command durably queued, and retry automatically after ownership is clear.
+- Serialize conflict containment so one observer update cannot emit duplicate conflict events or
+  perform the same cleanup twice.
+- Keep managed Desktop turns intact during conflict observation rather than interrupting them.
+- Make the macOS-only installer workflow produce explicitly labeled ad-hoc CI artifacts while
+  stable locally signed packages remain the downloadable release assets.
+
 ## 0.3.2
 
 - Shrink pairing QR payloads by more than half while retaining legacy decode support.

@@ -67,6 +67,7 @@ class FakeHost implements SessionHostRuntime {
   model: string | undefined;
   effort: BridgeEffort | undefined;
   closed = false;
+  interrupts = 0;
 
   constructor(readonly options: ClaudeSessionHostOptions) {
     this.model = options.model;
@@ -140,6 +141,7 @@ class FakeHost implements SessionHostRuntime {
   }
 
   async interrupt(): Promise<void> {
+    this.interrupts += 1;
     if (!this.current) return;
     this.emit({
       type: "turn.interrupted",
@@ -211,6 +213,7 @@ class FakeManagedDesktop extends EventEmitter implements ManagedDesktopRuntime {
 class FakeManagedTransport extends EventEmitter implements ManagedDesktopTransportRuntime {
   ready = true;
   sends: Array<Parameters<ManagedDesktopTransportRuntime["send"]>[0]> = [];
+  interrupts = 0;
 
   updateCatalog(): void {}
 
@@ -227,7 +230,9 @@ class FakeManagedTransport extends EventEmitter implements ManagedDesktopTranspo
     };
   }
 
-  async interrupt(): Promise<void> {}
+  async interrupt(): Promise<void> {
+    this.interrupts += 1;
+  }
   async setModel(): Promise<void> {}
   async setEffort(): Promise<void> {}
   async getContextUsage(): Promise<undefined> { return undefined; }
@@ -740,6 +745,111 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
+  it("requeues a Bridge turn without cancelling it when Desktop creates a competing writer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-conflict-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    await mkdir(cwd, { recursive: true });
+    const desktopSession = observed(sessionId, cwd);
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [desktopSession],
+      observedAt: Date.now(),
+    });
+    observer.writer = false;
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "request-conflict",
+      idempotencyKey: "command-conflict",
+      sessionId,
+      text: "Keep this command queued",
+      origin: "mobile",
+    });
+    await waitFor(() => hosts[0]?.sends === 1);
+
+    desktopSession.desktopProcessAlive = true;
+    desktopSession.bridgeProcessAlive = true;
+    desktopSession.processAlive = true;
+    desktopSession.processConflict = true;
+    desktopSession.activeProcesses = [
+      {
+        pid: 101,
+        startedAt: Date.now(),
+        processAlive: true,
+        entrypoint: "claude-desktop-3p",
+        source: "process",
+      },
+      {
+        pid: 102,
+        startedAt: Date.now(),
+        processAlive: true,
+        entrypoint: "claude-bridge",
+        source: "process",
+      },
+    ];
+    observer.writer = true;
+    observer.publish();
+
+    await waitFor(() => hosts[0]?.closed === true);
+    expect(hosts[0]?.interrupts).toBe(0);
+    expect(broker.session(sessionId)).toMatchObject({
+      ownership: "OWNERSHIP_CONFLICT",
+      turnState: "queued",
+      pendingCount: 1,
+    });
+    expect(eventLog.replay().filter((event) => (
+      event.sessionId === sessionId && event.type === "turn.interrupted"
+    ))).toHaveLength(0);
+    expect(eventLog.replay().filter((event) => (
+      event.sessionId === sessionId && event.type === "session.ownership-conflict"
+    ))).toHaveLength(1);
+    expect([...eventLog.replay()].reverse().find((event) => (
+      event.sessionId === sessionId && event.type === "turn.queued"
+    ))?.data).toMatchObject({
+      commandId: expect.any(String),
+      retrying: true,
+      reason: "ownership-conflict",
+    });
+
+    desktopSession.desktopProcessAlive = false;
+    desktopSession.bridgeProcessAlive = false;
+    desktopSession.processAlive = false;
+    desktopSession.processConflict = false;
+    desktopSession.activeProcesses = [];
+    observer.writer = false;
+    observer.publish();
+    await waitFor(() => hosts[1]?.sends === 1);
+    expect(hosts[1]?.options.sessionId).toBe(sessionId);
+
+    await broker.close();
+    await eventLog.close();
+  });
+
   it("uses the managed Desktop transport as the only writer and preserves its event order", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-managed-"));
     directories.push(root);
@@ -817,6 +927,33 @@ describe("SessionBroker", () => {
       origin: "mobile",
       at: 11,
     });
+    desktopSession.bridgeProcessAlive = true;
+    desktopSession.processConflict = true;
+    desktopSession.activeProcesses = [
+      {
+        pid: 201,
+        startedAt: Date.now(),
+        processAlive: true,
+        entrypoint: "claude-desktop-3p",
+        source: "process",
+      },
+      {
+        pid: 202,
+        startedAt: Date.now(),
+        processAlive: true,
+        entrypoint: "claude-bridge",
+        source: "process",
+      },
+    ];
+    observer.publish();
+    await waitFor(() => eventLog.replay().some((event) => (
+      event.sessionId === sessionId && event.type === "session.ownership-conflict"
+    )));
+    expect(managedTransport.interrupts).toBe(0);
+    desktopSession.bridgeProcessAlive = false;
+    desktopSession.processConflict = false;
+    desktopSession.activeProcesses = [];
+    observer.publish();
     managedTransport.emitHost({
       type: "assistant.completed",
       sessionId,

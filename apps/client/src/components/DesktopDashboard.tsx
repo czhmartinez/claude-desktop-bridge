@@ -484,7 +484,7 @@ function DesktopDevices({
           <div>
             <span>一次性配对</span>
             <h2>使用手机 Bridge 扫描</h2>
-            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。请使用 0.3.2 或更新版本的手机端扫码。</p>
+            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。请使用 0.3.3 或更新版本的手机端扫码。</p>
             <small>{Math.max(0, Math.ceil((snapshot.pairingExpiresAt - Date.now()) / 60_000))} 分钟后过期</small>
           </div>
         </section>
