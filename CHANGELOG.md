@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.6
+
+- Unify the Bridge desktop, Android and iOS app icons around the desktop-phone bridge mark.
+- Bump all package, native app and user-agent versions to 0.3.6 for the automated GitHub Release flow.
+
 ## 0.3.5
 
 - Add a fail-closed release workflow that validates every package and native app version, runs the

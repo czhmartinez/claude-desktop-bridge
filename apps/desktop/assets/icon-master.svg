@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="62%">
+      <stop offset="0%" stop-color="#1a1a30"/>
+      <stop offset="100%" stop-color="#0a0a12"/>
+    </radialGradient>
+    <linearGradient id="bridgeGrad" x1="240" y1="580" x2="784" y2="310" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#E88458"/>
+      <stop offset="45%" stop-color="#D96B42"/>
+      <stop offset="100%" stop-color="#C85933"/>
+    </linearGradient>
+    <linearGradient id="nodeGrad" x1="512" y1="270" x2="512" y2="370" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFBE5C"/>
+      <stop offset="100%" stop-color="#F09D30"/>
+    </linearGradient>
+    <radialGradient id="nodeHalo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="rgba(255,190,92,0.35)"/>
+      <stop offset="100%" stop-color="rgba(255,190,92,0)"/>
+    </radialGradient>
+    <linearGradient id="pillarL" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.95)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0.65)"/>
+    </linearGradient>
+    <linearGradient id="pillarR" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.95)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0.65)"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+
+  <!-- Subtle inner rim light -->
+  <rect width="1016" height="1016" x="4" y="4" rx="220" fill="none" stroke="rgba(255,255,255,0.035)" stroke-width="2"/>
+
+  <!-- ── Left pillar: Desktop monitor silhouette ── -->
+  <g transform="translate(196, 518)">
+    <!-- Screen -->
+    <rect x="0" y="0" width="116" height="82" rx="11" fill="url(#pillarL)"/>
+    <!-- Stand neck -->
+    <rect x="44" y="82" width="28" height="13" rx="4" fill="rgba(255,255,255,0.55)"/>
+    <!-- Base -->
+    <rect x="26" y="93" width="64" height="9" rx="4.5" fill="rgba(255,255,255,0.42)"/>
+    <!-- Screen content hint (subtle inner rect) -->
+    <rect x="8" y="8" width="100" height="58" rx="5" fill="rgba(0,0,0,0.08)"/>
+  </g>
+
+  <!-- ── Right pillar: Phone silhouette ── -->
+  <g transform="translate(708, 496)">
+    <!-- Body -->
+    <rect x="0" y="0" width="68" height="118" rx="15" fill="url(#pillarR)"/>
+    <!-- Screen -->
+    <rect x="5" y="10" width="58" height="94" rx="7" fill="rgba(0,0,0,0.06)"/>
+    <!-- Notch / camera hint -->
+    <rect x="26" y="3" width="16" height="4" rx="2" fill="rgba(0,0,0,0.08)"/>
+    <!-- Home bar -->
+    <rect x="22" y="109" width="24" height="4.5" rx="2.25" fill="rgba(0,0,0,0.06)"/>
+  </g>
+
+  <!-- ── Bridge Arch ── -->
+  <path d="M 264 538
+           C 296 416, 384 322, 512 304
+           C 640 322, 728 416, 760 538"
+        fill="none"
+        stroke="url(#bridgeGrad)"
+        stroke-width="36"
+        stroke-linecap="round"/>
+
+  <!-- ── Relay Node Halo ── -->
+  <circle cx="512" cy="308" r="64" fill="url(#nodeHalo)"/>
+
+  <!-- ── Relay Node Core ── -->
+  <circle cx="512" cy="308" r="34" fill="url(#nodeGrad)"/>
+  <circle cx="512" cy="308" r="19" fill="#FFF6EB"/>
+
+  <!-- Lock/shield glyph inside node -->
+  <g transform="translate(512, 308)" fill="none" stroke="#D96B42" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M -7 2 L -7 -3 C -7 -8.5 -3.5 -12 0 -12 C 3.5 -12 7 -8.5 7 -3 L 7 2"/>
+    <rect x="-9.5" y="1" width="19" height="15" rx="3" fill="rgba(217,107,66,0.15)"/>
+  </g>
+
+  <!-- ── Data-flow particles along the arch ── -->
+  <circle cx="352" cy="400" r="5.5" fill="rgba(255,190,92,0.72)"/>
+  <circle cx="418" cy="348" r="4"   fill="rgba(255,190,92,0.52)"/>
+  <circle cx="606" cy="348" r="4"   fill="rgba(255,190,92,0.52)"/>
+  <circle cx="672" cy="400" r="5.5" fill="rgba(255,190,92,0.72)"/>
+
+  <!-- Tiny sync arrows on the bridge -->
+  <g stroke="rgba(255,255,255,0.28)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M 378 378 L 390 372 L 390 384 Z"/>
+    <path d="M 646 378 L 634 372 L 634 384 Z"/>
+  </g>
+</svg>

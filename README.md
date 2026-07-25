@@ -20,9 +20,10 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前稳定版：0.3.5
+## 当前稳定版：0.3.6
 
-Bridge 0.3.5 在跨网络持续连接能力上补齐了移动控制的高频故障：
+Bridge 0.3.6 在跨网络持续连接能力上补齐了移动控制的高频故障，并统一更新了桌面端、
+Android 和 iOS 图标：
 
 - 打开、聚焦或只读查看 Claude Desktop 会话不再被误判为第二个写入者；Claude
   Desktop 可以保持打开，Bridge 不会为了接管而自动退出主应用或终止其子进程。
@@ -51,7 +52,7 @@ Relay 始终保留一个低流量控制连接，用于信令、设备撤销、�
 直连失败回退。界面显示“直连”时业务数据不经过 Relay；显示“安全中继”或
 “局域网连接”时业务数据使用相应 Relay 路径。
 
-Bridge 0.3.5 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
+Bridge 0.3.6 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
 共享同一个 Claude `sessionId`、同一个持久执行进程和同一条有序事件流。
 
 它面向已经通过第三方 Host 或 Gateway 登录 Claude Desktop、但不能使用官方
@@ -61,7 +62,7 @@ Bridge。
 ## 使用方式
 
 1. 在电脑安装并打开 Bridge，保持第三方登录的 Claude Desktop 可用。
-2. 先将手机端升级到 0.3.5，再在 Bridge 的“设备”页生成二维码并扫描一次。
+2. 先将手机端升级到 0.3.6，再在 Bridge 的“设备”页生成二维码并扫描一次。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
    回答 Claude 提问、调整或停止任务。
 
@@ -88,8 +89,9 @@ macOS 构建冒充正式安装包，也不会自动上传未签名附件。
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
 发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
-## 0.3.5 已实现
+## 0.3.6 已实现
 
+- 统一 Bridge 桌面端、Android 自适应图标与 iOS AppIcon，使用同一套设备桥接视觉。
 - 紧凑配对协议、旧二维码向前兼容解码、320 px 标准静区二维码和高分辨率后摄扫描。
 - Android 系统返回/边缘返回与 iOS 左缘侧滑按弹窗、会话、主机逐层返回，根层不退出 App。
 - 中断哨兵过滤、延迟结果排空、立即重试本地暂存、残留消息 writer 退役和接管前实时复查。
@@ -116,7 +118,7 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
 - 电脑端“会话 / 设备 / 状态”控制台、托盘、开机启动和脱敏诊断导出。
 - 首次升级归档 0.1 队列，并只移除 Bridge 自己写入的 MCP 与 HTTP Hooks。
 
-0.3.5 不包含 MCP 主通道、一次性 `claude -p` worker、`--fork-session`、隐藏
+0.3.6 不包含 MCP 主通道、一次性 `claude -p` worker、`--fork-session`、隐藏
 旁路会话或 Claude 官方登录入口。
 
 ## 本地运行
@@ -167,7 +169,7 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.3.5 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
+Bridge 0.3.6 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
 必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
 签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。
