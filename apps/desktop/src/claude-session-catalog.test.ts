@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("Claude session process catalog", () => {
-  it("retains every live writer registered for the same session instead of overwriting by sessionId", async () => {
+  it("retains every live process registered for the same session without calling overlap a write conflict", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-session-catalog-"));
     directories.push(root);
     const sessions = join(root, "sessions");
@@ -64,7 +64,7 @@ describe("Claude session process catalog", () => {
       processAlive: true,
       desktopProcessAlive: true,
       bridgeProcessAlive: true,
-      processConflict: true,
+      processOverlap: true,
     });
     expect(catalog.sessions[0]?.activeProcesses).toEqual(expect.arrayContaining([
       expect.objectContaining({ pid: desktopProcess.pid, entrypoint: "claude-desktop-3p" }),

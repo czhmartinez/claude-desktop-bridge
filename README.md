@@ -20,14 +20,18 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前稳定版：0.3.4
+## 当前稳定版：0.3.5
 
-Bridge 0.3.4 在跨网络持续连接能力上补齐了移动控制的高频故障：
+Bridge 0.3.5 在跨网络持续连接能力上补齐了移动控制的高频故障：
 
-- 只有全部 Desktop 会话都安全空闲时，Bridge 才会正常退出 Claude Desktop 主应用
-  并接管；不再终止 Claude Code 子进程，也不会打断其他电脑任务或出现 `code 143`。
+- 打开、聚焦或只读查看 Claude Desktop 会话不再被误判为第二个写入者；Claude
+  Desktop 可以保持打开，Bridge 不会为了接管而自动退出主应用或终止其子进程。
+- 冲突判定改为 transcript 写入租约：只有出现无法归因给 Bridge 的新用户消息，
+  才确认发生真实竞争写入；非终端分支上的桌面输入也不会漏检。
 - 检测到双写时，只静默关闭 Bridge 的重叠 writer；手机原指令继续保存在持久队列，
   冲突解除后自动续跑，不再显示“任务已停止”，也无需重复发送。
+- Claude 生成的 `[Request interrupted by user for tool use]` 内部哨兵不再显示，也
+  不会被误识别为桌面端输入。
 - 配对二维码载荷缩短超过一半，桌面码放大并使用标准静区；手机扫码保持相机原始
   比例，并在设备支持时启用连续对焦与保守变焦。
 - Claude 中断恢复产生的内部占位消息不再显示，也不会被延迟结果误结算为下一轮回复。
@@ -45,7 +49,7 @@ Relay 始终保留一个低流量控制连接，用于信令、设备撤销、�
 直连失败回退。界面显示“直连”时业务数据不经过 Relay；显示“安全中继”或
 “局域网连接”时业务数据使用相应 Relay 路径。
 
-Bridge 0.3.4 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
+Bridge 0.3.5 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
 共享同一个 Claude `sessionId`、同一个持久执行进程和同一条有序事件流。
 
 它面向已经通过第三方 Host 或 Gateway 登录 Claude Desktop、但不能使用官方
@@ -55,15 +59,16 @@ Bridge。
 ## 使用方式
 
 1. 在电脑安装并打开 Bridge，保持第三方登录的 Claude Desktop 可用。
-2. 先将手机端升级到 0.3.4，再在 Bridge 的“设备”页生成二维码并扫描一次。
+2. 先将手机端升级到 0.3.5，再在 Bridge 的“设备”页生成二维码并扫描一次。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
    回答 Claude 提问、调整或停止任务。
 
 Bridge 不点击输入框，不粘贴内容，不申请辅助功能权限，也不读写系统剪贴板。
 Bridge 接管后，电脑端 Bridge 是主要桌面界面，手机是远程界面；原 Claude
-Desktop 窗口不承诺即时刷新，释放后仍可重新打开同一份完整会话历史。
-手机向空闲的 Claude Desktop 会话发送指令时，Bridge 会先确认所有 Desktop 会话
-都已完成，再退出主应用并接管；只要电脑端仍有任务执行，指令就保持排队。
+Desktop 窗口不承诺即时刷新，但可以随时打开并只读查看同一份会话历史，单纯点击
+不会中断 Bridge。只有在 Claude Desktop 中实际发送新消息时才会触发写入冲突保护。
+手机向空闲的 Claude Desktop 会话发送指令时，Bridge 会确认目标 transcript 已到达
+安全完成边界后直接接续，无需退出 Claude Desktop；电脑端仍有任务执行时保持排队。
 
 ## 发布下载
 
@@ -72,10 +77,11 @@ Desktop 窗口不承诺即时刷新，释放后仍可重新打开同一份完整
 Actions 中标注 `adhoc-ci` 的安装包只用于构建验证；Release 附件使用本机稳定签名，
 用于保留 macOS Files & Folders 授权。
 
-## 0.3.4 已实现
+## 0.3.5 已实现
 
 - 紧凑配对协议、旧二维码向前兼容解码、320 px 标准静区二维码和高分辨率后摄扫描。
 - 中断哨兵过滤、延迟结果排空、立即重试本地暂存、残留消息 writer 退役和接管前实时复查。
+- Claude Desktop 只读共存、跨 transcript 分支的真实用户写入检测和写入版本租约。
 - macOS 受保护目录按需访问、稳定签名发布闸门和单机专用本地签名流程。
 - Claude Agent SDK 持久 Streaming Input，准确 `resume`，`forkSession:false`。
 - 主机、项目、会话三层导航，可创建会话、搜索、分页读取完整历史。
@@ -97,7 +103,7 @@ Actions 中标注 `adhoc-ci` 的安装包只用于构建验证；Release 附件�
 - 电脑端“会话 / 设备 / 状态”控制台、托盘、开机启动和脱敏诊断导出。
 - 首次升级归档 0.1 队列，并只移除 Bridge 自己写入的 MCP 与 HTTP Hooks。
 
-0.3.4 不包含 MCP 主通道、一次性 `claude -p` worker、`--fork-session`、隐藏
+0.3.5 不包含 MCP 主通道、一次性 `claude -p` worker、`--fork-session`、隐藏
 旁路会话或 Claude 官方登录入口。
 
 ## 本地运行
@@ -148,7 +154,7 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.3.4 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
+Bridge 0.3.5 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
 必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
 签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。

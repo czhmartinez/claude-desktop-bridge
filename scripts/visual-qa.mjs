@@ -41,7 +41,7 @@ const sessions = [
     projectId: project.projectId,
     projectName: project.name,
     cwd: project.cwd,
-    title: "Bridge 0.3.4 直连联调",
+    title: "Bridge 0.3.5 直连联调",
     source: "desktop",
     ownership: "BRIDGE_RUNNING",
     turnState: "running",
@@ -185,7 +185,7 @@ const hostSnapshot = {
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.3.4",
+    version: "0.3.5",
   },
   projects: [project, secondaryProject],
   sessions,
@@ -394,7 +394,7 @@ try {
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
-  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.3.4 直连联调" });
+  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.3.5 直连联调" });
   await waitingSessionRow.waitFor();
   if (await mobile.locator(".session-row-v2").count() !== 3) {
     errors.push("mobile catalog: expected three expanded session rows");

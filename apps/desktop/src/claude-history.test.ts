@@ -8,6 +8,7 @@ import {
   parseClaudeTranscript,
   readClaudeSessionContextEstimate,
   readClaudeSessionHistory,
+  readClaudeTranscriptUserMessages,
 } from "./claude-history.js";
 
 const directories: string[] = [];
@@ -63,6 +64,54 @@ describe("Claude transcript history", () => {
     });
   });
 
+  it("finds user writes on a non-terminal branch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-branches-"));
+    directories.push(root);
+    const transcript = join(root, "branches.jsonl");
+    await writeFile(transcript, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "Start" } }),
+      line({
+        type: "assistant",
+        uuid: "assistant-1",
+        parentUuid: "user-1",
+        message: { role: "assistant", content: "Working" },
+      }),
+      line({
+        type: "user",
+        uuid: "resume-meta",
+        parentUuid: "assistant-1",
+        isMeta: true,
+        message: { role: "user", content: "Continue from where you left off." },
+      }),
+      line({
+        type: "user",
+        uuid: "desktop-user",
+        parentUuid: "assistant-1",
+        message: { role: "user", content: "Desktop input" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "bridge-assistant",
+        parentUuid: "assistant-1",
+        message: { role: "assistant", content: "Bridge continued" },
+      }),
+    ].join("\n"), "utf8");
+
+    await expect(parseClaudeTranscript(transcript)).resolves.toMatchObject({
+      messages: [
+        expect.objectContaining({ id: "user-1" }),
+        expect.objectContaining({ id: "assistant-1", text: "Working\n\nBridge continued" }),
+      ],
+    });
+    expect((await parseClaudeTranscript(transcript)).messages.some((message) => (
+      message.id === "desktop-user"
+    ))).toBe(false);
+    await expect(readClaudeTranscriptUserMessages(transcript)).resolves.toEqual([
+      expect.objectContaining({ id: "user-1", text: "Start" }),
+      expect.objectContaining({ id: "desktop-user", text: "Desktop input" }),
+    ]);
+  });
+
   it("hides Claude resume sentinels while preserving the surrounding conversation", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-controls-"));
     directories.push(root);
@@ -109,6 +158,7 @@ describe("Claude transcript history", () => {
     const completed = join(root, "completed.jsonl");
     const waiting = join(root, "waiting.jsonl");
     const interrupted = join(root, "interrupted.jsonl");
+    const toolInterrupted = join(root, "tool-interrupted.jsonl");
     await writeFile(completed, [
       line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "Run" } }),
       line({
@@ -137,10 +187,20 @@ describe("Claude transcript history", () => {
         message: { role: "user", content: "[Request interrupted by user]" },
       }),
     ].join("\n"), "utf8");
+    await writeFile(toolInterrupted, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "Run" } }),
+      line({
+        type: "user",
+        uuid: "interrupted-1",
+        parentUuid: "user-1",
+        message: { role: "user", content: "[Request interrupted by user for tool use]" },
+      }),
+    ].join("\n"), "utf8");
 
     await expect(isClaudeTranscriptAtTurnBoundary(completed)).resolves.toBe(true);
     await expect(isClaudeTranscriptAtTurnBoundary(waiting)).resolves.toBe(false);
     await expect(isClaudeTranscriptAtTurnBoundary(interrupted)).resolves.toBe(true);
+    await expect(isClaudeTranscriptAtTurnBoundary(toolInterrupted)).resolves.toBe(true);
   });
 
   it("caps large histories below the encrypted relay frame budget", async () => {

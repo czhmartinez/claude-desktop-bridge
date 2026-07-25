@@ -25,9 +25,8 @@ afterEach(async () => {
 
 class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
   busy = false;
-  writer: boolean | undefined;
-  releasable = false;
-  releases = 0;
+  bridgeCanStart: boolean | undefined;
+  writeVersion = 0;
 
   constructor(readonly catalog: ClaudeCatalogSnapshot) {
     super();
@@ -37,17 +36,12 @@ class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
     return this.busy;
   }
 
-  hasDesktopWriter(): boolean {
-    return this.writer ?? this.busy;
+  externalWriteVersion(): number {
+    return this.writeVersion;
   }
 
-  async releaseDesktopWriter(): Promise<boolean> {
-    if (!this.hasDesktopWriter()) return true;
-    if (!this.releasable) return false;
-    this.releases += 1;
-    this.writer = false;
-    this.busy = false;
-    return true;
+  async canStartBridgeHost(): Promise<boolean> {
+    return this.bridgeCanStart ?? !this.busy;
   }
 
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void {
@@ -275,7 +269,7 @@ function observed(sessionId: string, cwd: string): ObservedClaudeSession {
     processAlive: true,
     desktopProcessAlive: false,
     bridgeProcessAlive: false,
-    processConflict: false,
+    processOverlap: false,
     activeProcesses: [],
     activeTask: false,
     hostModel: "claude-fable-5[1m]",
@@ -519,7 +513,6 @@ describe("SessionBroker", () => {
       sessions: [observed(sessionId, cwd)],
       observedAt: Date.now() - 10_000,
     });
-    observer.writer = false;
     const hosts: FakeHost[] = [];
     let scans = 0;
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
@@ -583,7 +576,7 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
-  it("never starts a second host while a Claude Desktop writer remains alive after transcript silence", async () => {
+  it("waits for an active Desktop turn, then starts without closing an idle session viewer", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-writer-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -613,7 +606,7 @@ describe("SessionBroker", () => {
       observedAt: Date.now(),
     });
     observer.busy = false;
-    observer.writer = true;
+    observer.bridgeCanStart = false;
     const hosts: FakeHost[] = [];
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const broker = new SessionBroker({
@@ -657,17 +650,19 @@ describe("SessionBroker", () => {
       pendingCount: 1,
     });
 
-    observer.writer = false;
-    desktopSession.desktopProcessAlive = false;
-    desktopSession.processAlive = false;
-    desktopSession.activeProcesses = [];
+    observer.bridgeCanStart = true;
     observer.publish();
     await waitFor(() => hosts[0]?.sends === 1);
+    expect(desktopSession.desktopProcessAlive).toBe(true);
+    expect(broker.session(sessionId)).toMatchObject({
+      ownership: "BRIDGE_RUNNING",
+      turnState: "running",
+    });
     await broker.close();
     await eventLog.close();
   });
 
-  it("releases a completed persistent Desktop writer before resuming the same session", async () => {
+  it("resumes beside a completed persistent Desktop viewer without quitting Claude Desktop", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-takeover-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -687,8 +682,6 @@ describe("SessionBroker", () => {
       sessions: [desktopSession],
       observedAt: Date.now(),
     });
-    observer.writer = true;
-    observer.releasable = true;
     const hosts: FakeHost[] = [];
     const managedDesktop = new FakeManagedDesktop();
     managedDesktop.enabled = false;
@@ -727,19 +720,13 @@ describe("SessionBroker", () => {
     });
 
     await waitFor(() => hosts[0]?.sends === 1);
-    expect(observer.releases).toBe(1);
     expect(managedDesktop.stopped).toBe(false);
     expect(hosts[0]!.options).toMatchObject({ sessionId, resume: true });
     expect(broker.session(sessionId)).toMatchObject({
       ownership: "BRIDGE_RUNNING",
       transport: "bridge-host",
     });
-    expect(eventLog.replay().find((event) => (
-      event.type === "session.transport" && event.sessionId === sessionId
-    ))?.data).toMatchObject({
-      transport: "bridge-host",
-      handoff: "desktop-idle",
-    });
+    expect(desktopSession.desktopProcessAlive).toBe(true);
 
     await broker.close();
     await eventLog.close();
@@ -757,7 +744,6 @@ describe("SessionBroker", () => {
       sessions: [desktopSession],
       observedAt: Date.now(),
     });
-    observer.writer = false;
     const hosts: FakeHost[] = [];
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const broker = new SessionBroker({
@@ -795,7 +781,7 @@ describe("SessionBroker", () => {
     desktopSession.desktopProcessAlive = true;
     desktopSession.bridgeProcessAlive = true;
     desktopSession.processAlive = true;
-    desktopSession.processConflict = true;
+    desktopSession.processOverlap = true;
     desktopSession.activeProcesses = [
       {
         pid: 101,
@@ -812,9 +798,21 @@ describe("SessionBroker", () => {
         source: "process",
       },
     ];
-    observer.writer = true;
     observer.publish();
 
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(hosts[0]?.closed).toBe(false);
+    expect(broker.session(sessionId)).toMatchObject({
+      ownership: "BRIDGE_RUNNING",
+      turnState: "running",
+      pendingCount: 0,
+    });
+    expect(eventLog.replay().filter((event) => (
+      event.sessionId === sessionId && event.type === "session.ownership-conflict"
+    ))).toHaveLength(0);
+
+    observer.writeVersion += 1;
+    observer.publish();
     await waitFor(() => hosts[0]?.closed === true);
     expect(hosts[0]?.interrupts).toBe(0);
     expect(broker.session(sessionId)).toMatchObject({
@@ -839,9 +837,8 @@ describe("SessionBroker", () => {
     desktopSession.desktopProcessAlive = false;
     desktopSession.bridgeProcessAlive = false;
     desktopSession.processAlive = false;
-    desktopSession.processConflict = false;
+    desktopSession.processOverlap = false;
     desktopSession.activeProcesses = [];
-    observer.writer = false;
     observer.publish();
     await waitFor(() => hosts[1]?.sends === 1);
     expect(hosts[1]?.options.sessionId).toBe(sessionId);
@@ -864,7 +861,6 @@ describe("SessionBroker", () => {
       sessions: [desktopSession],
       observedAt: Date.now(),
     });
-    observer.writer = true;
     const hosts: FakeHost[] = [];
     const managedDesktop = new FakeManagedDesktop();
     const managedTransport = new FakeManagedTransport();
@@ -928,7 +924,7 @@ describe("SessionBroker", () => {
       at: 11,
     });
     desktopSession.bridgeProcessAlive = true;
-    desktopSession.processConflict = true;
+    desktopSession.processOverlap = true;
     desktopSession.activeProcesses = [
       {
         pid: 201,
@@ -946,12 +942,13 @@ describe("SessionBroker", () => {
       },
     ];
     observer.publish();
-    await waitFor(() => eventLog.replay().some((event) => (
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(eventLog.replay().some((event) => (
       event.sessionId === sessionId && event.type === "session.ownership-conflict"
-    )));
+    ))).toBe(false);
     expect(managedTransport.interrupts).toBe(0);
     desktopSession.bridgeProcessAlive = false;
-    desktopSession.processConflict = false;
+    desktopSession.processOverlap = false;
     desktopSession.activeProcesses = [];
     observer.publish();
     managedTransport.emitHost({

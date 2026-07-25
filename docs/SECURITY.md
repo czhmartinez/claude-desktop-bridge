@@ -1,4 +1,4 @@
-# Bridge 0.3.4 安全模型
+# Bridge 0.3.5 安全模型
 
 ## 已保护
 
@@ -48,10 +48,15 @@ STUN 能看到发起 Binding 的公网 IP 和端口，但不接收 Claude 指令
 请求相应的 Files & Folders 授权。后续版本必须维持相同的正式签名身份与 Bundle ID，
 系统才能在升级后继续识别这次授权。
 
-Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会并发写 transcript，
-手机消息会排队等待接管。只有所有活动的 Desktop 会话都到达安全边界后，Bridge
-才会退出 Claude Desktop 主应用并接管；任一其他会话仍在运行或无法验证时都保持
-排队。Bridge 不会单独向 Claude Code 会话子进程发送终止信号。
+Bridge 不附加或注入 Claude Desktop 进程，也不会为了接管自动退出 Claude Desktop
+或向其 Claude Code 会话子进程发送终止信号。仅打开、聚焦和只读查看会话不会形成
+写入冲突；目标 transcript 到达安全边界后，Bridge 可以与空闲 Desktop 会话进程
+共存并继续同一 `sessionId`。
+
+Bridge 为每个 Host 保存外部写入版本基线。只有 transcript 出现无法归因给 Bridge
+的新用户消息时，才确认 Desktop 发生真实写入；检测同时覆盖非终端分支。真实双写
+发生后只关闭 Bridge writer，手机原指令保持持久排队。Desktop 任务仍在执行、目标
+transcript 未完成或状态无法验证时，Bridge 不启动 Host。
 
 ## 生产要求
 

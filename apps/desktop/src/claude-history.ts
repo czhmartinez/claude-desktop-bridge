@@ -207,12 +207,19 @@ export async function findClaudeTranscriptFile(
   return undefined;
 }
 
-export async function parseClaudeTranscript(
+export interface ClaudeTranscriptSnapshot extends ClaudeHistoryReadResult {
+  nextCursor?: string;
+  userMessages: ClaudeHistoryMessage[];
+}
+
+export async function parseClaudeTranscriptSnapshot(
   path: string,
   options: ClaudeHistoryReadOptions = {},
-): Promise<ClaudeHistoryReadResult & { nextCursor?: string }> {
+  userLimit = 200,
+): Promise<ClaudeTranscriptSnapshot> {
   const nodes = new Map<string, TranscriptNode>();
   const referencedParents = new Set<string>();
+  const userMessages: ClaudeHistoryMessage[] = [];
   let index = 0;
   try {
     const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
@@ -229,23 +236,33 @@ export async function parseClaudeTranscript(
       if (parentUuid) referencedParents.add(parentUuid);
       const visible = visibleMessage(value);
       const parsedAt = typeof value.timestamp === "string" ? Date.parse(value.timestamp) : Number.NaN;
+      const createdAt = Number.isFinite(parsedAt) ? parsedAt : 0;
       nodes.set(value.uuid, {
         index,
         uuid: value.uuid,
         ...(parentUuid ? { parentUuid } : {}),
         ...(visible?.role ? { role: visible.role } : {}),
         ...(visible?.text ? { text: visible.text } : {}),
-        createdAt: Number.isFinite(parsedAt) ? parsedAt : 0,
+        createdAt,
       });
+      if (visible?.role === "user" && visible.text) {
+        userMessages.push({
+          id: value.uuid,
+          role: "user",
+          text: clipText(visible.text, MAX_MESSAGE_TEXT_BYTES).text,
+          createdAt,
+        });
+        if (userMessages.length > userLimit) userMessages.shift();
+      }
     }
   } catch {
-    return { available: false, messages: [], truncated: false };
+    return { available: false, messages: [], truncated: false, userMessages: [] };
   }
 
   const terminal = [...nodes.values()]
     .filter((node) => !referencedParents.has(node.uuid))
     .sort((left, right) => right.index - left.index)[0];
-  if (!terminal) return { available: true, messages: [], truncated: false };
+  if (!terminal) return { available: true, messages: [], truncated: false, userMessages };
 
   const chain: TranscriptNode[] = [];
   const seen = new Set<string>();
@@ -267,7 +284,22 @@ export async function parseClaudeTranscript(
     }
     messages.push({ id: node.uuid, role: node.role, text: node.text, createdAt: node.createdAt });
   }
-  return { available: true, ...trimHistory(messages, options) };
+  return { available: true, ...trimHistory(messages, options), userMessages };
+}
+
+export async function parseClaudeTranscript(
+  path: string,
+  options: ClaudeHistoryReadOptions = {},
+): Promise<ClaudeHistoryReadResult & { nextCursor?: string }> {
+  const { userMessages: _userMessages, ...result } = await parseClaudeTranscriptSnapshot(path, options);
+  return result;
+}
+
+export async function readClaudeTranscriptUserMessages(
+  path: string,
+  limit = 200,
+): Promise<ClaudeHistoryMessage[]> {
+  return (await parseClaudeTranscriptSnapshot(path, {}, limit)).userMessages;
 }
 
 export async function isClaudeTranscriptAtTurnBoundary(path: string): Promise<boolean> {

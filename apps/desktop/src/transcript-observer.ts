@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
-import { execFile as execFileCallback } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
-import { promisify } from "node:util";
+import { stat } from "node:fs/promises";
 import type { ClaudeHistoryMessage } from "@bridge/protocol";
-import { isClaudeTranscriptAtTurnBoundary, parseClaudeTranscript } from "./claude-history.js";
+import {
+  isClaudeTranscriptAtTurnBoundary,
+  parseClaudeTranscriptSnapshot,
+} from "./claude-history.js";
 import {
   scanClaudeCatalog,
   type ClaudeCatalogSnapshot,
@@ -13,18 +13,12 @@ import {
 import type { ClaudeRuntimePaths } from "./platform.js";
 import type { SessionEventLog } from "./session-event-log.js";
 
-const execFile = promisify(execFileCallback);
-
 export interface TranscriptObserverOptions {
   paths: ClaudeRuntimePaths;
   eventLog: SessionEventLog;
   pollIntervalMs?: number;
   catalogIntervalMs?: number;
   idleGraceMs?: number;
-  resolveDesktopMainProcessId?(pid: number): Promise<number | undefined>;
-  signalProcess?(pid: number): void;
-  processExists?(pid: number): boolean;
-  sleep?(durationMs: number): Promise<void>;
 }
 
 export class TranscriptObserver extends EventEmitter {
@@ -36,9 +30,10 @@ export class TranscriptObserver extends EventEmitter {
   private running = false;
   private closed = false;
   private readonly knownMessages = new Map<string, Map<string, string>>();
+  private readonly knownUserMessages = new Map<string, Map<string, string>>();
   private readonly lastChangedAt = new Map<string, number>();
   private readonly lastMtime = new Map<string, number>();
-  private readonly lastActivity = new Map<string, number>();
+  private readonly externalWriteVersions = new Map<string, number>();
   private nextCatalogAt = 0;
 
   constructor(private readonly options: TranscriptObserverOptions) {
@@ -69,96 +64,18 @@ export class TranscriptObserver extends EventEmitter {
     return session.activeTask || (session.processAlive && now - changedAt < this.idleGraceMs);
   }
 
-  hasDesktopWriter(sessionId: string): boolean {
-    return this.catalogValue.sessions.some((candidate) => (
-      candidate.sessionId === sessionId && candidate.desktopProcessAlive
-    ));
+  externalWriteVersion(sessionId: string): number {
+    return this.externalWriteVersions.get(sessionId) ?? 0;
   }
 
-  async releaseDesktopWriter(sessionId: string): Promise<boolean> {
+  async canStartBridgeHost(sessionId: string): Promise<boolean> {
     const session = this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (session?.transcriptPath && !this.knownUserMessages.has(sessionId)) {
+      await this.primeTranscript(session);
+    }
     if (!session?.desktopProcessAlive) return true;
-    const desktopSessions = this.catalogValue.sessions.filter((candidate) => candidate.desktopProcessAlive);
-    for (const candidate of desktopSessions) {
-      if (
-        this.isDesktopBusy(candidate.sessionId) ||
-        candidate.activeTask ||
-        !candidate.transcriptPath ||
-        !await isClaudeTranscriptAtTurnBoundary(candidate.transcriptPath)
-      ) return false;
-    }
-
-    const candidates = session.activeProcesses.filter((candidate) => (
-      candidate.processAlive &&
-      candidate.entrypoint.startsWith("claude-desktop") &&
-      candidate.pid !== undefined
-    ));
-    const desktopMainPids = new Set<number>();
-    for (const candidate of candidates) {
-      if (!await this.isRegisteredDesktopWriter(candidate.pid!, sessionId)) continue;
-      const mainPid = await (
-        this.options.resolveDesktopMainProcessId
-          ? this.options.resolveDesktopMainProcessId(candidate.pid!)
-          : this.claudeDesktopMainProcessId(candidate.pid!)
-      );
-      if (mainPid === undefined) continue;
-      desktopMainPids.add(mainPid);
-    }
-    if (desktopMainPids.size === 0) return false;
-
-    const childMainPids = new Map<number, number>();
-    for (const candidate of desktopSessions.flatMap((value) => value.activeProcesses)) {
-      if (
-        !candidate.processAlive ||
-        !candidate.entrypoint.startsWith("claude-desktop") ||
-        candidate.pid === undefined
-      ) continue;
-      const mainPid = await (
-        this.options.resolveDesktopMainProcessId
-          ? this.options.resolveDesktopMainProcessId(candidate.pid)
-          : this.claudeDesktopMainProcessId(candidate.pid)
-      );
-      if (mainPid !== undefined) childMainPids.set(candidate.pid, mainPid);
-    }
-
-    for (const pid of desktopMainPids) {
-      try {
-        (this.options.signalProcess ?? ((target) => process.kill(target, "SIGTERM")))(pid);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
-      }
-    }
-    const processIds = [
-      ...desktopMainPids,
-      ...[...childMainPids]
-        .filter(([, mainPid]) => desktopMainPids.has(mainPid))
-        .map(([childPid]) => childPid),
-    ];
-    const deadline = Date.now() + 5_000;
-    while (processIds.some((pid) => this.processExists(pid)) && Date.now() < deadline) {
-      await (this.options.sleep ?? ((durationMs) => (
-        new Promise((resolve) => setTimeout(resolve, durationMs))
-      )))(100);
-    }
-    if (processIds.some((pid) => this.processExists(pid))) return false;
-
-    for (const observed of desktopSessions) {
-      for (const active of observed.activeProcesses) {
-        if (
-          active.pid !== undefined &&
-          desktopMainPids.has(childMainPids.get(active.pid) ?? -1)
-        ) active.processAlive = false;
-      }
-      const live = observed.activeProcesses.filter((candidate) => candidate.processAlive);
-      observed.desktopProcessAlive = live.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
-      observed.bridgeProcessAlive = live.some((candidate) => candidate.entrypoint === "claude-bridge");
-      observed.processAlive = live.length > 0;
-      observed.processConflict = observed.desktopProcessAlive && observed.bridgeProcessAlive;
-      if (!observed.desktopProcessAlive) observed.activeTask = false;
-    }
-    this.catalogValue.observedAt = Date.now();
-    this.emit("catalog", this.catalogValue);
-    return !session.desktopProcessAlive;
+    if (this.isDesktopBusy(sessionId) || !session.transcriptPath) return false;
+    return isClaudeTranscriptAtTurnBoundary(session.transcriptPath);
   }
 
   session(sessionId: string): ObservedClaudeSession | undefined {
@@ -169,64 +86,6 @@ export class TranscriptObserver extends EventEmitter {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
     while (this.running) await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  private processExists(pid: number): boolean {
-    if (this.options.processExists) return this.options.processExists(pid);
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "EPERM";
-    }
-  }
-
-  private async isRegisteredDesktopWriter(pid: number, sessionId: string): Promise<boolean> {
-    try {
-      const value = JSON.parse(
-        await readFile(join(this.options.paths.sessions, `${pid}.json`), "utf8"),
-      ) as Record<string, unknown>;
-      return (
-        value.pid === pid &&
-        value.sessionId === sessionId &&
-        typeof value.entrypoint === "string" &&
-        value.entrypoint.startsWith("claude-desktop")
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  private async claudeDesktopMainProcessId(pid: number): Promise<number | undefined> {
-    if (process.platform !== "darwin") return undefined;
-    let currentPid = pid;
-    for (let depth = 0; depth < 10 && currentPid > 1; depth += 1) {
-      let stdout: string;
-      try {
-        ({ stdout } = await execFile("/bin/ps", [
-          "-p",
-          String(currentPid),
-          "-o",
-          "ppid=,command=",
-        ], {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-        }));
-      } catch {
-        return undefined;
-      }
-      const match = /^\s*(\d+)\s+(.+)$/su.exec(stdout.trim());
-      if (!match) return undefined;
-      const command = match[2]!;
-      if (depth === 0 && (
-        !command.includes("--output-format stream-json") ||
-        !command.includes("--input-format stream-json") ||
-        !/\/claude(?:\s|$)/u.test(command)
-      )) return undefined;
-      if (/\/Applications\/Claude\.app\/Contents\/MacOS\/Claude(?:\s|$)/u.test(command)) return currentPid;
-      currentPid = Number(match[1]);
-    }
-    return undefined;
   }
 
   private async poll(): Promise<void> {
@@ -245,19 +104,14 @@ export class TranscriptObserver extends EventEmitter {
         for (const session of catalog.sessions) {
           const previousMtime = this.lastMtime.get(session.sessionId);
           this.lastMtime.set(session.sessionId, session.transcriptMtimeMs);
-          if (previousMtime === undefined && initialCandidates.has(session.sessionId)) {
+          if (
+            initialCandidates.has(session.sessionId) &&
+            !this.knownUserMessages.has(session.sessionId)
+          ) {
             await this.primeTranscript(session);
           } else if (previousMtime !== undefined && previousMtime !== session.transcriptMtimeMs) {
             this.lastChangedAt.set(session.sessionId, now);
             await this.observeTranscript(session);
-          }
-          const previousActivity = this.lastActivity.get(session.sessionId);
-          if (previousActivity !== session.lastActivityAt) {
-            this.lastActivity.set(session.sessionId, session.lastActivityAt);
-            this.lastChangedAt.set(
-              session.sessionId,
-              previousActivity === undefined ? session.lastActivityAt : now,
-            );
           }
         }
         this.catalogValue = catalog;
@@ -299,9 +153,32 @@ export class TranscriptObserver extends EventEmitter {
 
   private async observeTranscript(session: ObservedClaudeSession): Promise<void> {
     if (!session.transcriptPath) return;
-    const result = await parseClaudeTranscript(session.transcriptPath, { limit: 50 });
+    const result = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 50 });
     const known = this.knownMessages.get(session.sessionId) ?? new Map<string, string>();
+    const knownUsers = this.knownUserMessages.get(session.sessionId) ?? new Map<string, string>();
+    // A competing Desktop input can land on a non-terminal branch while Bridge keeps writing.
+    for (const message of result.userMessages) {
+      const persisted = this.options.eventLog.latestItem(session.sessionId, "session.observed", message.id);
+      const previousText = knownUsers.get(message.id)
+        ?? (typeof persisted?.data.text === "string" ? persisted.data.text : undefined);
+      if (previousText === message.text) continue;
+      const bridgeOwned = this.options.eventLog.hasItem(
+        session.sessionId,
+        "user.message.accepted",
+        message.id,
+      );
+      if (previousText === undefined && !bridgeOwned) {
+        this.externalWriteVersions.set(
+          session.sessionId,
+          this.externalWriteVersion(session.sessionId) + 1,
+        );
+      }
+      knownUsers.set(message.id, message.text);
+      await this.appendObserved(session, message);
+    }
+    this.knownUserMessages.set(session.sessionId, knownUsers);
     for (const message of result.messages) {
+      if (message.role === "user") continue;
       const persisted = this.options.eventLog.latestItem(session.sessionId, "session.observed", message.id);
       const previousText = known.get(message.id)
         ?? (typeof persisted?.data.text === "string" ? persisted.data.text : undefined);
@@ -314,10 +191,14 @@ export class TranscriptObserver extends EventEmitter {
 
   private async primeTranscript(session: ObservedClaudeSession): Promise<void> {
     if (!session.transcriptPath) return;
-    const result = await parseClaudeTranscript(session.transcriptPath, { limit: 50 });
+    const result = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 50 });
     this.knownMessages.set(
       session.sessionId,
       new Map(result.messages.map((message) => [message.id, message.text])),
+    );
+    this.knownUserMessages.set(
+      session.sessionId,
+      new Map(result.userMessages.map((message) => [message.id, message.text])),
     );
   }
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.5
+
+- Treat opening or focusing a Claude Desktop session as read-only observation rather than a
+  competing writer, so simply viewing a Bridge-controlled session does not interrupt its turn.
+- Replace process-presence conflicts with an external-write lease that advances only when the
+  transcript receives a new user message not attributable to Bridge.
+- Scan recent user messages across every transcript branch so a real Desktop input cannot be
+  hidden by later Bridge output on the terminal branch.
+- Keep idle Claude Desktop windows and session processes running during Bridge takeover; wait for
+  a safe transcript boundary instead of automatically quitting the Desktop application.
+- Hide the tool-use interruption sentinel and exclude it from external-write detection.
+
 ## 0.3.4
 
 - Require every live Claude Desktop session to be idle and at a completed transcript boundary

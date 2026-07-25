@@ -48,16 +48,22 @@ stateDiagram-v2
   ACQUIRING --> BRIDGE_IDLE: "Host 已启动"
   BRIDGE_IDLE --> BRIDGE_RUNNING: "会话接受消息"
   BRIDGE_RUNNING --> BRIDGE_IDLE: "turn 完成 / 失败 / 中断"
+  BRIDGE_RUNNING --> OWNERSHIP_CONFLICT: "检测到外部用户写入"
+  OWNERSHIP_CONFLICT --> DESKTOP_OBSERVED: "关闭 Bridge writer，原指令重新排队"
   BRIDGE_IDLE --> RELEASING: "空闲超时且无队列"
   RELEASING --> DESKTOP_OBSERVED: "释放既有桌面会话"
 ```
 
-同一会话只允许一个 Bridge 写入者。桌面原进程仍活动时，手机消息会先持久化并
-显示为“已排队”；观察器确认所有 Desktop 会话都已空闲并到达完成边界后，才会退出
-Claude Desktop 主应用再自动接管，而不是终止其 Claude Code 子进程。任一其他会话
-仍在运行或无法验证时都不会退出应用。检测到意外双写时，Bridge writer 会静默关闭，
-原指令保持排队并在所有权清晰后自动续跑。主机最多同时运行两个 Bridge turn。
-瞬态会话锁仅在消息尚未被会话接受时重试，避免重复执行。
+同一会话只允许一个实际写入者，但 Claude Desktop 的空闲会话进程可以作为只读
+观察者与 Bridge Host 共存。打开、聚焦或查看会话只改变 Desktop 元数据，不会触发
+冲突，也不会导致 Bridge 退出 Claude Desktop。Bridge 启动 Host 前会确认目标
+transcript 已空闲并到达完成边界。
+
+Host 启动时记录外部写入版本。`TranscriptObserver` 扫描全部近期用户分支，只有出现
+无法归因给 Bridge 的新用户消息时才确认竞争写入；进程存在、文件句柄和 focus 变化
+都不是写入证据。检测到真实双写时，Bridge writer 会静默关闭，原指令保持排队并在
+所有权清晰后自动续跑。主机最多同时运行两个 Bridge turn。瞬态会话锁仅在消息尚未
+被会话接受时重试，避免重复执行。
 
 ## 历史与事件
 

@@ -111,6 +111,7 @@ interface SessionRuntimeState {
   turnState: BridgeTurnState;
   host?: SessionHostRuntime;
   active?: QueuedTurn;
+  externalWriteVersion?: number;
   configurationPending?: boolean;
   managed?: boolean;
   releaseTimer?: ReturnType<typeof setTimeout>;
@@ -134,8 +135,8 @@ export interface SessionHostRuntime {
 export interface TranscriptObserverRuntime {
   readonly catalog: ClaudeCatalogSnapshot;
   isDesktopBusy(sessionId: string, now?: number): boolean;
-  hasDesktopWriter(sessionId: string): boolean;
-  releaseDesktopWriter(sessionId: string): Promise<boolean>;
+  externalWriteVersion(sessionId: string): number;
+  canStartBridgeHost(sessionId: string): Promise<boolean>;
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void;
 }
 
@@ -493,7 +494,7 @@ export class SessionBroker extends EventEmitter {
         this.managedTransport?.ready &&
         (desktopSessionId || state?.managed || bridge),
       );
-      const ownership = source?.processConflict
+      const ownership = this.hasConfirmedOwnershipConflict(sessionId, state)
         ? "OWNERSHIP_CONFLICT"
         : state?.ownership
           ?? (managed
@@ -851,7 +852,7 @@ export class SessionBroker extends EventEmitter {
     await this.initialize();
     const session = this.session(sessionId);
     if (!session) throw new Error("Session not found");
-    if (this.options.observer.hasDesktopWriter(sessionId)) {
+    if (!await this.options.observer.canStartBridgeHost(sessionId)) {
       throw new Error("Claude Desktop 仍在执行当前会话，结束后 Bridge 会自动接管");
     }
     const stored = this.bridgeSessions.get(sessionId) ?? {
@@ -1124,22 +1125,24 @@ export class SessionBroker extends EventEmitter {
     const session = this.session(turn.sessionId);
     if (!session || !this.runtime?.executablePath || !this.runtime.credentialPath) return;
     const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
-    if (observed?.processConflict || this.options.observer.hasDesktopWriter(turn.sessionId)) {
-      const conflictState = this.runtimeStates.get(turn.sessionId) ?? {
-        ownership: "OWNERSHIP_CONFLICT" as const,
-        turnState: "queued" as const,
-      };
-      conflictState.ownership = observed?.processConflict ? "OWNERSHIP_CONFLICT" : "DESKTOP_OBSERVED";
-      conflictState.turnState = "queued";
-      this.runtimeStates.set(turn.sessionId, conflictState);
-      await this.recordOwnership(turn.sessionId, conflictState.ownership);
-      return;
-    }
     const state = this.runtimeStates.get(turn.sessionId) ?? {
       ownership: "DESKTOP_OBSERVED" as const,
       turnState: "idle" as const,
     };
     this.runtimeStates.set(turn.sessionId, state);
+    if (this.hasConfirmedOwnershipConflict(turn.sessionId, state)) {
+      await this.containOwnershipConflict(turn.sessionId, observed?.activeProcesses ?? []);
+      return;
+    }
+    const externalWriteVersion = this.options.observer.externalWriteVersion(turn.sessionId);
+    if (!await this.options.observer.canStartBridgeHost(turn.sessionId)) {
+      state.ownership = "DESKTOP_OBSERVED";
+      state.turnState = "queued";
+      await this.recordOwnership(turn.sessionId, state.ownership);
+      this.scheduleTakeoverRetry(turn.sessionId);
+      return;
+    }
+    if (!state.host) state.externalWriteVersion = externalWriteVersion;
     if (state.releaseTimer) {
       clearTimeout(state.releaseTimer);
       delete state.releaseTimer;
@@ -1151,16 +1154,16 @@ export class SessionBroker extends EventEmitter {
       !state.host &&
       liveWriters.some((candidate) => candidate.entrypoint === "claude-bridge")
     );
-    if (desktopWriter || foreignBridgeWriter) {
-      if (foreignBridgeWriter || state.host) {
-        await this.containOwnershipConflict(turn.sessionId, liveWriters);
-      } else {
-        state.ownership = "DESKTOP_OBSERVED";
-        state.turnState = "queued";
-        await this.recordOwnership(turn.sessionId, state.ownership);
-        this.scheduleTakeoverRetry(turn.sessionId);
-        this.emit("changed");
-      }
+    if (foreignBridgeWriter) {
+      await this.containOwnershipConflict(turn.sessionId, liveWriters);
+      return;
+    }
+    if (desktopWriter && !observed?.desktopProcessAlive) {
+      state.ownership = "DESKTOP_OBSERVED";
+      state.turnState = "queued";
+      await this.recordOwnership(turn.sessionId, state.ownership);
+      this.scheduleTakeoverRetry(turn.sessionId);
+      this.emit("changed");
       return;
     }
     let accepted: ReturnType<SessionHostRuntime["send"]>;
@@ -1222,9 +1225,6 @@ export class SessionBroker extends EventEmitter {
   private async createHost(sessionId: string): Promise<SessionHostRuntime> {
     const session = this.session(sessionId);
     if (!session) throw new Error("Session not found");
-    if (this.options.observer.hasDesktopWriter(sessionId)) {
-      throw new Error("Claude Desktop still owns this session; Bridge will not start a second writer");
-    }
     if (!this.runtime?.executablePath || !this.runtime.credentialPath) {
       throw new Error("Claude Host runtime is unavailable");
     }
@@ -1234,6 +1234,7 @@ export class SessionBroker extends EventEmitter {
     };
     this.runtimeStates.set(sessionId, state);
     if (state.host) return state.host;
+    state.externalWriteVersion ??= this.options.observer.externalWriteVersion(sessionId);
     if (state.releaseTimer) {
       clearTimeout(state.releaseTimer);
       delete state.releaseTimer;
@@ -1847,8 +1848,8 @@ export class SessionBroker extends EventEmitter {
       const state = this.runtimeStates.get(turn.sessionId);
       if (state?.active) continue;
       const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
-      if (observed?.processConflict) {
-        await this.containOwnershipConflict(turn.sessionId, observed.activeProcesses);
+      if (this.hasConfirmedOwnershipConflict(turn.sessionId, state)) {
+        await this.containOwnershipConflict(turn.sessionId, observed?.activeProcesses ?? []);
         continue;
       }
       const fallbackConfirmed = Boolean(this.bridgeSessions.get(turn.sessionId)?.fallbackConfirmedAt);
@@ -1856,32 +1857,18 @@ export class SessionBroker extends EventEmitter {
         await this.acquireManaged(turn);
         continue;
       }
-      if (this.options.observer.hasDesktopWriter(turn.sessionId)) {
-        const released = await this.options.observer.releaseDesktopWriter(turn.sessionId);
-        if (released && !this.options.observer.hasDesktopWriter(turn.sessionId)) {
-          this.clearTakeoverRetry(turn.sessionId);
-          await this.record({
-            sessionId: turn.sessionId,
-            itemId: turn.commandId,
-            origin: "system",
-            type: "session.transport",
-            data: {
-              transport: "bridge-host",
-              handoff: "desktop-idle",
-            },
-          });
-        } else {
-          const waiting = state ?? {
-            ownership: "DESKTOP_OBSERVED" as const,
-            turnState: "queued" as const,
-          };
-          waiting.ownership = "DESKTOP_OBSERVED";
-          waiting.turnState = "queued";
-          this.runtimeStates.set(turn.sessionId, waiting);
-          this.scheduleTakeoverRetry(turn.sessionId);
-          continue;
-        }
+      if (!await this.options.observer.canStartBridgeHost(turn.sessionId)) {
+        const waiting = state ?? {
+          ownership: "DESKTOP_OBSERVED" as const,
+          turnState: "queued" as const,
+        };
+        waiting.ownership = "DESKTOP_OBSERVED";
+        waiting.turnState = "queued";
+        this.runtimeStates.set(turn.sessionId, waiting);
+        this.scheduleTakeoverRetry(turn.sessionId);
+        continue;
       }
+      this.clearTakeoverRetry(turn.sessionId);
       if (!this.runtime?.executablePath || !this.runtime.credentialPath) continue;
       await this.acquire(turn);
     }
@@ -1920,10 +1907,21 @@ export class SessionBroker extends EventEmitter {
     this.runtimeRetryTimer = undefined;
   }
 
+  private hasConfirmedOwnershipConflict(
+    sessionId: string,
+    state = this.runtimeStates.get(sessionId),
+  ): boolean {
+    return Boolean(
+      state?.host &&
+      state.externalWriteVersion !== undefined &&
+      this.options.observer.externalWriteVersion(sessionId) > state.externalWriteVersion
+    );
+  }
+
   private refreshObservedOwnership(): void {
     for (const observed of this.catalog.sessions) {
       const state = this.runtimeStates.get(observed.sessionId);
-      if (observed.processConflict) {
+      if (this.hasConfirmedOwnershipConflict(observed.sessionId, state)) {
         void this.containOwnershipConflict(observed.sessionId, observed.activeProcesses);
         continue;
       }

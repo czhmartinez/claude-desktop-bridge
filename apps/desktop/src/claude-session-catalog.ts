@@ -36,7 +36,7 @@ export interface ObservedClaudeSession extends BridgeSessionInfo {
   processAlive: boolean;
   desktopProcessAlive: boolean;
   bridgeProcessAlive: boolean;
-  processConflict: boolean;
+  processOverlap: boolean;
   activeProcesses: ActiveClaudeProcess[];
   activeTask: boolean;
   hostModel?: string;
@@ -174,7 +174,7 @@ function processSummary(processes: ActiveClaudeProcess[]): {
   processAlive: boolean;
   desktopProcessAlive: boolean;
   bridgeProcessAlive: boolean;
-  processConflict: boolean;
+  processOverlap: boolean;
 } {
   const live = processes.filter((candidate) => candidate.processAlive);
   const desktopProcessAlive = live.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
@@ -183,7 +183,7 @@ function processSummary(processes: ActiveClaudeProcess[]): {
     processAlive: live.length > 0,
     desktopProcessAlive,
     bridgeProcessAlive,
-    processConflict: desktopProcessAlive && bridgeProcessAlive,
+    processOverlap: desktopProcessAlive && bridgeProcessAlive,
   };
 }
 

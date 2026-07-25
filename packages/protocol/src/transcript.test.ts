@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   CLAUDE_INTERRUPTED_USER_MESSAGE,
   CLAUDE_SYNTHETIC_NO_RESPONSE_MESSAGE,
+  CLAUDE_TOOL_USE_INTERRUPTED_USER_MESSAGE,
   isClaudeTranscriptControlMessage,
 } from "./transcript.js";
 
 describe("Claude transcript control messages", () => {
   it("recognizes interruption and synthetic no-response sentinels", () => {
     expect(isClaudeTranscriptControlMessage("user", CLAUDE_INTERRUPTED_USER_MESSAGE)).toBe(true);
+    expect(isClaudeTranscriptControlMessage("user", CLAUDE_TOOL_USE_INTERRUPTED_USER_MESSAGE)).toBe(true);
     expect(isClaudeTranscriptControlMessage("assistant", CLAUDE_SYNTHETIC_NO_RESPONSE_MESSAGE)).toBe(true);
     expect(isClaudeTranscriptControlMessage("assistant", ` ${CLAUDE_SYNTHETIC_NO_RESPONSE_MESSAGE}\n`)).toBe(true);
   });
