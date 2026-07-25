@@ -1,4 +1,5 @@
 const { execFileSync, spawnSync } = require("node:child_process");
+const { readdirSync, rmSync } = require("node:fs");
 const path = require("node:path");
 
 const platformIcon = process.platform === "darwin"
@@ -62,6 +63,21 @@ module.exports = {
       if (result.platform !== "darwin") return;
       for (const outputPath of result.outputPaths) {
         const appPath = path.join(outputPath, "Bridge.app");
+        const electronResources = path.join(
+          appPath,
+          "Contents",
+          "Frameworks",
+          "Electron Framework.framework",
+          "Versions",
+          "A",
+          "Resources",
+        );
+        for (const name of readdirSync(electronResources)) {
+          if (
+            name.endsWith(".lproj") &&
+            !/^(?:en|zh_CN|zh_TW)(?:_|\.lproj$)/u.test(name)
+          ) rmSync(path.join(electronResources, name), { recursive: true, force: true });
+        }
         if (macLocalSigning) {
           if (!macSignIdentity || !macSignKeychain) {
             throw new Error(

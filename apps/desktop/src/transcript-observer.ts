@@ -78,15 +78,21 @@ export class TranscriptObserver extends EventEmitter {
   async releaseDesktopWriter(sessionId: string): Promise<boolean> {
     const session = this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
     if (!session?.desktopProcessAlive) return true;
-    if (this.isDesktopBusy(sessionId) || session.activeTask || !session.transcriptPath) return false;
-    if (!await isClaudeTranscriptAtTurnBoundary(session.transcriptPath)) return false;
+    const desktopSessions = this.catalogValue.sessions.filter((candidate) => candidate.desktopProcessAlive);
+    for (const candidate of desktopSessions) {
+      if (
+        this.isDesktopBusy(candidate.sessionId) ||
+        candidate.activeTask ||
+        !candidate.transcriptPath ||
+        !await isClaudeTranscriptAtTurnBoundary(candidate.transcriptPath)
+      ) return false;
+    }
 
     const candidates = session.activeProcesses.filter((candidate) => (
       candidate.processAlive &&
       candidate.entrypoint.startsWith("claude-desktop") &&
       candidate.pid !== undefined
     ));
-    const verifiedChildren: number[] = [];
     const desktopMainPids = new Set<number>();
     for (const candidate of candidates) {
       if (!await this.isRegisteredDesktopWriter(candidate.pid!, sessionId)) continue;
@@ -96,10 +102,24 @@ export class TranscriptObserver extends EventEmitter {
           : this.claudeDesktopMainProcessId(candidate.pid!)
       );
       if (mainPid === undefined) continue;
-      verifiedChildren.push(candidate.pid!);
       desktopMainPids.add(mainPid);
     }
     if (desktopMainPids.size === 0) return false;
+
+    const childMainPids = new Map<number, number>();
+    for (const candidate of desktopSessions.flatMap((value) => value.activeProcesses)) {
+      if (
+        !candidate.processAlive ||
+        !candidate.entrypoint.startsWith("claude-desktop") ||
+        candidate.pid === undefined
+      ) continue;
+      const mainPid = await (
+        this.options.resolveDesktopMainProcessId
+          ? this.options.resolveDesktopMainProcessId(candidate.pid)
+          : this.claudeDesktopMainProcessId(candidate.pid)
+      );
+      if (mainPid !== undefined) childMainPids.set(candidate.pid, mainPid);
+    }
 
     for (const pid of desktopMainPids) {
       try {
@@ -108,7 +128,12 @@ export class TranscriptObserver extends EventEmitter {
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
       }
     }
-    const processIds = [...desktopMainPids, ...verifiedChildren];
+    const processIds = [
+      ...desktopMainPids,
+      ...[...childMainPids]
+        .filter(([, mainPid]) => desktopMainPids.has(mainPid))
+        .map(([childPid]) => childPid),
+    ];
     const deadline = Date.now() + 5_000;
     while (processIds.some((pid) => this.processExists(pid)) && Date.now() < deadline) {
       await (this.options.sleep ?? ((durationMs) => (
@@ -117,19 +142,20 @@ export class TranscriptObserver extends EventEmitter {
     }
     if (processIds.some((pid) => this.processExists(pid))) return false;
 
-    for (const active of session.activeProcesses) {
-      if (
-        active.entrypoint.startsWith("claude-desktop") &&
-        active.pid !== undefined &&
-        verifiedChildren.includes(active.pid)
-      ) active.processAlive = false;
+    for (const observed of desktopSessions) {
+      for (const active of observed.activeProcesses) {
+        if (
+          active.pid !== undefined &&
+          desktopMainPids.has(childMainPids.get(active.pid) ?? -1)
+        ) active.processAlive = false;
+      }
+      const live = observed.activeProcesses.filter((candidate) => candidate.processAlive);
+      observed.desktopProcessAlive = live.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
+      observed.bridgeProcessAlive = live.some((candidate) => candidate.entrypoint === "claude-bridge");
+      observed.processAlive = live.length > 0;
+      observed.processConflict = observed.desktopProcessAlive && observed.bridgeProcessAlive;
+      if (!observed.desktopProcessAlive) observed.activeTask = false;
     }
-    const live = session.activeProcesses.filter((candidate) => candidate.processAlive);
-    session.desktopProcessAlive = live.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
-    session.bridgeProcessAlive = live.some((candidate) => candidate.entrypoint === "claude-bridge");
-    session.processAlive = live.length > 0;
-    session.processConflict = session.desktopProcessAlive && session.bridgeProcessAlive;
-    session.activeTask = false;
     this.catalogValue.observedAt = Date.now();
     this.emit("catalog", this.catalogValue);
     return !session.desktopProcessAlive;

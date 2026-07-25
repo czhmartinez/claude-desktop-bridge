@@ -1,4 +1,4 @@
-# Bridge 0.3.3 安全模型
+# Bridge 0.3.4 安全模型
 
 ## 已保护
 
@@ -49,8 +49,9 @@ STUN 能看到发起 Binding 的公网 IP 和端口，但不接收 Claude 指令
 系统才能在升级后继续识别这次授权。
 
 Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会并发写 transcript，
-手机消息会排队等待接管。只有会话到达安全边界后，Bridge 才会退出 Claude Desktop
-主应用并接管；它不会单独向 Claude Code 会话子进程发送终止信号。
+手机消息会排队等待接管。只有所有活动的 Desktop 会话都到达安全边界后，Bridge
+才会退出 Claude Desktop 主应用并接管；任一其他会话仍在运行或无法验证时都保持
+排队。Bridge 不会单独向 Claude Code 会话子进程发送终止信号。
 
 ## 生产要求
 

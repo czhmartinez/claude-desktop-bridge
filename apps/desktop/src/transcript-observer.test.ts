@@ -20,7 +20,7 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 }
 
 describe("TranscriptObserver", () => {
-  it("quits the Claude Desktop main process instead of terminating its session child", async () => {
+  it("quits the Claude Desktop main process only after every Desktop session is idle", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-release-"));
     directories.push(root);
     const paths = {
@@ -68,7 +68,9 @@ describe("TranscriptObserver", () => {
       paths,
       eventLog,
       idleGraceMs: 0,
-      resolveDesktopMainProcessId: async (pid) => pid === childPid ? mainPid : undefined,
+      resolveDesktopMainProcessId: async (pid) => (
+        pid === childPid || pid === 555 ? mainPid : undefined
+      ),
       signalProcess: (pid) => {
         signalled.push(pid);
         running = false;
@@ -105,13 +107,31 @@ describe("TranscriptObserver", () => {
       }],
       activeTask: false,
     });
+    observer.catalog.sessions.push({
+      ...observer.catalog.sessions[0]!,
+      sessionId: "session-busy",
+      desktopSessionId: "desktop-busy",
+      projectId: "project-busy",
+      title: "Busy session",
+      activeTask: true,
+      activeProcesses: [{
+        pid: 555,
+        cwd,
+        startedAt: Date.now() - 10_000,
+        processAlive: true,
+        entrypoint: "claude-desktop-3p",
+        source: "registration",
+      }],
+    });
 
+    await expect(observer.releaseDesktopWriter(sessionId)).resolves.toBe(false);
+    expect(signalled).toEqual([]);
+    observer.catalog.sessions[1]!.activeTask = false;
     await expect(observer.releaseDesktopWriter(sessionId)).resolves.toBe(true);
     expect(signalled).toEqual([mainPid]);
-    expect(observer.catalog.sessions[0]).toMatchObject({
-      desktopProcessAlive: false,
-      processAlive: false,
-    });
+    expect(observer.catalog.sessions.every((candidate) => (
+      !candidate.desktopProcessAlive && !candidate.processAlive
+    ))).toBe(true);
     await observer.close();
     await eventLog.close();
   });

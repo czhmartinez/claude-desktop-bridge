@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.4
+
+- Require every live Claude Desktop session to be idle and at a completed transcript boundary
+  before quitting the Desktop application for Bridge takeover.
+- Keep the requested mobile turn queued when any other Desktop session is active or cannot be
+  verified safe, preventing takeover from interrupting unrelated computer-side work.
+- Retain only Chinese and English Electron locale bundles in packaged macOS builds, reducing
+  release size without changing application behavior or signing identity.
+
 ## 0.3.3
 
 - Quit the idle Claude Desktop main application before takeover instead of terminating its

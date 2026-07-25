@@ -20,12 +20,12 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前稳定版：0.3.3
+## 当前稳定版：0.3.4
 
-Bridge 0.3.3 在跨网络持续连接能力上补齐了移动控制的高频故障：
+Bridge 0.3.4 在跨网络持续连接能力上补齐了移动控制的高频故障：
 
-- 接管空闲会话时，Bridge 现在会正常退出 Claude Desktop 主应用，不再直接终止其
-  Claude Code 子进程，电脑端不会再出现 `process exited with code 143`。
+- 只有全部 Desktop 会话都安全空闲时，Bridge 才会正常退出 Claude Desktop 主应用
+  并接管；不再终止 Claude Code 子进程，也不会打断其他电脑任务或出现 `code 143`。
 - 检测到双写时，只静默关闭 Bridge 的重叠 writer；手机原指令继续保存在持久队列，
   冲突解除后自动续跑，不再显示“任务已停止”，也无需重复发送。
 - 配对二维码载荷缩短超过一半，桌面码放大并使用标准静区；手机扫码保持相机原始
@@ -45,7 +45,7 @@ Relay 始终保留一个低流量控制连接，用于信令、设备撤销、�
 直连失败回退。界面显示“直连”时业务数据不经过 Relay；显示“安全中继”或
 “局域网连接”时业务数据使用相应 Relay 路径。
 
-Bridge 0.3.3 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
+Bridge 0.3.4 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
 共享同一个 Claude `sessionId`、同一个持久执行进程和同一条有序事件流。
 
 它面向已经通过第三方 Host 或 Gateway 登录 Claude Desktop、但不能使用官方
@@ -55,15 +55,15 @@ Bridge。
 ## 使用方式
 
 1. 在电脑安装并打开 Bridge，保持第三方登录的 Claude Desktop 可用。
-2. 先将手机端升级到 0.3.3，再在 Bridge 的“设备”页生成二维码并扫描一次。
+2. 先将手机端升级到 0.3.4，再在 Bridge 的“设备”页生成二维码并扫描一次。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
    回答 Claude 提问、调整或停止任务。
 
 Bridge 不点击输入框，不粘贴内容，不申请辅助功能权限，也不读写系统剪贴板。
 Bridge 接管后，电脑端 Bridge 是主要桌面界面，手机是远程界面；原 Claude
 Desktop 窗口不承诺即时刷新，释放后仍可重新打开同一份完整会话历史。
-手机向空闲的 Claude Desktop 会话发送指令时，Bridge 会先退出 Claude Desktop
-主应用再接管；如果电脑端仍在执行，指令会保持排队，完成后再自动接管。
+手机向空闲的 Claude Desktop 会话发送指令时，Bridge 会先确认所有 Desktop 会话
+都已完成，再退出主应用并接管；只要电脑端仍有任务执行，指令就保持排队。
 
 ## 发布下载
 
@@ -72,7 +72,7 @@ Desktop 窗口不承诺即时刷新，释放后仍可重新打开同一份完整
 Actions 中标注 `adhoc-ci` 的安装包只用于构建验证；Release 附件使用本机稳定签名，
 用于保留 macOS Files & Folders 授权。
 
-## 0.3.3 已实现
+## 0.3.4 已实现
 
 - 紧凑配对协议、旧二维码向前兼容解码、320 px 标准静区二维码和高分辨率后摄扫描。
 - 中断哨兵过滤、延迟结果排空、立即重试本地暂存、残留消息 writer 退役和接管前实时复查。
@@ -97,7 +97,7 @@ Actions 中标注 `adhoc-ci` 的安装包只用于构建验证；Release 附件�
 - 电脑端“会话 / 设备 / 状态”控制台、托盘、开机启动和脱敏诊断导出。
 - 首次升级归档 0.1 队列，并只移除 Bridge 自己写入的 MCP 与 HTTP Hooks。
 
-0.3.3 不包含 MCP 主通道、一次性 `claude -p` worker、`--fork-session`、隐藏
+0.3.4 不包含 MCP 主通道、一次性 `claude -p` worker、`--fork-session`、隐藏
 旁路会话或 Claude 官方登录入口。
 
 ## 本地运行
@@ -148,7 +148,7 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.3.3 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
+Bridge 0.3.4 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
 必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
 签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。
