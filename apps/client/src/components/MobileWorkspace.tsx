@@ -49,6 +49,7 @@ import {
   expandProject,
   toggleCollapsedProject,
 } from "../lib/project-groups.js";
+import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
 import {
@@ -689,6 +690,36 @@ export function MobileWorkspace({
     && groupedProjectIds.every((projectId) => collapsedProjectIds.has(projectId));
   const allProjectsExpanded = groupedProjectIds.length > 0
     && groupedProjectIds.every((projectId) => !collapsedProjectIds.has(projectId));
+
+  useEffect(() => registerMobileBackHandler(() => {
+    if (permissionOpen) {
+      setPermissionOpen(false);
+      return true;
+    }
+    if (configurationOpen) {
+      setConfigurationOpen(false);
+      return true;
+    }
+    if (createOpen) {
+      setCreateOpen(false);
+      return true;
+    }
+    if (quitDesktopOpen) {
+      setQuitDesktopOpen(false);
+      return true;
+    }
+    if (selectedSessionId) {
+      setSelectedSessionId(undefined);
+      return true;
+    }
+    return false;
+  }, 100), [
+    configurationOpen,
+    createOpen,
+    permissionOpen,
+    quitDesktopOpen,
+    selectedSessionId,
+  ]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
