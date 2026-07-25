@@ -813,8 +813,18 @@ describe("SessionBroker", () => {
 
     observer.writeVersion += 1;
     observer.publish();
-    await waitFor(() => hosts[0]?.closed === true);
+    await waitFor(() => {
+      const session = broker.session(sessionId);
+      return (
+        hosts[0]?.closed === true &&
+        hosts.length === 1 &&
+        session?.ownership === "OWNERSHIP_CONFLICT" &&
+        session.turnState === "queued" &&
+        session.pendingCount === 1
+      );
+    });
     expect(hosts[0]?.interrupts).toBe(0);
+    expect(hosts).toHaveLength(1);
     expect(broker.session(sessionId)).toMatchObject({
       ownership: "OWNERSHIP_CONFLICT",
       turnState: "queued",

@@ -88,6 +88,7 @@ GitHub Release 和附件发布统一交给 GitHub Copilot；本地不介入，�
 - Android 系统返回/边缘返回与 iOS 左缘侧滑按弹窗、会话、主机逐层返回，根层不退出 App。
 - 中断哨兵过滤、延迟结果排空、立即重试本地暂存、残留消息 writer 退役和接管前实时复查。
 - Claude Desktop 只读共存、跨 transcript 分支的真实用户写入检测和写入版本租约。
+- 写入冲突收敛期间锁定会话调度，旧 Host 完成关闭和队列持久化前不会抢跑重启。
 - macOS 受保护目录按需访问、稳定签名发布闸门和单机专用本地签名流程。
 - Claude Agent SDK 持久 Streaming Input，准确 `resume`，`forkSession:false`。
 - 主机、项目、会话三层导航，可创建会话、搜索、分页读取完整历史。

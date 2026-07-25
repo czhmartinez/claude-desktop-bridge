@@ -10,6 +10,8 @@
   hidden by later Bridge output on the terminal branch.
 - Keep idle Claude Desktop windows and session processes running during Bridge takeover; wait for
   a safe transcript boundary instead of automatically quitting the Desktop application.
+- Hold the session queue while conflict containment closes the previous Host and persists the
+  requeued turn, preventing an immediate second writer from starting.
 - Hide the tool-use interruption sentinel and exclude it from external-write detection.
 
 ## 0.3.4

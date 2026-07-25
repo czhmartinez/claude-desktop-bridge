@@ -1846,7 +1846,12 @@ export class SessionBroker extends EventEmitter {
       if (this.activeTurns >= this.maxParallelTurns) break;
       if (turn.state !== "queued") continue;
       const state = this.runtimeStates.get(turn.sessionId);
-      if (state?.active) continue;
+      // Conflict containment owns the session until the old host is closed and the turn is persisted.
+      const conflictSettling = this.conflictTasks.has(turn.sessionId) || (
+        state?.ownership === "OWNERSHIP_CONFLICT" &&
+        this.takeoverRetryTimers.has(turn.sessionId)
+      );
+      if (state?.active || conflictSettling) continue;
       const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
       if (this.hasConfirmedOwnershipConflict(turn.sessionId, state)) {
         await this.containOwnershipConflict(turn.sessionId, observed?.activeProcesses ?? []);
