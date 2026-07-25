@@ -537,17 +537,23 @@ button:disabled {
 
 .qr-scanner-reader video {
   width: 100% !important;
-  height: 100% !important;
-  object-fit: cover;
+  height: auto !important;
+  object-fit: contain;
 }
 
 .qr-scanner-guide {
   position: absolute;
   z-index: 2;
-  inset: 14%;
+  top: 50%;
+  left: 50%;
+  width: var(--qr-guide-size, 76%);
+  max-width: 86%;
+  max-height: 86%;
+  aspect-ratio: 1;
   border: 2px solid #79d5b2;
   border-radius: 7px;
   box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.3);
+  transform: translate(-50%, -50%);
   pointer-events: none;
 }
 
@@ -3357,6 +3363,12 @@ button:disabled {
   font-size: 12px;
 }
 
+.desktop-conversation > .desktop-conversation-empty {
+  min-height: 0;
+  grid-row: 1 / -1;
+  align-self: stretch;
+}
+
 .desktop-composer {
   padding: 10px 16px 14px;
   border-top: 1px solid var(--line);
@@ -3394,10 +3406,17 @@ button:disabled {
 }
 
 .device-pairing-band .qr-wrap {
+  width: 338px;
+  height: 338px;
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
+}
+
+.device-pairing-band .qr-wrap svg {
+  width: 320px;
+  height: 320px;
 }
 
 .device-pairing-band > div:last-child > span {

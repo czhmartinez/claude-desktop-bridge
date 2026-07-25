@@ -9,6 +9,7 @@ import type {
   BridgeHistoryPage,
   BridgeOrigin,
 } from "@bridge/protocol";
+import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
 
 export interface BridgeEventDraft {
   sessionId?: string;
@@ -75,6 +76,7 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
     const role = event.data.role;
     const text = textValue(event.data.text);
     if ((role !== "user" && role !== "assistant") || !text) return undefined;
+    if (isClaudeTranscriptControlMessage(role, text)) return undefined;
     return { ...base, id: event.itemId ?? event.eventId, role, text };
   }
   if (event.type === "tool.started") {

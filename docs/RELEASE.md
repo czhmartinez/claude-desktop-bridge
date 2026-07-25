@@ -68,8 +68,55 @@ BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
 BRIDGE_SERVICE_ORIGIN=https://你的域名 \
 BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]' \
 BRIDGE_PAIRING_BASE_URL=https://你的域名 \
+BRIDGE_MAC_SIGN_IDENTITY='Developer ID Application: 你的名称 (TEAMID)' \
 npm run make -w @bridge/desktop
 ```
+
+macOS 正式更新必须始终使用同一个签名身份。系统用代码的 designated requirement
+记忆“文稿 / 桌面 / 下载”等隐私授权；临时 `-` 签名只生成与本次构建绑定的
+`cdhash`，每次升级都会被识别成新代码并重新弹授权框。默认构建会拒绝这种安装包。
+只有一次性本机调试可显式执行 `npm run make:adhoc -w @bridge/desktop`，该产物不可
+用于覆盖日常使用中的 Bridge。
+
+构建前先检查并优先使用输出中的身份 SHA-1：
+
+```bash
+security find-identity -v -p codesigning
+BRIDGE_MAC_SIGN_IDENTITY='<身份 SHA-1>' npm run make -w @bridge/desktop
+codesign -d -r- apps/desktop/out/Bridge-darwin-arm64/Bridge.app
+```
+
+最后一条的 designated requirement 不得是 `cdhash H"..."`。正式构建还会校验
+`Authority=Developer ID Application` 和十位 `TeamIdentifier`，自签身份不能绕过
+发布闸门。仓库不会自动创建或信任本地根证书，也不会在普通构建中向钥匙串写入
+私钥。正式分发应由 Apple Developer 提供 Developer ID Application 身份。
+
+### 4.1 单机本地稳定签名
+
+仅在这台个人 Mac 上反复覆盖安装测试时，可以显式执行一次：
+
+```bash
+npm run signing:setup-local -w @bridge/desktop
+# 阅读安全说明后，在 Terminal 输入 CREATE
+npm run make:local-signed -w @bridge/desktop
+```
+
+初始化命令会在
+`~/Library/Application Support/Bridge/build-signing` 创建专用钥匙串、随机密码和
+只含 `codeSigning` 扩展用途的自签身份；信任策略限定为 `codeSign`，私钥只保存在
+该钥匙串中，密码文件权限为 `0600`，并给 `/usr/bin/codesign` 设置专用 ACL。构建时
+会先保存原 user keychain search list，临时追加该专用钥匙串，同时通过
+`BRIDGE_MAC_SIGN_KEYCHAIN` 明确指定它；无论成功、失败或中断，`trap` 都会原样恢复
+原 search list 并立即锁定专用钥匙串。
+
+这是一次明确的本机信任变更，不会静默运行，也不能替代 Developer ID 和 notarization。
+该包只适合这台 Mac，不能对外分发。首次从旧的 ad-hoc 包切换到这个稳定身份时，
+macOS 仍会最后请求一次“文稿 / 桌面”等授权；之后保持此身份、Bundle ID 和钥匙串
+不变，升级的 designated requirement 才会稳定。
+
+本机流程只为固定这台 Mac 上的代码身份，使用单次深度签名且不启用 hardened
+runtime。正式发布仍走上面的 Developer ID、逐组件签名和 hardened runtime 流程；
+本机签名产物不得上传或交给其他设备安装。
 
 启动打包后的应用并开放临时 CDP 端口后，必须再执行：
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute } from "node:path";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, normalize } from "node:path";
 import type {
   BridgeAttachment,
   BridgeConfigurationSource,
@@ -29,7 +29,11 @@ import {
   readClaudeSessionContextEstimate,
   readClaudeSessionHistory,
 } from "./claude-history.js";
-import { projectIdForCwd, type ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
+import {
+  projectIdForCwd,
+  scanClaudeSessionProcesses,
+  type ClaudeCatalogSnapshot,
+} from "./claude-session-catalog.js";
 import { PermissionBroker, type PermissionDecision } from "./permission-broker.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
 import { prepareClaudeRuntime } from "./claude-runtime-discovery.js";
@@ -169,6 +173,7 @@ export interface SessionBrokerOptions {
   maxParallelTurns?: number;
   hostFactory?: (options: ClaudeSessionHostOptions) => SessionHostRuntime;
   prepareRuntime?: typeof prepareClaudeRuntime;
+  scanSessionProcesses?: typeof scanClaudeSessionProcesses;
   runtimeRetryDelayMs?: number;
   managedDesktop?: ManagedDesktopRuntime;
   managedTransport?: ManagedDesktopTransportRuntime;
@@ -237,6 +242,7 @@ export class SessionBroker extends EventEmitter {
   private readonly maxParallelTurns: number;
   private readonly hostFactory: NonNullable<SessionBrokerOptions["hostFactory"]>;
   private readonly runtimeFactory: typeof prepareClaudeRuntime;
+  private readonly sessionProcessScanner: typeof scanClaudeSessionProcesses;
   private readonly managedTransport: ManagedDesktopTransportRuntime | undefined;
   private readonly runtimeStates = new Map<string, SessionRuntimeState>();
   private readonly bridgeSessions = new Map<string, StoredBridgeSession>();
@@ -278,6 +284,7 @@ export class SessionBroker extends EventEmitter {
     this.maxParallelTurns = options.maxParallelTurns ?? 2;
     this.hostFactory = options.hostFactory ?? ((hostOptions) => new ClaudeSessionHost(hostOptions));
     this.runtimeFactory = options.prepareRuntime ?? prepareClaudeRuntime;
+    this.sessionProcessScanner = options.scanSessionProcesses ?? scanClaudeSessionProcesses;
     this.managedTransport = options.managedTransport
       ?? (options.managedDesktop instanceof ClaudeDesktopManager
         ? new ClaudeDesktopManagedTransport({
@@ -700,11 +707,16 @@ export class SessionBroker extends EventEmitter {
 
   async createSession(cwd: string, title?: string): Promise<BridgeSessionInfo> {
     if (!isAbsolute(cwd)) throw new Error("Project path must be absolute");
-    await access(cwd);
+    const normalizedCwd = normalize(cwd);
+    const knownProject = this.catalog.sessions.some((session) => normalize(session.cwd) === normalizedCwd)
+      || [...this.bridgeSessions.values()].some((session) => normalize(session.cwd) === normalizedCwd);
+    if (!knownProject) {
+      throw new Error("Project path must be selected from a discovered Claude project");
+    }
     const session: StoredBridgeSession = {
       sessionId: randomUUID(),
-      cwd,
-      title: compact(title?.trim() || basename(cwd) || cwd, 140),
+      cwd: normalizedCwd,
+      title: compact(title?.trim() || basename(normalizedCwd) || normalizedCwd, 140),
       createdAt: Date.now(),
     };
     this.bridgeSessions.set(session.sessionId, session);
@@ -1131,6 +1143,25 @@ export class SessionBroker extends EventEmitter {
       clearTimeout(state.releaseTimer);
       delete state.releaseTimer;
     }
+    const liveWriters = (await this.sessionProcessScanner(this.options.paths, turn.sessionId))
+      .filter((candidate) => candidate.processAlive);
+    const desktopWriter = liveWriters.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
+    const foreignBridgeWriter = (
+      !state.host &&
+      liveWriters.some((candidate) => candidate.entrypoint === "claude-bridge")
+    );
+    if (desktopWriter || foreignBridgeWriter) {
+      if (foreignBridgeWriter || state.host) {
+        await this.containOwnershipConflict(turn.sessionId, liveWriters);
+      } else {
+        state.ownership = "DESKTOP_OBSERVED";
+        state.turnState = "queued";
+        await this.recordOwnership(turn.sessionId, state.ownership);
+        this.scheduleTakeoverRetry(turn.sessionId);
+        this.emit("changed");
+      }
+      return;
+    }
     let accepted: ReturnType<SessionHostRuntime["send"]>;
     try {
       const host = await this.ensureHost(turn.sessionId);
@@ -1227,7 +1258,6 @@ export class SessionBroker extends EventEmitter {
           .then(() => this.handleHostEvent(event));
       });
       state.host = host;
-      host.start();
       state.ownership = "BRIDGE_IDLE";
       state.turnState = "idle";
       await this.recordOwnership(sessionId, state.ownership);
@@ -1322,7 +1352,7 @@ export class SessionBroker extends EventEmitter {
     const profile = this.effectiveProfile(session.sessionId, session.cwd);
     const host = this.hostFactory({
       sessionId: randomUUID(),
-      cwd: session.cwd,
+      cwd: dirname(this.options.sessionsPath),
       executablePath: this.runtime.executablePath,
       environment: this.runtime.environment,
       permissionBroker: this.permissionBroker,
@@ -1330,6 +1360,7 @@ export class SessionBroker extends EventEmitter {
       ...(profile.model ? { model: profile.model } : {}),
       ...(profile.effort ? { effort: profile.effort } : {}),
       settingSources: [],
+      persistSession: false,
     });
     let discoveryTimer: NodeJS.Timeout | undefined;
     try {

@@ -170,6 +170,11 @@ function DesktopSessions({
   }, [selectedId]);
 
   useEffect(() => {
+    if (selectedId && snapshot.sessions.some((session) => session.sessionId === selectedId)) return;
+    setSelectedId(snapshot.sessions[0]?.sessionId);
+  }, [selectedId, snapshot.sessions]);
+
+  useEffect(() => {
     streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight });
   }, [items.length]);
 
@@ -377,7 +382,7 @@ function DesktopSessions({
             {selected.ownership === "OWNERSHIP_CONFLICT" && (
               <div className="desktop-channel-banner danger">
                 <AlertTriangle size={18} />
-                <span><strong>检测到多个写入者</strong>Bridge 已停止写入。请结束重复进程后再继续。</span>
+                <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；持续冲突时再结束重复进程。</span>
               </div>
             )}
             <div className="desktop-conversation-stream" ref={streamRef}>
@@ -475,11 +480,11 @@ function DesktopDevices({
       </header>
       {snapshot.pairingUrl && snapshot.pairingExpiresAt && (
         <section className="device-pairing-band">
-          <div className="qr-wrap"><QRCodeSVG value={snapshot.pairingUrl} size={176} level="M" marginSize={2} title="手机配对二维码" /></div>
+          <div className="qr-wrap"><QRCodeSVG value={snapshot.pairingUrl} size={320} level="M" marginSize={4} title="手机配对二维码" /></div>
           <div>
             <span>一次性配对</span>
             <h2>使用手机 Bridge 扫描</h2>
-            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。每台设备使用独立密钥。</p>
+            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。请使用 0.3.2 或更新版本的手机端扫码。</p>
             <small>{Math.max(0, Math.ceil((snapshot.pairingExpiresAt - Date.now()) / 60_000))} 分钟后过期</small>
           </div>
         </section>

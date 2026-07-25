@@ -11,6 +11,7 @@ import type {
   ClaudeDesktopAppStatus,
   SocketState,
 } from "@bridge/protocol";
+import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -125,7 +126,13 @@ export function conversationItems(
   localTurns: LocalTurn[],
 ): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
-  for (const item of history?.items ?? []) items.set(item.id, item);
+  for (const item of history?.items ?? []) {
+    if (
+      (item.role === "user" || item.role === "assistant") &&
+      isClaudeTranscriptControlMessage(item.role, item.text)
+    ) continue;
+    items.set(item.id, item);
+  }
   const sessionEvents = events.filter((event) => event.sessionId === sessionId);
   const acceptedRequests = new Set(
     sessionEvents
@@ -158,7 +165,11 @@ export function conversationItems(
     if (event.type === "session.observed") {
       const role = event.data.role;
       const text = eventText(event);
-      if ((role === "user" || role === "assistant") && text) {
+      if (
+        (role === "user" || role === "assistant") &&
+        text &&
+        !isClaudeTranscriptControlMessage(role, text)
+      ) {
         items.set(event.itemId ?? event.eventId, {
           id: event.itemId ?? event.eventId,
           sessionId,
@@ -847,7 +858,7 @@ export function MobileWorkspace({
         {selectedSession.ownership === "OWNERSHIP_CONFLICT" && (
           <div className="session-channel-warning danger">
             <AlertTriangle size={17} />
-            <span><strong>检测到两个写入进程</strong>Bridge 已停止继续写入，请回到电脑端处理所有权冲突。</span>
+            <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；当前指令保留排队，无需重复发送。</span>
           </div>
         )}
 

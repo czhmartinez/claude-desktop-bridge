@@ -163,6 +163,13 @@ async function listActiveSessions(path: string): Promise<Map<string, ActiveClaud
   return result;
 }
 
+export async function scanClaudeSessionProcesses(
+  paths: ClaudeRuntimePaths,
+  sessionId: string,
+): Promise<ActiveClaudeProcess[]> {
+  return (await listActiveSessions(paths.sessions)).get(sessionId) ?? [];
+}
+
 function processSummary(processes: ActiveClaudeProcess[]): {
   processAlive: boolean;
   desktopProcessAlive: boolean;

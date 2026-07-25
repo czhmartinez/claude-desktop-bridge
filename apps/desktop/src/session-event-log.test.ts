@@ -36,11 +36,25 @@ describe("SessionEventLog", () => {
       itemId: "assistant-1",
     }, "lo");
     await first.flushDeltas();
+    await first.append({
+      sessionId: "session-1",
+      origin: "claude-desktop",
+      type: "session.observed",
+      itemId: "interrupted-control",
+      data: { role: "user", text: "[Request interrupted by user]" },
+    });
+    await first.append({
+      sessionId: "session-1",
+      origin: "claude-desktop",
+      type: "session.observed",
+      itemId: "synthetic-control",
+      data: { role: "assistant", text: "No response requested." },
+    });
     await first.close();
 
     const reopened = new SessionEventLog(path);
     await reopened.initialize();
-    expect(reopened.replay()).toHaveLength(2);
+    expect(reopened.replay()).toHaveLength(4);
     expect(reopened.replay(1)[0]).toMatchObject({ seq: 2, data: { text: "Hello" } });
     expect(reopened.latestItem("session-1", "user.message.accepted", "user-1")).toMatchObject({
       seq: 1,

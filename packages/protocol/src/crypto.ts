@@ -31,6 +31,33 @@ import { normalizeBridgeIceServers } from "./ice.js";
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 10 * 60 * 1000;
+// Pairing QR codes use this compact tuple; decoding still accepts legacy JSON objects.
+const COMPACT_PAIRING_MARKER = "b3";
+
+type CompactEndpointKind = 0 | 1 | 2;
+type CompactPairingEndpoint = [
+  id: string,
+  kind: CompactEndpointKind,
+  url: string,
+  priority: number,
+];
+type CompactPairingIceServer = [
+  urls: string | string[],
+  username?: string | null,
+  credential?: string,
+];
+type CompactPairingBundle = [
+  marker: typeof COMPACT_PAIRING_MARKER,
+  roomId: string,
+  deviceId: string,
+  secret: string,
+  desktopName: string,
+  createdAt: number,
+  expiresAt: number,
+  serviceOriginOverride: string,
+  relayEndpoints: CompactPairingEndpoint[],
+  iceServers: CompactPairingIceServer[],
+];
 
 function serviceOriginForRelay(relayUrl: string): string {
   try {
@@ -43,6 +70,135 @@ function serviceOriginForRelay(relayUrl: string): string {
   } catch {
     return "";
   }
+}
+
+function compactEndpointKind(kind: BridgeEndpoint["kind"]): CompactEndpointKind {
+  if (kind === "public-relay") return 0;
+  if (kind === "lan-relay") return 1;
+  return 2;
+}
+
+function expandedEndpointKind(kind: unknown): BridgeEndpoint["kind"] | undefined {
+  if (kind === 0) return "public-relay";
+  if (kind === 1) return "lan-relay";
+  if (kind === 2) return "direct";
+  return undefined;
+}
+
+function compactPairingBundle(pairing: PairingBundle): CompactPairingBundle {
+  const active = selectBridgeEndpoint(pairing.relayEndpoints, pairing.activeEndpoint);
+  if (!active) throw new Error("Pairing requires a relay endpoint");
+  const endpoints = [
+    active,
+    ...pairing.relayEndpoints.filter((endpoint) => endpoint.id !== active.id),
+  ];
+  const derivedServiceOrigin = serviceOriginForRelay(active.url);
+  return [
+    COMPACT_PAIRING_MARKER,
+    pairing.roomId,
+    pairing.deviceId,
+    pairing.secret,
+    pairing.desktopName,
+    pairing.createdAt,
+    pairing.expiresAt,
+    pairing.serviceOrigin === derivedServiceOrigin ? "" : pairing.serviceOrigin,
+    endpoints.map((endpoint) => [
+      endpoint.id,
+      compactEndpointKind(endpoint.kind),
+      endpoint.url,
+      endpoint.priority,
+    ]),
+    pairing.iceServers.map((server) => {
+      if (server.credential !== undefined) {
+        return [server.urls, server.username ?? null, server.credential];
+      }
+      if (server.username !== undefined) return [server.urls, server.username];
+      return [server.urls];
+    }),
+  ];
+}
+
+function expandCompactPairingBundle(value: unknown): unknown {
+  if (!Array.isArray(value) || value[0] !== COMPACT_PAIRING_MARKER || value.length !== 10) {
+    return value;
+  }
+  const [
+    ,
+    roomId,
+    deviceId,
+    secret,
+    desktopName,
+    createdAt,
+    expiresAt,
+    serviceOriginOverride,
+    compactEndpoints,
+    compactIceServers,
+  ] = value;
+  if (
+    typeof roomId !== "string" ||
+    typeof deviceId !== "string" ||
+    typeof secret !== "string" ||
+    typeof desktopName !== "string" ||
+    typeof createdAt !== "number" ||
+    typeof expiresAt !== "number" ||
+    typeof serviceOriginOverride !== "string" ||
+    !Array.isArray(compactEndpoints) ||
+    compactEndpoints.length === 0 ||
+    !Array.isArray(compactIceServers)
+  ) {
+    throw new Error("Invalid pairing bundle");
+  }
+  const relayEndpoints = compactEndpoints.map((candidate): BridgeEndpoint => {
+    if (!Array.isArray(candidate) || candidate.length !== 4) {
+      throw new Error("Invalid pairing bundle");
+    }
+    const [id, compactKind, url, priority] = candidate;
+    const kind = expandedEndpointKind(compactKind);
+    if (
+      typeof id !== "string" ||
+      !kind ||
+      typeof url !== "string" ||
+      typeof priority !== "number"
+    ) {
+      throw new Error("Invalid pairing bundle");
+    }
+    return { id, kind, url, priority };
+  });
+  const iceServers = compactIceServers.map((candidate): BridgeIceServer => {
+    if (!Array.isArray(candidate) || candidate.length < 1 || candidate.length > 3) {
+      throw new Error("Invalid pairing bundle");
+    }
+    const [urls, username, credential] = candidate;
+    if (
+      (typeof urls !== "string" && !Array.isArray(urls)) ||
+      (username !== undefined && username !== null && typeof username !== "string") ||
+      (credential !== undefined && typeof credential !== "string")
+    ) {
+      throw new Error("Invalid pairing bundle");
+    }
+    return {
+      urls: urls as string | string[],
+      ...(typeof username === "string" ? { username } : {}),
+      ...(typeof credential === "string" ? { credential } : {}),
+    };
+  });
+  const active = relayEndpoints[0]!;
+  return {
+    version: PAIRING_SCHEMA_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
+    roomId,
+    deviceId,
+    secret,
+    relayUrl: active.url,
+    serviceOrigin: serviceOriginOverride || serviceOriginForRelay(active.url),
+    relayEndpoints,
+    activeEndpoint: active.id,
+    iceServers,
+    desktopName,
+    createdAt,
+    expiresAt,
+    singleUse: true,
+  };
 }
 
 function pairingEndpoint(
@@ -314,7 +470,7 @@ export class BridgeCrypto {
 }
 
 export function encodePairingBundle(pairing: PairingBundle): string {
-  return toBase64Url(utf8(JSON.stringify(pairing)));
+  return toBase64Url(utf8(JSON.stringify(compactPairingBundle(pairing))));
 }
 
 export function normalizePairingBundle(value: unknown): PairingBundle {
@@ -398,7 +554,8 @@ export function normalizePairingBundle(value: unknown): PairingBundle {
 }
 
 export function decodePairingBundle(value: string): PairingBundle {
-  return normalizePairingBundle(JSON.parse(decodeUtf8(fromBase64Url(value))));
+  const decoded = JSON.parse(decodeUtf8(fromBase64Url(value))) as unknown;
+  return normalizePairingBundle(expandCompactPairingBundle(decoded));
 }
 
 export function buildPairingUrl(baseUrl: string, pairing: PairingBundle): string {

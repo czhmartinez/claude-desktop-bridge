@@ -2,10 +2,43 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+function pathIsWithin(root: string, candidate: string): boolean {
+  const relation = relative(resolve(root), resolve(candidate));
+  return relation === "" || (
+    relation !== ".." &&
+    !relation.startsWith(`..${sep}`) &&
+    !isAbsolute(relation)
+  );
+}
+
+/**
+ * PATH is ambient process state, not an explicit project selection. Avoid
+ * probing privacy-protected folders while Bridge is only looking for a CLI.
+ */
+export function isSafeForBackgroundRuntimeScan(
+  candidate: string,
+  home = homedir(),
+  platform = process.platform,
+): boolean {
+  if (platform !== "darwin") return true;
+  const protectedRoots = [
+    join(home, "Desktop"),
+    join(home, "Documents"),
+    join(home, "Downloads"),
+    join(home, "Movies"),
+    join(home, "Music"),
+    join(home, "Pictures"),
+    join(home, "Library", "CloudStorage"),
+    join(home, "Library", "Mobile Documents"),
+    "/Volumes",
+  ];
+  return !protectedRoots.some((root) => pathIsWithin(root, candidate));
+}
 
 async function isExecutable(path: string): Promise<boolean> {
   return access(path, process.platform === "win32" ? constants.F_OK : constants.X_OK)
@@ -104,7 +137,8 @@ export async function findClaudeExecutable(
   const pathCandidates = (environment.PATH ?? "")
     .split(delimiter)
     .filter(Boolean)
-    .flatMap((directory) => names.map((name) => join(directory, name)));
+    .flatMap((directory) => names.map((name) => join(directory, name)))
+    .filter((candidate) => isSafeForBackgroundRuntimeScan(candidate, home));
   const configured = [environment.BRIDGE_CLAUDE_PATH, environment.CLAUDE_CODE_EXECUTABLE]
     .filter((value): value is string => Boolean(value));
   const local = process.platform === "win32"
@@ -123,7 +157,7 @@ export function buildClaudeRuntimeEnvironment(
   const runtimeEnvironment: NodeJS.ProcessEnv = {
     ...environment,
     CLAUDE_CODE_ENTRYPOINT: "claude-bridge",
-    CLAUDE_AGENT_SDK_CLIENT_APP: "claude-bridge/0.3.1",
+    CLAUDE_AGENT_SDK_CLIENT_APP: "claude-bridge/0.3.2",
     BRIDGE_SESSION_RUNTIME: "1",
   };
   delete runtimeEnvironment.CLAUDECODE;
@@ -152,6 +186,7 @@ export async function prepareClaudeRuntime(
   if (executablePath && !version) {
     try {
       const result = await execFileAsync(executablePath, ["--version"], {
+        cwd: homedir(),
         env: prepared,
         timeout: 8_000,
         maxBuffer: 64 * 1024,

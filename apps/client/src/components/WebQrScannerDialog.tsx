@@ -1,6 +1,12 @@
 import { Camera, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Html5Qrcode } from "html5-qrcode";
+import {
+  QR_SCANNER_CAMERA_CONSTRAINTS,
+  QR_SCANNER_FPS,
+  qrScannerLayout,
+  tuneQrScannerCamera,
+} from "../lib/qr-scanner.js";
 
 const READER_ID = "bridge-qr-reader";
 
@@ -27,6 +33,8 @@ export function WebQrScannerDialog({
   onError(): void;
 }) {
   const scannerRef = useRef<Html5Qrcode | undefined>(undefined);
+  const readerRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -46,7 +54,8 @@ export function WebQrScannerDialog({
         await scanner.start(
           { facingMode: "environment" },
           {
-            fps: 10,
+            fps: QR_SCANNER_FPS,
+            videoConstraints: QR_SCANNER_CAMERA_CONSTRAINTS,
           },
           (value) => {
             if (!active || handled) return;
@@ -60,6 +69,15 @@ export function WebQrScannerDialog({
           await stopScanner(scanner);
           return;
         }
+        const video = readerRef.current?.querySelector("video");
+        if (video && stageRef.current) {
+          const layout = qrScannerLayout(video.clientWidth, video.clientHeight);
+          stageRef.current.style.aspectRatio = layout.aspectRatio;
+          if (layout.guideSize > 0) {
+            stageRef.current.style.setProperty("--qr-guide-size", `${layout.guideSize}px`);
+          }
+        }
+        await tuneQrScannerCamera(scanner);
         setReady(true);
       } catch {
         if (active) onError();
@@ -84,8 +102,8 @@ export function WebQrScannerDialog({
           <X size={22} />
         </button>
       </div>
-      <div className="qr-scanner-stage">
-        <div id={READER_ID} className="qr-scanner-reader" />
+      <div className="qr-scanner-stage" ref={stageRef}>
+        <div id={READER_ID} className="qr-scanner-reader" ref={readerRef} />
         <span className="qr-scanner-guide" aria-hidden="true" />
       </div>
       <p className="qr-scanner-status" aria-live="polite">

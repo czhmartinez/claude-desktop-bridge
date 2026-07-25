@@ -2,7 +2,11 @@ import { createReadStream } from "node:fs";
 import { access, readdir } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import type { BridgeHistoryPage, ClaudeHistoryMessage } from "@bridge/protocol";
+import {
+  isClaudeTranscriptControlMessage,
+  type BridgeHistoryPage,
+  type ClaudeHistoryMessage,
+} from "@bridge/protocol";
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const MAX_HISTORY_MESSAGES = 50;
@@ -25,6 +29,7 @@ interface TranscriptTurnNode {
   parentUuid?: string;
   type?: "user" | "assistant";
   stopReason?: string;
+  interruptedBoundary?: boolean;
 }
 
 export interface ClaudeHistoryReadResult {
@@ -78,9 +83,10 @@ function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "r
   if (value.type === "user" && (value.toolUseResult !== undefined || value.isMeta === true)) return undefined;
   const text = textFromContent(value.message.content);
   if (!text) return undefined;
-  return value.type === "user"
-    ? { role: "user", text: cleanUserText(text) }
-    : { role: "assistant", text: text.trim() };
+  const role = value.type;
+  const cleaned = role === "user" ? cleanUserText(text) : text.trim();
+  if (!cleaned || isClaudeTranscriptControlMessage(role, cleaned)) return undefined;
+  return { role, text: cleaned };
 }
 
 function takePrefixByBytes(value: string, maxBytes: number): string {
@@ -282,11 +288,15 @@ export async function isClaudeTranscriptAtTurnBoundary(path: string): Promise<bo
       const parentUuid = typeof value.parentUuid === "string" && value.parentUuid ? value.parentUuid : undefined;
       if (parentUuid) referencedParents.add(parentUuid);
       const message = isRecord(value.message) ? value.message : undefined;
+      const text = message ? textFromContent(message.content) : "";
       nodes.set(value.uuid, {
         index,
         uuid: value.uuid,
         ...(parentUuid ? { parentUuid } : {}),
         ...(value.type === "user" || value.type === "assistant" ? { type: value.type } : {}),
+        ...(value.type === "user" && isClaudeTranscriptControlMessage("user", text)
+          ? { interruptedBoundary: true }
+          : {}),
         ...(message && typeof message.stop_reason === "string"
           ? { stopReason: message.stop_reason }
           : {}),
@@ -302,7 +312,7 @@ export async function isClaudeTranscriptAtTurnBoundary(path: string): Promise<bo
   const seen = new Set<string>();
   while (current && !seen.has(current.uuid)) {
     seen.add(current.uuid);
-    if (current.type === "user") return false;
+    if (current.type === "user") return current.interruptedBoundary === true;
     if (current.type === "assistant") {
       return [
         "end_turn",

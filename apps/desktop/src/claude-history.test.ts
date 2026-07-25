@@ -63,11 +63,52 @@ describe("Claude transcript history", () => {
     });
   });
 
+  it("hides Claude resume sentinels while preserving the surrounding conversation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-controls-"));
+    directories.push(root);
+    const transcript = join(root, "controls.jsonl");
+    await writeFile(transcript, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "继续推进 P2" } }),
+      line({
+        type: "user",
+        uuid: "interrupted-1",
+        parentUuid: "user-1",
+        message: { role: "user", content: "[Request interrupted by user]" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "synthetic-1",
+        parentUuid: "interrupted-1",
+        message: {
+          role: "assistant",
+          model: "<synthetic>",
+          content: [{ type: "text", text: "No response requested." }],
+          stop_reason: "stop_sequence",
+        },
+      }),
+      line({
+        type: "user",
+        uuid: "user-2",
+        parentUuid: "synthetic-1",
+        message: { role: "user", content: "重新继续 P2" },
+      }),
+    ].join("\n"), "utf8");
+
+    await expect(parseClaudeTranscript(transcript)).resolves.toMatchObject({
+      available: true,
+      messages: [
+        { id: "user-1", role: "user", text: "继续推进 P2" },
+        { id: "user-2", role: "user", text: "重新继续 P2" },
+      ],
+    });
+  });
+
   it("only marks a completed assistant branch as a safe ownership boundary", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-claude-boundary-"));
     directories.push(root);
     const completed = join(root, "completed.jsonl");
     const waiting = join(root, "waiting.jsonl");
+    const interrupted = join(root, "interrupted.jsonl");
     await writeFile(completed, [
       line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "Run" } }),
       line({
@@ -87,9 +128,19 @@ describe("Claude transcript history", () => {
         message: { role: "assistant", content: [{ type: "tool_use", name: "Write" }], stop_reason: "tool_use" },
       }),
     ].join("\n"), "utf8");
+    await writeFile(interrupted, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "Run" } }),
+      line({
+        type: "user",
+        uuid: "interrupted-1",
+        parentUuid: "user-1",
+        message: { role: "user", content: "[Request interrupted by user]" },
+      }),
+    ].join("\n"), "utf8");
 
     await expect(isClaudeTranscriptAtTurnBoundary(completed)).resolves.toBe(true);
     await expect(isClaudeTranscriptAtTurnBoundary(waiting)).resolves.toBe(false);
+    await expect(isClaudeTranscriptAtTurnBoundary(interrupted)).resolves.toBe(true);
   });
 
   it("caps large histories below the encrypted relay frame budget", async () => {

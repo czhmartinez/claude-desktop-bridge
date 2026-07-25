@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   BridgeCrypto,
   buildPairingUrl,
+  decodeUtf8,
   decodePairingBundle,
   encodePairingBundle,
+  fromBase64Url,
   isBridgePayload,
   pairingBundleFromUrl,
   toBase64Url,
@@ -102,6 +104,36 @@ describe("BridgeCrypto v2", () => {
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
     });
     expect(pairing.relayEndpoints).toHaveLength(1);
+  });
+
+  it("uses a compact QR wire format while preserving all pairing routes", async () => {
+    const host = await BridgeCrypto.createHost("wss://relay.example/ws", "工作室 Mac");
+    const { pairing } = await BridgeCrypto.createDevicePairing({
+      roomId: host.crypto.identity.roomId,
+      relayUrl: "wss://relay.example/ws",
+      desktopName: host.crypto.identity.desktopName,
+      serviceOrigin: "https://relay.example",
+      relayEndpoints: [
+        { id: "public", kind: "public-relay", url: "wss://relay.example/ws", priority: 10 },
+        { id: "lan", kind: "lan-relay", url: "ws://192.168.1.32:8788/ws", priority: 20 },
+      ],
+      activeEndpoint: "public",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      now: 1_000,
+    });
+    const legacyEncoded = toBase64Url(utf8(JSON.stringify(pairing)));
+    const encoded = encodePairingBundle(pairing);
+    const wireValue = JSON.parse(decodeUtf8(fromBase64Url(encoded))) as unknown[];
+
+    expect(wireValue[0]).toBe("b3");
+    expect(encoded.length).toBeLessThan(500);
+    expect(encoded.length).toBeLessThan(legacyEncoded.length * 0.65);
+    expect(decodePairingBundle(encoded)).toEqual(pairing);
+  });
+
+  it("rejects malformed compact pairing payloads", () => {
+    const malformed = toBase64Url(utf8(JSON.stringify(["b3", "room"])));
+    expect(() => decodePairingBundle(malformed)).toThrow("Invalid pairing bundle");
   });
 
   it("normalizes a 0.2 pairing bundle without rotating its device secret", () => {

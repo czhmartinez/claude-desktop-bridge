@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2
+
+- Shrink pairing QR payloads by more than half while retaining legacy decode support.
+- Enlarge desktop pairing codes, restore the camera aspect ratio, and request rear-camera
+  focus, resolution, and conservative zoom settings for more reliable scanning.
+- Hide Claude interruption and synthetic resume sentinels from history and live events.
+- Keep immediate retries local until the interrupted SDK result drains; if an interrupt receipt
+  says the old prompt would still run, retire that writer before resuming the session.
+- Recheck live Claude writers immediately before takeover to close the observer-cache race.
+- Keep conflict turns queued for automatic recheck instead of telling the phone user to resend.
+- Avoid protected-folder probes during background runtime and model discovery on macOS.
+- Require a stable macOS signing identity for update packages, with an explicit local-only
+  signing workflow for one Mac and a fail-closed designated-requirement check.
+
 ## 0.3.1
 
 - Add opportunistic WebRTC DataChannel transport between each paired phone and desktop.

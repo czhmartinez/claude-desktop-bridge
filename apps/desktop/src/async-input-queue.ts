@@ -23,6 +23,13 @@ export class AsyncInputQueue<T> implements AsyncIterable<T> {
     this.values.push(value);
   }
 
+  removePending(value: T): boolean {
+    const index = this.values.lastIndexOf(value);
+    if (index < 0) return false;
+    this.values.splice(index, 1);
+    return true;
+  }
+
   close(error?: Error): void {
     if (this.closed) return;
     this.closed = true;

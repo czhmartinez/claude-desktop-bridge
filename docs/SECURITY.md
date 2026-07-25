@@ -1,4 +1,4 @@
-# Bridge 0.3.1 安全模型
+# Bridge 0.3.2 安全模型
 
 ## 已保护
 
@@ -41,6 +41,13 @@ STUN 能看到发起 Binding 的公网 IP 和端口，但不接收 Claude 指令
 本机 Claude 工具相同的文件和命令权限。危险工具必须经过 `PermissionBroker`；
 电脑或任一已授权手机的首次有效答复生效。
 
+会话目录发现只读取 `~/.claude` 与 Claude 的 Application Support 元数据，不探测
+元数据中记录的项目 `cwd`。CLI 的后台 PATH / 版本发现和模型列表发现也固定避开
+“文稿 / 桌面 / 下载”等受保护目录。只有用户选中某个真实项目并发送任务后，
+`ClaudeSessionHost` 才以该项目为 `cwd` 启动；macOS 因而只会在真实项目首次执行时
+请求相应的 Files & Folders 授权。后续版本必须维持相同的正式签名身份与 Bundle ID，
+系统才能在升级后继续识别这次授权。
+
 Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会并发写 transcript，
 手机消息会排队等待接管。
 
@@ -55,6 +62,8 @@ Bridge 不附加或注入 Claude Desktop 进程。桌面原会话运行时不会
 - 配置 macOS notarization、Windows code signing、Android keystore 和 iOS
   provisioning profile。
 - 为桌面安装包建立签名自动更新源；升级必须保留设备配置与事件日志。
+- 单机自签只允许存放在 Bridge 专用钥匙串中，信任策略必须限定为 `codeSign`，不得
+  复用为 TLS/邮件证书或把私钥、钥匙串密码、`.p12` 放入仓库和发布产物。
 - 丢失手机时，从另一台已授权设备或电脑“设备”页立即撤销。
 
 ## 仍需外部条件

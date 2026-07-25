@@ -5,6 +5,7 @@ export * from "./ice.js";
 export * from "./relay-transport.js";
 export * from "./socket.js";
 export * from "./transport.js";
+export * from "./transcript.js";
 export * from "./types.js";
 export * from "./validation.js";
 export * from "./webrtc-transport.js";

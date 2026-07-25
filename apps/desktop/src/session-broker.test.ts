@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -287,6 +287,48 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
 }
 
 describe("SessionBroker", () => {
+  it("creates metadata only for a discovered project without probing its protected path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-project-"));
+    directories.push(root);
+    const cwd = join(root, "Documents", "project-not-mounted");
+    const sessionId = randomUUID();
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd)],
+      observedAt: Date.now(),
+    });
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+
+    await expect(access(cwd)).rejects.toThrow();
+    await expect(broker.createSession(cwd, "Explicit project")).resolves.toMatchObject({
+      cwd,
+      title: "Explicit project",
+    });
+    await expect(broker.createSession(join(root, "Documents", "unknown")))
+      .rejects.toThrow(/selected from a discovered Claude project/u);
+
+    await broker.close();
+    await eventLog.close();
+  });
+
   it("detects a Claude Host credential created after Bridge startup", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-"));
     directories.push(root);
@@ -453,6 +495,87 @@ describe("SessionBroker", () => {
     expect(reopenedHosts).toHaveLength(0);
     await reopened.close();
     await reopenedLog.close();
+  });
+
+  it("rechecks live writers before spawning when the observer cache is stale", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-live-writer-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    const sessionId = randomUUID();
+    const transcriptDirectory = join(projects, cwd.replace(/[:\\/]/gu, "-"));
+    await Promise.all([
+      mkdir(cwd, { recursive: true }),
+      mkdir(transcriptDirectory, { recursive: true }),
+    ]);
+    await writeFile(join(transcriptDirectory, `${sessionId}.jsonl`), "");
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd)],
+      observedAt: Date.now() - 10_000,
+    });
+    observer.writer = false;
+    const hosts: FakeHost[] = [];
+    let scans = 0;
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      scanSessionProcesses: async () => {
+        scans += 1;
+        return [{
+          pid: process.pid,
+          cwd,
+          startedAt: Date.now(),
+          processAlive: true,
+          entrypoint: "claude-desktop-3p",
+          peerProtocol: "stream-json",
+          source: "registration",
+        }];
+      },
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "request-live-writer",
+      idempotencyKey: "command-live-writer",
+      sessionId,
+      text: "Continue without racing Claude Desktop",
+      origin: "mobile",
+    });
+    await waitFor(() => scans > 0);
+
+    expect(hosts).toHaveLength(0);
+    expect(broker.session(sessionId)).toMatchObject({
+      ownership: "DESKTOP_OBSERVED",
+      turnState: "queued",
+      pendingCount: 1,
+    });
+    expect(eventLog.replay().some((event) => (
+      event.sessionId === sessionId
+      && event.type === "session.ownership"
+      && event.data.ownership === "DESKTOP_OBSERVED"
+    ))).toBe(true);
+
+    await broker.close();
+    await eventLog.close();
   });
 
   it("never starts a second host while a Claude Desktop writer remains alive after transcript silence", async () => {
@@ -1003,6 +1126,9 @@ describe("SessionBroker", () => {
     });
     expect(hosts).toHaveLength(1);
     expect(hosts[0]?.options.sessionId).not.toBe(sessionId);
+    expect(hosts[0]?.options.cwd).toBe(root);
+    expect(hosts[0]?.options.settingSources).toEqual([]);
+    expect(hosts[0]?.options.persistSession).toBe(false);
     expect(hosts[0]?.closed).toBe(true);
     expect(broker.session(sessionId)?.ownership).toBe("DESKTOP_OBSERVED");
 

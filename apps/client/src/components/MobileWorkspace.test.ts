@@ -1,6 +1,57 @@
-import type { BridgePermissionInfo } from "@bridge/protocol";
+import type { BridgeEvent, BridgePermissionInfo } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
-import { permissionPresentation } from "./MobileWorkspace.js";
+import { conversationItems, permissionPresentation } from "./MobileWorkspace.js";
+
+describe("conversationItems", () => {
+  it("does not render Claude interruption and resume sentinels from cached history or events", () => {
+    const events: BridgeEvent[] = [
+      {
+        eventId: "event-1",
+        seq: 1,
+        timestamp: 3,
+        origin: "claude-desktop",
+        type: "session.observed",
+        sessionId: "session-1",
+        itemId: "observed-synthetic",
+        data: { role: "assistant", text: "No response requested." },
+      },
+      {
+        eventId: "event-2",
+        seq: 2,
+        timestamp: 4,
+        origin: "claude-desktop",
+        type: "session.observed",
+        sessionId: "session-1",
+        itemId: "observed-answer",
+        data: { role: "assistant", text: "继续处理 P2。" },
+      },
+    ];
+    const items = conversationItems("session-1", {
+      status: "ready",
+      hasMore: false,
+      items: [
+        {
+          id: "history-interrupted",
+          sessionId: "session-1",
+          role: "user",
+          text: "[Request interrupted by user]",
+          createdAt: 1,
+          origin: "claude-desktop",
+        },
+        {
+          id: "history-user",
+          sessionId: "session-1",
+          role: "user",
+          text: "继续推进 P2",
+          createdAt: 2,
+          origin: "mobile",
+        },
+      ],
+    }, events, []);
+
+    expect(items.map((item) => item.text)).toEqual(["继续推进 P2", "继续处理 P2。"]);
+  });
+});
 
 describe("permissionPresentation", () => {
   it("summarizes a large Write request without rendering the full content", () => {

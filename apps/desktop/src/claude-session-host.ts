@@ -9,7 +9,10 @@ import {
   type SDKMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { BridgeAttachment } from "@bridge/protocol";
+import {
+  isClaudeTranscriptControlMessage,
+  type BridgeAttachment,
+} from "@bridge/protocol";
 import { AsyncInputQueue } from "./async-input-queue.js";
 import type { ClaudeSessionEffort } from "./claude-desktop-sessions.js";
 import type { PermissionBroker } from "./permission-broker.js";
@@ -50,6 +53,7 @@ export interface ClaudeSessionHostOptions {
   model?: string;
   effort?: ClaudeSessionEffort;
   settingSources?: Array<"user" | "project" | "local">;
+  persistSession?: boolean;
   queryFactory?: typeof createQuery;
 }
 
@@ -89,11 +93,22 @@ function partialText(message: SDKMessage): { itemId: string; text: string } | un
   return { itemId: `${message.uuid}:${index}`, text: event.delta.text };
 }
 
+interface PendingTurn {
+  turnId: string;
+  messageId: string;
+  userMessage: SDKUserMessage;
+  interrupted: boolean;
+  submitted: boolean;
+}
+
 export class ClaudeSessionHost extends EventEmitter {
-  private readonly input = new AsyncInputQueue<SDKUserMessage>();
+  private input = new AsyncInputQueue<SDKUserMessage>();
+  private readonly pendingTurns: PendingTurn[] = [];
   private readonly queryFactory: typeof createQuery;
   private queryProcess: Query | undefined;
   private streamTask: Promise<void> | undefined;
+  private retiring = false;
+  private hasStartedQuery = false;
   private sessionIdValue: string;
   private currentTurnId: string | undefined;
   private modelValue: string | undefined;
@@ -126,6 +141,7 @@ export class ClaudeSessionHost extends EventEmitter {
   }
 
   start(): void {
+    if (this.retiring) throw new Error("Session host is retiring its previous writer");
     if (this.streamTask) return;
     const canUseTool: CanUseTool = async (toolName, input, context) => (
       this.options.permissionBroker.request(this.sessionIdValue, toolName, input, {
@@ -137,7 +153,8 @@ export class ClaudeSessionHost extends EventEmitter {
         ...(context.description ? { description: context.description } : {}),
       })
     );
-    this.queryProcess = this.queryFactory({
+    const resumeExistingSession = this.options.resume || this.hasStartedQuery;
+    const queryProcess = this.queryFactory({
       prompt: this.input,
       options: {
         cwd: this.options.cwd,
@@ -148,21 +165,23 @@ export class ClaudeSessionHost extends EventEmitter {
         settingSources: this.options.settingSources ?? ["user", "project", "local"],
         permissionMode: "default",
         canUseTool,
-        persistSession: true,
+        persistSession: this.options.persistSession ?? true,
         ...(this.modelValue ? { model: this.modelValue } : {}),
         ...(this.effortValue ? { effort: this.effortValue } : {}),
-        ...(this.options.resume
-          ? { resume: this.options.sessionId, forkSession: false }
-          : { sessionId: this.options.sessionId }),
+        ...(resumeExistingSession
+          ? { resume: this.sessionIdValue, forkSession: false }
+          : { sessionId: this.sessionIdValue }),
       },
     });
+    this.hasStartedQuery = true;
+    this.queryProcess = queryProcess;
     this.emitEvent({
       type: "runtime.started",
       sessionId: this.sessionIdValue,
       cwd: this.options.cwd,
       at: Date.now(),
     });
-    this.streamTask = this.consume();
+    this.streamTask = this.consume(queryProcess);
   }
 
   async setModel(model?: string): Promise<void> {
@@ -194,21 +213,9 @@ export class ClaudeSessionHost extends EventEmitter {
     if (!normalized && attachments.length === 0) throw new Error("Message cannot be empty");
     if (this.closed) throw new Error("Session host is closed");
     if (this.currentTurnId) throw new Error("Session already has a running turn");
-    this.start();
     const messageId = randomUUID();
     const turnId = randomUUID();
     this.currentTurnId = turnId;
-    this.emitEvent({ type: "turn.started", sessionId: this.sessionIdValue, turnId, at: Date.now() });
-    this.emitEvent({
-      type: "user.accepted",
-      sessionId: this.sessionIdValue,
-      turnId,
-      messageId,
-      text: normalized,
-      attachments: attachments.map(({ data: _data, ...attachment }) => attachment),
-      origin,
-      at: Date.now(),
-    });
     const content: Array<Record<string, unknown>> = [];
     if (normalized) content.push({ type: "text", text: normalized });
     for (const attachment of attachments) {
@@ -221,44 +228,93 @@ export class ClaudeSessionHost extends EventEmitter {
         },
       });
     }
-    this.input.push({
+    const userMessage: SDKUserMessage = {
       type: "user",
       message: { role: "user", content } as unknown as SDKUserMessage["message"],
       parent_tool_use_id: null,
       origin: { kind: "human" },
       uuid: messageId,
       session_id: this.sessionIdValue,
+    };
+    const pendingTurn: PendingTurn = {
+      turnId,
+      messageId,
+      userMessage,
+      interrupted: false,
+      submitted: false,
+    };
+    this.pendingTurns.push(pendingTurn);
+    try {
+      if (this.pendingTurns[0] === pendingTurn) this.submitTurn(pendingTurn);
+    } catch (error) {
+      this.input.removePending(userMessage);
+      this.currentTurnId = undefined;
+      const pendingIndex = this.pendingTurns.indexOf(pendingTurn);
+      if (pendingIndex >= 0) this.pendingTurns.splice(pendingIndex, 1);
+      throw error;
+    }
+    this.emitEvent({ type: "turn.started", sessionId: this.sessionIdValue, turnId, at: Date.now() });
+    this.emitEvent({
+      type: "user.accepted",
+      sessionId: this.sessionIdValue,
+      turnId,
+      messageId,
+      text: normalized,
+      attachments: attachments.map(({ data: _data, ...attachment }) => attachment),
+      origin,
+      at: Date.now(),
     });
     return { messageId, turnId };
   }
 
   async interrupt(): Promise<void> {
-    if (!this.queryProcess) return;
-    await this.queryProcess.interrupt();
-    this.emitEvent({
-      type: "turn.interrupted",
-      sessionId: this.sessionIdValue,
-      ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
-      at: Date.now(),
-    });
-    this.currentTurnId = undefined;
+    if (!this.queryProcess || !this.currentTurnId) return;
+    const turnId = this.currentTurnId;
+    const pendingTurn = this.pendingTurns.find((candidate) => candidate.turnId === turnId);
+    if (!pendingTurn) return;
+    pendingTurn.interrupted = true;
+    if (!pendingTurn.submitted) {
+      this.removePendingTurn(pendingTurn);
+      this.currentTurnId = undefined;
+      this.emitInterrupted(turnId);
+      return;
+    }
+    const queryProcess = this.queryProcess;
+    try {
+      const receipt = await queryProcess.interrupt();
+      if (receipt?.still_queued.includes(pendingTurn.messageId)) {
+        const cancellable = queryProcess as Query & {
+          cancelAsyncMessage?(messageId: string): Promise<boolean>;
+        };
+        await cancellable.cancelAsyncMessage?.(pendingTurn.messageId).catch(() => false);
+        await this.retireQuery(pendingTurn, queryProcess);
+      }
+    } catch (error) {
+      if (this.pendingTurns.includes(pendingTurn)) {
+        pendingTurn.interrupted = false;
+        throw error;
+      }
+    }
+    if (this.currentTurnId === turnId) this.currentTurnId = undefined;
+    this.emitInterrupted(turnId);
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     this.input.close();
+    this.pendingTurns.length = 0;
     this.options.permissionBroker.cancelSession(this.sessionIdValue);
     this.queryProcess?.close();
     await this.streamTask?.catch(() => undefined);
     this.emitEvent({ type: "runtime.stopped", sessionId: this.sessionIdValue, at: Date.now() });
   }
 
-  private async consume(): Promise<void> {
+  private async consume(queryProcess: Query): Promise<void> {
     try {
-      for await (const message of this.queryProcess!) this.handleMessage(message);
+      for await (const message of queryProcess) this.handleMessage(message);
     } catch (error) {
-      if (!this.closed) {
+      if (!this.closed && this.queryProcess === queryProcess) {
         this.emitEvent({
           type: "runtime.error",
           sessionId: this.sessionIdValue,
@@ -271,6 +327,7 @@ export class ClaudeSessionHost extends EventEmitter {
 
   private activeQuery(): Query {
     if (this.closed) throw new Error("Session host is closed");
+    if (this.retiring) throw new Error("Session host is retiring its previous writer");
     this.start();
     if (!this.queryProcess) throw new Error("Session host failed to start");
     return this.queryProcess;
@@ -280,13 +337,16 @@ export class ClaudeSessionHost extends EventEmitter {
     if ("session_id" in message && typeof message.session_id === "string") {
       this.sessionIdValue = message.session_id;
     }
-    const turnId = this.currentTurnId;
+    const streamTurn = this.pendingTurns[0];
+    const turnId = streamTurn?.turnId;
+    const drainingInterruptedTurn = streamTurn?.interrupted === true;
     const partial = partialText(message);
     if (partial) {
+      if (!turnId || drainingInterruptedTurn) return;
       this.emitEvent({
         type: "assistant.delta",
         sessionId: this.sessionIdValue,
-        ...(turnId ? { turnId } : {}),
+        turnId,
         itemId: partial.itemId,
         text: partial.text,
         at: Date.now(),
@@ -294,12 +354,13 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "assistant") {
+      if (!turnId || drainingInterruptedTurn) return;
       const text = textBlocks(message.message.content).join("\n\n").trim();
-      if (text) {
+      if (text && !isClaudeTranscriptControlMessage("assistant", text)) {
         this.emitEvent({
           type: "assistant.completed",
           sessionId: this.sessionIdValue,
-          ...(turnId ? { turnId } : {}),
+          turnId,
           itemId: message.uuid,
           text,
           at: Date.now(),
@@ -309,7 +370,7 @@ export class ClaudeSessionHost extends EventEmitter {
         this.emitEvent({
           type: "tool.started",
           sessionId: this.sessionIdValue,
-          ...(turnId ? { turnId } : {}),
+          turnId,
           itemId: tool.id,
           toolName: tool.name,
           input: tool.input,
@@ -319,10 +380,11 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "user" && message.tool_use_result !== undefined) {
+      if (!turnId || drainingInterruptedTurn) return;
       this.emitEvent({
         type: "tool.completed",
         sessionId: this.sessionIdValue,
-        ...(turnId ? { turnId } : {}),
+        turnId,
         itemId: message.parent_tool_use_id ?? message.uuid ?? randomUUID(),
         output: message.tool_use_result,
         at: Date.now(),
@@ -330,10 +392,11 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "tool_progress") {
+      if (!turnId || drainingInterruptedTurn) return;
       this.emitEvent({
         type: "tool.progress",
         sessionId: this.sessionIdValue,
-        ...(turnId ? { turnId } : {}),
+        turnId,
         itemId: message.tool_use_id,
         text: `${message.tool_name} ${Math.round(message.elapsed_time_seconds)}s`,
         at: Date.now(),
@@ -341,6 +404,13 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "result") {
+      const settledTurn = this.pendingTurns.shift();
+      if (!settledTurn) return;
+      if (settledTurn.interrupted) {
+        this.submitDeferredTurn();
+        return;
+      }
+      const settledTurnId = settledTurn.turnId;
       if (
         message.subtype === "success" &&
         !message.is_error &&
@@ -349,7 +419,7 @@ export class ClaudeSessionHost extends EventEmitter {
         this.emitEvent({
           type: "turn.completed",
           sessionId: this.sessionIdValue,
-          ...(turnId ? { turnId } : {}),
+          turnId: settledTurnId,
           result: message.result,
           at: Date.now(),
         });
@@ -357,15 +427,80 @@ export class ClaudeSessionHost extends EventEmitter {
         this.emitEvent({
           type: "turn.failed",
           sessionId: this.sessionIdValue,
-          ...(turnId ? { turnId } : {}),
+          turnId: settledTurnId,
           error: message.subtype === "success"
             ? message.result
             : message.errors.join("\n") || message.subtype,
           at: Date.now(),
         });
       }
-      this.currentTurnId = undefined;
+      if (this.currentTurnId === settledTurnId) this.currentTurnId = undefined;
+      this.submitDeferredTurn();
     }
+  }
+
+  private submitTurn(turn: PendingTurn): void {
+    if (turn.submitted) return;
+    this.input.push(turn.userMessage);
+    try {
+      this.start();
+      turn.submitted = true;
+    } catch (error) {
+      this.input.removePending(turn.userMessage);
+      throw error;
+    }
+  }
+
+  private submitDeferredTurn(): void {
+    const nextTurn = this.pendingTurns[0];
+    if (!nextTurn || nextTurn.submitted) return;
+    try {
+      this.submitTurn(nextTurn);
+    } catch (error) {
+      this.removePendingTurn(nextTurn);
+      if (this.currentTurnId === nextTurn.turnId) this.currentTurnId = undefined;
+      this.emitEvent({
+        type: "turn.failed",
+        sessionId: this.sessionIdValue,
+        turnId: nextTurn.turnId,
+        error: error instanceof Error ? error.message : String(error),
+        at: Date.now(),
+      });
+    }
+  }
+
+  private removePendingTurn(turn: PendingTurn): void {
+    const index = this.pendingTurns.indexOf(turn);
+    if (index >= 0) this.pendingTurns.splice(index, 1);
+  }
+
+  private async retireQuery(turn: PendingTurn, queryProcess: Query): Promise<void> {
+    if (this.queryProcess !== queryProcess) return;
+    const streamTask = this.streamTask;
+    const input = this.input;
+    this.retiring = true;
+    try {
+      input.close();
+      queryProcess.close();
+      await streamTask?.catch(() => undefined);
+    } finally {
+      if (this.queryProcess === queryProcess) {
+        this.queryProcess = undefined;
+        this.streamTask = undefined;
+        this.input = new AsyncInputQueue<SDKUserMessage>();
+      }
+      this.removePendingTurn(turn);
+      this.retiring = false;
+    }
+  }
+
+  private emitInterrupted(turnId: string): void {
+    this.emitEvent({
+      type: "turn.interrupted",
+      sessionId: this.sessionIdValue,
+      turnId,
+      at: Date.now(),
+    });
   }
 
   private emitEvent(event: SessionHostEvent): void {

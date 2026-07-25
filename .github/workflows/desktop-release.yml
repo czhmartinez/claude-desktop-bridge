@@ -14,10 +14,6 @@ jobs:
         include:
           - os: macos-15
             name: macOS
-          - os: windows-latest
-            name: Windows
-          - os: ubuntu-latest
-            name: Linux
     runs-on: ${{ matrix.os }}
     env:
       BRIDGE_RELAY_URL: ${{ vars.BRIDGE_RELAY_URL }}
@@ -28,8 +24,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
       - run: npm ci
       - run: npm run build -w @bridge/protocol
       - run: npm run make -w @bridge/desktop

@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { ModelInfo, Query, SDKControlGetContextUsageResponse, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  ModelInfo,
+  Query,
+  SDKControlGetContextUsageResponse,
+  SDKMessage,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import { ClaudeSessionHost, type SessionHostEvent } from "./claude-session-host.js";
 import { PermissionBroker } from "./permission-broker.js";
 
@@ -9,6 +15,9 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
   private resolveNext: (() => void) | undefined;
   interrupted = false;
   closed = false;
+  holdClose = false;
+  interruptStillQueued: string[] = [];
+  readonly cancelledMessages: string[] = [];
   selectedModel: string | undefined;
   selectedEffort: string | null | undefined;
 
@@ -45,7 +54,12 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
 
   async interrupt(): Promise<{ still_queued: string[] }> {
     this.interrupted = true;
-    return { still_queued: [] };
+    return { still_queued: this.interruptStillQueued };
+  }
+
+  async cancelAsyncMessage(messageId: string): Promise<boolean> {
+    this.cancelledMessages.push(messageId);
+    return true;
   }
 
   async setPermissionMode(): Promise<void> {}
@@ -98,6 +112,11 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
 
   close(): void {
     this.closed = true;
+    if (this.holdClose) return;
+    this.releaseClose();
+  }
+
+  releaseClose(): void {
     this.resolveNext?.();
     this.resolveNext = undefined;
   }
@@ -189,6 +208,62 @@ describe("ClaudeSessionHost", () => {
     await host.close();
   });
 
+  it("withdraws an unconsumed prompt when query startup fails", async () => {
+    const fake = new FakeQuery();
+    const sessionId = randomUUID();
+    let queryCalls = 0;
+    let retryPrompt: AsyncIterable<SDKUserMessage> | undefined;
+    const host = new ClaudeSessionHost({
+      sessionId,
+      cwd: "/tmp/bridge-project",
+      executablePath: "/tmp/claude",
+      environment: { PATH: "/usr/bin" },
+      permissionBroker: new PermissionBroker(),
+      resume: true,
+      queryFactory: ((params) => {
+        queryCalls += 1;
+        if (queryCalls === 1) throw new Error("query startup failed");
+        retryPrompt = params.prompt as AsyncIterable<SDKUserMessage>;
+        return fake as unknown as Query;
+      }) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent((event) => events.push(event));
+
+    expect(() => host.send("stale prompt", "mobile")).toThrow("query startup failed");
+    expect(host.busy).toBe(false);
+    const retry = host.send("retry prompt", "mobile");
+    expect(queryCalls).toBe(2);
+    if (!retryPrompt) throw new Error("Retry query did not receive a prompt iterable");
+    const queued = await retryPrompt[Symbol.asyncIterator]().next();
+    expect(queued.done).toBe(false);
+    expect((queued.value.message.content as Array<{ type: string; text?: string }>))
+      .toEqual([{ type: "text", text: "retry prompt" }]);
+
+    fake.push({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: false,
+      num_turns: 1,
+      result: "Recovered",
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      usage: {} as never,
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: sessionId,
+    });
+    await expect(waitForEvent(events, "turn.completed")).resolves.toMatchObject({
+      type: "turn.completed",
+      turnId: retry.turnId,
+      result: "Recovered",
+    });
+    await host.close();
+  });
+
   it("reports provider API errors as failed turns", async () => {
     const fake = new FakeQuery();
     const sessionId = randomUUID();
@@ -226,6 +301,225 @@ describe("ClaudeSessionHost", () => {
       type: "turn.failed",
       error: "API Error: request exceeded model token limit",
     });
+    await host.close();
+  });
+
+  it("drains an interrupted result before settling an immediate retry", async () => {
+    const fake = new FakeQuery();
+    const sessionId = randomUUID();
+    let prompt: AsyncIterable<SDKUserMessage> | undefined;
+    const host = new ClaudeSessionHost({
+      sessionId,
+      cwd: "/tmp/bridge-project",
+      executablePath: "/tmp/claude",
+      environment: { PATH: "/usr/bin" },
+      permissionBroker: new PermissionBroker(),
+      resume: true,
+      queryFactory: ((params) => {
+        prompt = params.prompt as AsyncIterable<SDKUserMessage>;
+        return fake as unknown as Query;
+      }) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent((event) => events.push(event));
+
+    const interrupted = host.send("continue P2", "mobile");
+    if (!prompt) throw new Error("Query did not receive a prompt iterable");
+    const promptIterator = prompt[Symbol.asyncIterator]();
+    await expect(promptIterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { uuid: interrupted.messageId },
+    });
+    await host.interrupt();
+    const retry = host.send("retry P2", "mobile");
+    let retrySubmitted = false;
+    const retryPrompt = promptIterator.next().then((value) => {
+      retrySubmitted = true;
+      return value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(retrySubmitted).toBe(false);
+    fake.push({
+      type: "assistant",
+      uuid: randomUUID(),
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      message: {
+        id: randomUUID(),
+        type: "message",
+        role: "assistant",
+        model: "<synthetic>",
+        content: [{ type: "text", text: "No response requested.", citations: [] }],
+        stop_reason: "stop_sequence",
+        stop_sequence: "",
+        usage: {} as never,
+      } as never,
+    });
+    fake.push({
+      type: "result",
+      subtype: "error_during_execution",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: true,
+      num_turns: 0,
+      errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],
+      total_cost_usd: 0,
+      usage: {} as never,
+      modelUsage: {},
+      permission_denials: [],
+      stop_reason: null,
+      uuid: randomUUID(),
+      session_id: sessionId,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(events.filter((event) => event.type === "turn.interrupted")).toEqual([
+      expect.objectContaining({ turnId: interrupted.turnId }),
+    ]);
+    expect(events.some((event) => event.type === "assistant.completed")).toBe(false);
+    expect(events.some((event) => event.type === "turn.failed")).toBe(false);
+    expect(host.busy).toBe(true);
+    await expect(retryPrompt).resolves.toMatchObject({
+      done: false,
+      value: { uuid: retry.messageId },
+    });
+
+    fake.push({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: false,
+      num_turns: 1,
+      result: "Done",
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      usage: {} as never,
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: sessionId,
+    });
+    await expect(waitForEvent(events, "turn.completed")).resolves.toMatchObject({
+      type: "turn.completed",
+      turnId: retry.turnId,
+      result: "Done",
+    });
+    expect(host.busy).toBe(false);
+    await host.close();
+  });
+
+  it("retires the writer when an interrupted prompt would otherwise still run", async () => {
+    const firstQuery = new FakeQuery();
+    const secondQuery = new FakeQuery();
+    const prompts: AsyncIterable<SDKUserMessage>[] = [];
+    const queryOptions: Array<Parameters<typeof import("@anthropic-ai/claude-agent-sdk").query>[0]["options"]> = [];
+    let queryCalls = 0;
+    const sessionId = randomUUID();
+    const host = new ClaudeSessionHost({
+      sessionId,
+      cwd: "/tmp/bridge-project",
+      executablePath: "/tmp/claude",
+      environment: { PATH: "/usr/bin" },
+      permissionBroker: new PermissionBroker(),
+      resume: false,
+      queryFactory: ((params) => {
+        prompts.push(params.prompt as AsyncIterable<SDKUserMessage>);
+        queryOptions.push(params.options);
+        return (queryCalls++ === 0 ? firstQuery : secondQuery) as unknown as Query;
+      }) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent((event) => events.push(event));
+
+    const interrupted = host.send("queued old prompt", "mobile");
+    await expect(prompts[0]![Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      done: false,
+      value: { uuid: interrupted.messageId },
+    });
+    firstQuery.interruptStillQueued = [interrupted.messageId];
+    await host.interrupt();
+
+    expect(firstQuery.cancelledMessages).toEqual([interrupted.messageId]);
+    expect(firstQuery.closed).toBe(true);
+    expect(queryCalls).toBe(1);
+    expect(queryOptions[0]).toMatchObject({ sessionId });
+    expect(queryOptions[0]?.resume).toBeUndefined();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "turn.interrupted",
+      turnId: interrupted.turnId,
+    }));
+
+    const retry = host.send("safe retry", "mobile");
+    expect(queryCalls).toBe(2);
+    expect(queryOptions[1]).toMatchObject({ resume: sessionId, forkSession: false });
+    expect(queryOptions[1]?.sessionId).toBeUndefined();
+    await expect(prompts[1]![Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      done: false,
+      value: { uuid: retry.messageId },
+    });
+    secondQuery.push({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: false,
+      num_turns: 1,
+      result: "Retried safely",
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      usage: {} as never,
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: sessionId,
+    });
+    await expect(waitForEvent(events, "turn.completed")).resolves.toMatchObject({
+      type: "turn.completed",
+      turnId: retry.turnId,
+      result: "Retried safely",
+    });
+    await host.close();
+  });
+
+  it("does not start a configuration writer while an interrupted writer retires", async () => {
+    const firstQuery = new FakeQuery();
+    const secondQuery = new FakeQuery();
+    firstQuery.holdClose = true;
+    let queryCalls = 0;
+    let prompt: AsyncIterable<SDKUserMessage> | undefined;
+    const sessionId = randomUUID();
+    const host = new ClaudeSessionHost({
+      sessionId,
+      cwd: "/tmp/bridge-project",
+      executablePath: "/tmp/claude",
+      environment: { PATH: "/usr/bin" },
+      permissionBroker: new PermissionBroker(),
+      resume: true,
+      queryFactory: ((params) => {
+        prompt = params.prompt as AsyncIterable<SDKUserMessage>;
+        return (queryCalls++ === 0 ? firstQuery : secondQuery) as unknown as Query;
+      }) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+
+    const interrupted = host.send("queued prompt", "mobile");
+    if (!prompt) throw new Error("Query did not receive a prompt iterable");
+    await expect(prompt[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { uuid: interrupted.messageId },
+    });
+    firstQuery.interruptStillQueued = [interrupted.messageId];
+    const interrupting = host.interrupt();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(firstQuery.closed).toBe(true);
+    expect(() => host.start()).toThrow(/retiring its previous writer/u);
+    await expect(host.supportedModels()).rejects.toThrow(/retiring its previous writer/u);
+    expect(queryCalls).toBe(1);
+
+    firstQuery.releaseClose();
+    await interrupting;
+    host.send("safe retry", "mobile");
+    expect(queryCalls).toBe(2);
     await host.close();
   });
 

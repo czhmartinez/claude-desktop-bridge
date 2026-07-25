@@ -160,6 +160,13 @@ describe.skipIf(!runRealM0)("ClaudeSessionHost real M0 gate", () => {
     await waitForEvent(resumedEvents, interruptIndex, "tool.started");
     await resumedHost.interrupt();
     await waitForEvent(resumedEvents, interruptIndex, "turn.interrupted");
+    const retryIndex = resumedEvents.length;
+    resumedHost.send(
+      "Reply with exactly BRIDGE_M0_AFTER_INTERRUPT. Do not use tools.",
+      "mobile",
+    );
+    const retried = await waitForCompletion(resumedEvents, retryIndex);
+    expect(retried.result).toContain("BRIDGE_M0_AFTER_INTERRUPT");
     await resumedHost.close();
 
     const transcript = await findClaudeTranscriptFile(
@@ -172,6 +179,7 @@ describe.skipIf(!runRealM0)("ClaudeSessionHost real M0 gate", () => {
     expect(raw).toContain("BRIDGE_M0_ONE");
     expect(raw).toContain("BRIDGE_M0_TWO");
     expect(raw).toContain("BRIDGE_M0_RESUMED");
+    expect(raw).toContain("BRIDGE_M0_AFTER_INTERRUPT");
     const after = await desktopState();
     if (strictDesktopState) {
       expect(after).toEqual(before);
