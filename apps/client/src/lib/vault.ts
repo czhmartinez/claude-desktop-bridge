@@ -1,5 +1,6 @@
 import {
   BridgeCrypto,
+  PROTOCOL_VERSION,
   bridgeEndpoint,
   cryptoWithRelayEndpoint,
   normalizeBridgeIceServers,
@@ -14,7 +15,7 @@ import {
 } from "@bridge/protocol";
 
 const DATABASE_NAME = "claude-bridge";
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const LEGACY_IDENTITY_KEY = "current";
 const HOST_KEY_PREFIX = "host:";
 const MESSAGE_LIMIT = 5_000;
@@ -37,6 +38,8 @@ interface StoredMessage {
 }
 
 export interface StoredBridgeHost {
+  hostId: string;
+  pairingEpoch: number;
   roomId: string;
   desktopName: string;
   relayUrl: string;
@@ -46,6 +49,7 @@ export interface StoredBridgeHost {
   iceServers: BridgeIceServer[];
   migratedAt?: number;
   updatedAt: number;
+  needsRepair: boolean;
   crypto: BridgeCrypto;
 }
 
@@ -100,8 +104,8 @@ function transportForStored(stored: StoredCrypto): {
   };
 }
 
-function hostKey(roomId: string): string {
-  return `${HOST_KEY_PREFIX}${roomId}`;
+function hostKey(hostId: string): string {
+  return `${HOST_KEY_PREFIX}${hostId}`;
 }
 
 function isStoredCrypto(value: unknown): value is StoredCrypto {
@@ -153,9 +157,87 @@ export class BridgeVault {
   async importPairing(pairing: PairingBundle): Promise<BridgeCrypto> {
     const crypto = await BridgeCrypto.fromPairing(pairing);
     const database = await this.open();
-    const transaction = database.transaction("identity", "readwrite");
-    transaction.objectStore("identity").put({
-      key: hostKey(crypto.identity.roomId),
+    const readTransaction = database.transaction(["identity", "messages", "outbox"], "readonly");
+    const storedIdentities = await requestResult(
+      readTransaction.objectStore("identity").getAll(),
+    ) as unknown[];
+    const storedMessages = await requestResult(
+      readTransaction.objectStore("messages").getAll(),
+    ) as StoredMessage[];
+    const storedOutbox = await requestResult(
+      readTransaction.objectStore("outbox").getAll(),
+    ) as StoredMessage[];
+    await transactionDone(readTransaction);
+    const replacedRooms = new Set<string>();
+    const migratedPayloads: Array<{
+      payload: Parameters<BridgeCrypto["encrypt"]>[0];
+      from: Parameters<BridgeCrypto["encrypt"]>[1];
+      to: Parameters<BridgeCrypto["encrypt"]>[2];
+      sentAt: number;
+    }> = [];
+    for (const stored of storedIdentities.filter(isStoredCrypto)) {
+      let matchesHost = stored.identity.hostId === pairing.hostId;
+      const legacyCrypto = new BridgeCrypto({
+        identity: stored.identity,
+        encryptionKey: stored.encryptionKey,
+      });
+      const roomMessages = storedMessages.filter((message) => (
+        message.envelope.roomId === stored.identity.roomId
+      ));
+      const decrypted = await Promise.allSettled(
+        roomMessages.map((message) => legacyCrypto.decrypt(message.envelope)),
+      );
+      for (const result of decrypted) {
+        if (result.status !== "fulfilled") continue;
+        if (
+          result.value.payload.kind === "snapshot" &&
+          result.value.payload.snapshot.host.hostId === pairing.hostId
+        ) matchesHost = true;
+      }
+      if (!matchesHost) continue;
+      replacedRooms.add(stored.identity.roomId);
+      for (const result of decrypted) {
+        if (result.status !== "fulfilled") continue;
+        if (
+          result.value.payload.kind !== "snapshot" &&
+          result.value.payload.kind !== "event" &&
+          result.value.payload.kind !== "request" &&
+          result.value.payload.kind !== "response"
+        ) continue;
+        migratedPayloads.push({
+          payload: result.value.payload,
+          from: result.value.header.from,
+          to: result.value.header.to,
+          sentAt: result.value.header.sentAt,
+        });
+      }
+    }
+    const reencrypted = await Promise.all(migratedPayloads.map((message, index) => (
+      crypto.encrypt(
+        message.payload,
+        message.from,
+        message.to,
+        Date.now() - migratedPayloads.length + index,
+        7 * 24 * 60 * 60 * 1_000,
+        message.to === "mobile" ? crypto.identity.deviceId : undefined,
+      )
+    )));
+    const transaction = database.transaction(["identity", "messages", "outbox"], "readwrite");
+    const identityStore = transaction.objectStore("identity");
+    for (const stored of storedIdentities.filter(isStoredCrypto)) {
+      if (replacedRooms.has(stored.identity.roomId)) identityStore.delete(stored.key);
+    }
+    for (const storeName of ["messages", "outbox"] as const) {
+      const store = transaction.objectStore(storeName);
+      const records = storeName === "messages"
+        ? storedMessages
+        : storedOutbox;
+      for (const record of records) {
+        if (replacedRooms.has(record.envelope.roomId)) store.delete(record.id);
+      }
+    }
+    identityStore.put({
+      key: hostKey(pairing.hostId),
       identity: crypto.identity,
       encryptionKey: crypto.encryptionKey,
       serviceOrigin: pairing.serviceOrigin,
@@ -164,6 +246,10 @@ export class BridgeVault {
       iceServers: pairing.iceServers,
       updatedAt: Date.now(),
     } satisfies StoredCrypto);
+    const messageStore = transaction.objectStore("messages");
+    for (const envelope of reencrypted) {
+      messageStore.put({ id: envelope.id, envelope } satisfies StoredMessage);
+    }
     await transactionDone(transaction);
     return crypto;
   }
@@ -174,7 +260,8 @@ export class BridgeVault {
     const records = await requestResult(transaction.objectStore("identity").getAll()) as unknown[];
     const hosts = new Map<string, StoredBridgeHost>();
     for (const stored of records.filter(isStoredCrypto)) {
-      const existing = hosts.get(stored.identity.roomId);
+      const stableHostId = stored.identity.hostId ?? stored.identity.roomId;
+      const existing = hosts.get(stableHostId);
       const updatedAt = stored.updatedAt ?? 0;
       if (existing && existing.updatedAt > updatedAt) continue;
       const transport = transportForStored(stored);
@@ -182,7 +269,9 @@ export class BridgeVault {
         new BridgeCrypto({ identity: stored.identity, encryptionKey: stored.encryptionKey }),
         transport.relayUrl,
       );
-      hosts.set(stored.identity.roomId, {
+      hosts.set(stableHostId, {
+        hostId: stableHostId,
+        pairingEpoch: stored.identity.pairingEpoch ?? 0,
         roomId: stored.identity.roomId,
         desktopName: stored.identity.desktopName,
         relayUrl: transport.relayUrl,
@@ -192,6 +281,11 @@ export class BridgeVault {
         iceServers: transport.iceServers,
         ...(stored.migratedAt !== undefined ? { migratedAt: stored.migratedAt } : {}),
         updatedAt,
+        needsRepair: (
+          stored.identity.version !== PROTOCOL_VERSION ||
+          !stored.identity.hostId ||
+          !stored.identity.pairingEpoch
+        ),
         crypto,
       });
     }
@@ -203,14 +297,16 @@ export class BridgeVault {
     const transaction = database.transaction("identity", "readwrite");
     const store = transaction.objectStore("identity");
     const legacy = await requestResult(store.get(LEGACY_IDENTITY_KEY)) as StoredCrypto | undefined;
-    const current = await requestResult(store.get(hostKey(crypto.identity.roomId))) as StoredCrypto | undefined;
+    const current = await requestResult(
+      store.get(hostKey(crypto.identity.hostId ?? crypto.identity.roomId)),
+    ) as StoredCrypto | undefined;
     const transport = transportForStored(current ?? {
-      key: hostKey(crypto.identity.roomId),
+      key: hostKey(crypto.identity.hostId ?? crypto.identity.roomId),
       identity: crypto.identity,
       encryptionKey: crypto.encryptionKey,
     });
     store.put({
-      key: hostKey(crypto.identity.roomId),
+      key: hostKey(crypto.identity.hostId ?? crypto.identity.roomId),
       identity: { ...crypto.identity, relayUrl: transport.relayUrl },
       encryptionKey: crypto.encryptionKey,
       serviceOrigin: transport.serviceOrigin,
@@ -232,7 +328,10 @@ export class BridgeVault {
     const database = await this.open();
     const transaction = database.transaction("identity", "readwrite");
     const store = transaction.objectStore("identity");
-    const record = await requestResult(store.get(hostKey(roomId))) as StoredCrypto | undefined;
+    const records = await requestResult(store.getAll()) as unknown[];
+    const record = records
+      .filter(isStoredCrypto)
+      .find((candidate) => candidate.identity.roomId === roomId);
     if (!record) {
       await transactionDone(transaction);
       return undefined;
@@ -245,6 +344,7 @@ export class BridgeVault {
     }
     store.put({
       ...record,
+      key: hostKey(record.identity.hostId ?? record.identity.roomId),
       identity: { ...record.identity, relayUrl: selected.url },
       serviceOrigin: transport.serviceOrigin,
       relayEndpoints: transport.relayEndpoints,

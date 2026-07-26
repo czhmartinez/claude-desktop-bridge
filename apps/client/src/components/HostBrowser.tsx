@@ -7,7 +7,7 @@ import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
 
 function statusLabel(host: PairedHost): string {
-  if (host.needsRepair) return "需要升级";
+  if (host.needsRepair) return "需要重新配对";
   if (host.status === "running") return `${host.activeTurns} 个任务运行中`;
   if (host.status === "attention") return "需要处理";
   if (host.status === "offline") return "离线";
@@ -38,6 +38,7 @@ export function HostBrowser({
   onSelect,
   onRemove,
   onAdd,
+  onRepair,
 }: {
   hosts: PairedHost[];
   error?: string | undefined;
@@ -46,6 +47,7 @@ export function HostBrowser({
   onSelect(roomId: string, focusSessionId?: string): Promise<void>;
   onRemove(roomId: string): Promise<void>;
   onAdd(): void;
+  onRepair(): void;
 }) {
   const [openingHostId, setOpeningHostId] = useState<string>();
   const [removeCandidate, setRemoveCandidate] = useState<PairedHost>();
@@ -56,6 +58,10 @@ export function HostBrowser({
     setOpeningHostId(roomId);
     try {
       const host = hosts.find((candidate) => candidate.roomId === roomId);
+      if (host?.needsRepair) {
+        onRepair();
+        return;
+      }
       await onSelect(roomId, host?.attentionSessionId);
     } finally {
       setOpeningHostId(undefined);

@@ -1,7 +1,7 @@
 import { BridgeCrypto } from "./crypto.js";
 import { decodeUtf8, fromBase64Url, randomId, toBase64Url, utf8 } from "./encoding.js";
 import type { DeviceRegistrationOptions, SendOptions, SocketState } from "./socket.js";
-import { MAX_ENVELOPE_CHUNKS } from "./types.js";
+import { MAX_ENVELOPE_CHUNKS, PROTOCOL_VERSION } from "./types.js";
 import type {
   BridgePayload,
   BridgePeerSignalPayload,
@@ -101,6 +101,7 @@ function sameChunkTransfer(left: EncryptedEnvelopeChunk, right: EncryptedEnvelop
     left.toDeviceId === right.toDeviceId &&
     left.sentAt === right.sentAt &&
     left.expiresAt === right.expiresAt &&
+    left.temporary === right.temporary &&
     left.total === right.total &&
     left.sha256 === right.sha256
   );
@@ -268,6 +269,7 @@ export class WebRtcTransport implements BridgeTransport {
       Date.now(),
       options.ttlMs,
       options.toDeviceId,
+      options.temporary,
     );
     await this.sendEnvelope(envelope);
     return envelope.id;
@@ -661,6 +663,9 @@ export class WebRtcTransport implements BridgeTransport {
   ): Promise<void> {
     const channel = peer.channel;
     if (!channel || channel.readyState !== "open") throw new Error("Direct channel is unavailable");
+    if (envelope.version !== PROTOCOL_VERSION) {
+      throw new Error(`Cannot send protocol V${envelope.version} envelope over a V${PROTOCOL_VERSION} channel`);
+    }
     const serialized = utf8(JSON.stringify(envelope));
     if (serialized.byteLength <= DIRECT_CHUNK_BYTES) {
       await this.sendWire(channel, { type: "envelope", envelope });
@@ -674,7 +679,7 @@ export class WebRtcTransport implements BridgeTransport {
       throw new Error("Encrypted envelope is too large for the direct channel");
     }
     const manifest: EnvelopeChunkManifest = {
-      version: envelope.version,
+      version: PROTOCOL_VERSION,
       transferId: envelope.id,
       roomId: envelope.roomId,
       from: envelope.from,
@@ -683,6 +688,7 @@ export class WebRtcTransport implements BridgeTransport {
       ...(envelope.toDeviceId ? { toDeviceId: envelope.toDeviceId } : {}),
       sentAt: envelope.sentAt,
       expiresAt: envelope.expiresAt,
+      ...(envelope.temporary ? { temporary: true } : {}),
       total,
       sha256: digest,
     };
@@ -842,7 +848,8 @@ export class WebRtcTransport implements BridgeTransport {
       envelope.to !== chunk.to ||
       envelope.toDeviceId !== chunk.toDeviceId ||
       envelope.sentAt !== chunk.sentAt ||
-      envelope.expiresAt !== chunk.expiresAt
+      envelope.expiresAt !== chunk.expiresAt ||
+      envelope.temporary !== chunk.temporary
     ) return undefined;
     return envelope;
   }

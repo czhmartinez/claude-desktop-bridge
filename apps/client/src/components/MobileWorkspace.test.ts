@@ -1,6 +1,149 @@
-import type { BridgeEvent, BridgePermissionInfo } from "@bridge/protocol";
+import type {
+  BridgeEvent,
+  BridgeEvidenceBundle,
+  BridgeHistoryItem,
+  BridgePermissionInfo,
+  BridgeSessionInfo,
+} from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
-import { conversationItems, permissionPresentation } from "./MobileWorkspace.js";
+import {
+  conversationItems,
+  conversationTimeline,
+  ownershipLabel,
+  permissionPresentation,
+} from "./MobileWorkspace.js";
+
+function evidence(
+  id: string,
+  turnId: string,
+  state: BridgeEvidenceBundle["state"],
+  startedAt: number,
+): BridgeEvidenceBundle {
+  return {
+    id,
+    sessionId: "session-1",
+    turnId,
+    source: "claude-desktop",
+    confidence: "inferred",
+    state,
+    startedAt,
+    ...(state === "collecting" ? {} : { completedAt: startedAt + 1 }),
+    toolCount: 1,
+    changeCount: 0,
+    artifactCount: 0,
+    tools: [],
+    artifacts: [],
+    warnings: [],
+  };
+}
+
+describe("ownershipLabel", () => {
+  it("identifies an active observed Claude session as Desktop running", () => {
+    const session: BridgeSessionInfo = {
+      sessionId: "session-1",
+      projectId: "project-1",
+      projectName: "Project",
+      cwd: "/tmp/project",
+      title: "Task",
+      source: "desktop",
+      ownership: "DESKTOP_OBSERVED",
+      transport: "bridge-host",
+      turnState: "running",
+      lastActivityAt: 1,
+      pendingCount: 0,
+    };
+
+    expect(ownershipLabel(session)).toBe("桌面运行中");
+  });
+});
+
+describe("conversationTimeline", () => {
+  it("anchors archived Desktop evidence to its completed turn instead of the active tail", () => {
+    const items: BridgeHistoryItem[] = [
+      {
+        id: "desktop-user-1",
+        sessionId: "session-1",
+        role: "user",
+        text: "First task",
+        createdAt: 1,
+        origin: "claude-desktop",
+      },
+      {
+        id: "desktop-assistant-1",
+        sessionId: "session-1",
+        role: "assistant",
+        text: "First result",
+        createdAt: 2,
+        origin: "claude-desktop",
+      },
+      {
+        id: "desktop-user-2",
+        sessionId: "session-1",
+        role: "user",
+        text: "Current task",
+        createdAt: 3,
+        origin: "claude-desktop",
+      },
+      {
+        id: "current-tool",
+        sessionId: "session-1",
+        role: "tool",
+        text: "Running",
+        createdAt: 4,
+        origin: "claude-host",
+      },
+    ];
+
+    const timeline = conversationTimeline(items, [
+      evidence("current", "desktop-user-2", "collecting", 4),
+      evidence("archived", "desktop-user-1", "ready", 2),
+      evidence("unmatched", "not-loaded", "ready", 0),
+    ]);
+
+    expect(timeline.map((entry) => (
+      entry.kind === "message" ? entry.item.id : `evidence:${entry.evidence.id}`
+    ))).toEqual([
+      "desktop-user-1",
+      "desktop-assistant-1",
+      "evidence:archived",
+      "desktop-user-2",
+      "current-tool",
+    ]);
+  });
+
+  it("uses the newest terminal summary when a Bridge turn has duplicate evidence", () => {
+    const items: BridgeHistoryItem[] = [
+      {
+        id: "user-1",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        role: "user",
+        text: "Run",
+        createdAt: 1,
+        origin: "mobile",
+      },
+      {
+        id: "assistant-1",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        role: "assistant",
+        text: "Done",
+        createdAt: 2,
+        origin: "claude-host",
+      },
+    ];
+
+    const timeline = conversationTimeline(items, [
+      evidence("older", "turn-1", "failed", 1),
+      evidence("newer", "turn-1", "ready", 3),
+    ]);
+
+    expect(timeline.at(-1)).toMatchObject({
+      kind: "evidence",
+      evidence: { id: "newer" },
+    });
+  });
+});
 
 describe("conversationItems", () => {
   it("does not render Claude interruption and resume sentinels from cached history or events", () => {

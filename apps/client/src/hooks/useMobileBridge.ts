@@ -12,10 +12,14 @@ import {
   type BridgeDeliveryState,
   type BridgeEndpoint,
   type BridgeEffort,
+  type BridgeEvidenceBundle,
+  type BridgeEvidencePage,
   type BridgeEvent,
   type BridgeHistoryPage,
   type BridgeHostSnapshot,
   type BridgePayload,
+  type BridgeArtifactManifest,
+  type BridgeArtifactPreview,
   type BridgePermissionInfo,
   type BridgeRequest,
   type BridgeResponse,
@@ -34,9 +38,11 @@ import {
 import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeVault, type StoredBridgeHost } from "../lib/vault.js";
+import { downloadBridgeArtifact } from "../lib/artifact-download.js";
 import { nativePushRegistration, onNativePushWake } from "../lib/push-wake.js";
 
 export interface PairedHost {
+  hostId: string;
   roomId: string;
   desktopName: string;
   relayUrl: string;
@@ -56,6 +62,13 @@ export interface MobileConnectionIssue {
 export interface SessionHistoryState {
   status: "idle" | "loading" | "ready" | "error";
   items: BridgeHistoryPage["items"];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+export interface SessionEvidenceState {
+  status: "idle" | "loading" | "ready" | "error";
+  items: BridgeEvidenceBundle[];
   nextCursor?: string;
   hasMore: boolean;
 }
@@ -88,6 +101,9 @@ interface MobileBridgeState {
   permissions: BridgePermissionInfo[];
   focusSessionId: string | undefined;
   histories: Record<string, SessionHistoryState>;
+  evidence: Record<string, SessionEvidenceState>;
+  artifactPreviews: Record<string, BridgeArtifactPreview>;
+  artifactTransfers: Record<string, number>;
   events: BridgeEvent[];
   localTurns: LocalTurn[];
   latestSeq: number;
@@ -108,6 +124,9 @@ const INITIAL_STATE: MobileBridgeState = {
   permissions: [],
   focusSessionId: undefined,
   histories: {},
+  evidence: {},
+  artifactPreviews: {},
+  artifactTransfers: {},
   events: [],
   localTurns: [],
   latestSeq: 0,
@@ -116,6 +135,8 @@ const INITIAL_STATE: MobileBridgeState = {
   pendingOutbound: 0,
   error: undefined,
 };
+
+const LOCAL_EVIDENCE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 function isLoopbackRelay(value: string): boolean {
   try {
@@ -134,7 +155,8 @@ function relayIssue(code: string, fallback: string): MobileConnectionIssue {
     code === "AUTH_FAILED" ||
     code === "ROOM_NOT_FOUND" ||
     code === "PAIRING_EXPIRED" ||
-    code === "PAIRING_ALREADY_USED"
+    code === "PAIRING_ALREADY_USED" ||
+    code === "UPGRADE_REQUIRED"
   ) {
     return {
       code: "pairing-invalid",
@@ -165,10 +187,14 @@ function hostSummary(
   const activeEndpoint = host.relayEndpoints.find((endpoint) => endpoint.id === host.activeEndpoint)
     ?? host.relayEndpoints[0];
   return {
+    hostId: host.hostId,
     roomId: host.roomId,
     desktopName: host.desktopName,
     relayUrl: host.relayUrl,
-    needsRepair: Capacitor.isNativePlatform() && host.relayEndpoints.every((endpoint) => isLoopbackRelay(endpoint.url)),
+    needsRepair: host.needsRepair || (
+      Capacitor.isNativePlatform() &&
+      host.relayEndpoints.every((endpoint) => isLoopbackRelay(endpoint.url))
+    ),
     status: hostStatus(snapshot, permissions),
     activeTurns: snapshot?.runtime.activeTurns ?? 0,
     path: activeEndpoint?.kind ?? "lan-relay",
@@ -258,6 +284,61 @@ export function mergeBridgeEvents(current: BridgeEvent[], incoming: BridgeEvent[
   return [...merged.values()]
     .sort((left, right) => left.seq - right.seq)
     .slice(-2_000);
+}
+
+function evidenceFromEvent(event: BridgeEvent): BridgeEvidenceBundle | undefined {
+  if (!event.type.startsWith("evidence.")) return undefined;
+  const value = event.data.evidence;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const evidence = value as Partial<BridgeEvidenceBundle>;
+  if (
+    typeof evidence.id !== "string" ||
+    typeof evidence.sessionId !== "string" ||
+    !Array.isArray(evidence.tools) ||
+    !Array.isArray(evidence.artifacts)
+  ) return undefined;
+  return evidence as BridgeEvidenceBundle;
+}
+
+function previewFromResponse(response: BridgeResponse): BridgeArtifactPreview | undefined {
+  if (!response.ok || !response.result || typeof response.result !== "object") return undefined;
+  const preview = (response.result as { preview?: unknown }).preview;
+  if (!preview || typeof preview !== "object" || Array.isArray(preview)) return undefined;
+  const value = preview as Partial<BridgeArtifactPreview>;
+  if (
+    typeof value.artifactId !== "string" ||
+    typeof value.mimeType !== "string" ||
+    typeof value.data !== "string" ||
+    (value.encoding !== "utf8" && value.encoding !== "base64")
+  ) return undefined;
+  return value as BridgeArtifactPreview;
+}
+
+function evidencePageFromResponse(response: BridgeResponse): BridgeEvidencePage | undefined {
+  if (!response.ok || !response.result || typeof response.result !== "object") return undefined;
+  const evidence = (response.result as { evidence?: unknown }).evidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return undefined;
+  const value = evidence as Partial<BridgeEvidencePage>;
+  if (typeof value.sessionId !== "string" || !Array.isArray(value.items)) return undefined;
+  return value as BridgeEvidencePage;
+}
+
+function shouldExtendLocalEvidenceCache(payload: BridgePayload): boolean {
+  if (payload.kind === "event") return payload.event.type.startsWith("evidence.");
+  return payload.kind === "response" && Boolean(
+    previewFromResponse(payload) || evidencePageFromResponse(payload),
+  );
+}
+
+function mergeEvidence(
+  current: BridgeEvidenceBundle[],
+  incoming: BridgeEvidenceBundle[],
+): BridgeEvidenceBundle[] {
+  const merged = new Map(current.map((item) => [item.id, item]));
+  for (const item of incoming) merged.set(item.id, item);
+  return [...merged.values()].sort((left, right) => (
+    right.startedAt - left.startedAt || right.id.localeCompare(left.id)
+  ));
 }
 
 function permissionFromEvent(event: BridgeEvent): BridgePermissionInfo | undefined {
@@ -417,6 +498,8 @@ async function readStoredHostState(crypto: BridgeCrypto): Promise<{
   snapshot?: BridgeHostSnapshot;
   permissions: BridgePermissionInfo[];
   events: BridgeEvent[];
+  evidence: Record<string, SessionEvidenceState>;
+  artifactPreviews: Record<string, BridgeArtifactPreview>;
   localTurns: LocalTurn[];
   latestSeq: number;
 }> {
@@ -493,10 +576,45 @@ async function readStoredHostState(crypto: BridgeCrypto): Promise<{
     }
   }
   const storedSnapshot = snapshotWithPermissions(replayedSnapshot, permissions);
+  const evidence = events.reduce<Record<string, SessionEvidenceState>>((result, event) => {
+    const item = evidenceFromEvent(event);
+    if (!item) return result;
+    const current = result[item.sessionId] ?? {
+      status: "ready" as const,
+      items: [],
+      hasMore: false,
+    };
+    result[item.sessionId] = {
+      ...current,
+      items: mergeEvidence(current.items, [item]),
+    };
+    return result;
+  }, {});
+  const artifactPreviews: Record<string, BridgeArtifactPreview> = {};
+  for (const message of messages) {
+    if (!isBridgeResponse(message.payload)) continue;
+    const preview = previewFromResponse(message.payload);
+    if (preview) artifactPreviews[preview.artifactId] = preview;
+    const page = evidencePageFromResponse(message.payload);
+    if (!page) continue;
+    const current = evidence[page.sessionId] ?? {
+      status: "ready" as const,
+      items: [],
+      hasMore: page.hasMore,
+    };
+    evidence[page.sessionId] = {
+      status: "ready",
+      items: mergeEvidence(current.items, page.items),
+      hasMore: current.hasMore || page.hasMore,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    };
+  }
   return {
     ...(storedSnapshot ? { snapshot: storedSnapshot } : {}),
     permissions,
     events,
+    evidence,
+    artifactPreviews,
     localTurns: appliedTurns,
     latestSeq: Math.max(snapshotSeq, ...events.map((event) => event.seq), 0),
   };
@@ -598,11 +716,27 @@ export function useMobileBridge() {
       setState((current) => {
         const permissions = applyPermissionEvent(current.permissions, payload.event);
         const snapshot = applyEventToSnapshot(current.snapshot, payload.event, permissions);
+        const evidenceItem = evidenceFromEvent(payload.event);
+        const evidence = evidenceItem ? {
+          ...current.evidence,
+          [evidenceItem.sessionId]: {
+            status: "ready" as const,
+            items: mergeEvidence(
+              current.evidence[evidenceItem.sessionId]?.items ?? [],
+              [evidenceItem],
+            ),
+            hasMore: current.evidence[evidenceItem.sessionId]?.hasMore ?? false,
+            ...(current.evidence[evidenceItem.sessionId]?.nextCursor
+              ? { nextCursor: current.evidence[evidenceItem.sessionId]!.nextCursor }
+              : {}),
+          },
+        } : current.evidence;
         return {
           ...current,
           snapshot,
           permissions,
           events: mergeBridgeEvents(current.events, [payload.event]),
+          evidence,
           localTurns: applyEventToTurns(current.localTurns, payload.event),
           latestSeq: Math.max(current.latestSeq, payload.event.seq),
           hosts: current.hosts.map((host) => host.roomId === crypto.identity.roomId
@@ -753,16 +887,32 @@ export function useMobileBridge() {
         let turns = current.localTurns;
         let permissions = current.permissions;
         let snapshot = current.snapshot;
+        let evidence = current.evidence;
         for (const event of events) {
           turns = applyEventToTurns(turns, event);
           permissions = applyPermissionEvent(permissions, event);
           snapshot = applyEventToSnapshot(snapshot, event, permissions);
+          const item = evidenceFromEvent(event);
+          if (item) {
+            evidence = {
+              ...evidence,
+              [item.sessionId]: {
+                status: "ready",
+                items: mergeEvidence(evidence[item.sessionId]?.items ?? [], [item]),
+                hasMore: evidence[item.sessionId]?.hasMore ?? false,
+                ...(evidence[item.sessionId]?.nextCursor
+                  ? { nextCursor: evidence[item.sessionId]!.nextCursor }
+                  : {}),
+              },
+            };
+          }
         }
         return {
           ...current,
           snapshot,
           permissions,
           events: mergeBridgeEvents(current.events, events),
+          evidence,
           localTurns: turns,
           latestSeq: Math.max(current.latestSeq, cursor),
           hosts: current.hosts.map((host) => host.roomId === current.activeHostId
@@ -802,6 +952,9 @@ export function useMobileBridge() {
       permissions: [],
       focusSessionId,
       histories: {},
+      evidence: {},
+      artifactPreviews: {},
+      artifactTransfers: {},
       events: [],
       localTurns: [],
       latestSeq: 0,
@@ -819,6 +972,8 @@ export function useMobileBridge() {
       snapshot: stored.snapshot,
       permissions: stored.permissions,
       events: stored.events,
+      evidence: stored.evidence,
+      artifactPreviews: stored.artifactPreviews,
       localTurns: stored.localTurns,
       latestSeq: stored.latestSeq,
       pendingOutbound,
@@ -959,7 +1114,17 @@ export function useMobileBridge() {
     socket.onMessage((message, encrypted) => {
       if (!isCurrent()) return;
       void (async () => {
-        await bridgeVault.saveMessage(encrypted);
+        const cachedEnvelope = shouldExtendLocalEvidenceCache(message.payload)
+          ? await crypto.encrypt(
+              message.payload,
+              message.header.from,
+              message.header.to,
+              Date.now(),
+              LOCAL_EVIDENCE_CACHE_TTL_MS,
+              message.header.to === "mobile" ? crypto.identity.deviceId : undefined,
+            )
+          : encrypted;
+        await bridgeVault.saveMessage(cachedEnvelope);
         socket.ack([encrypted.id]);
         const event = message.payload.kind === "event" ? message.payload.event : undefined;
         const isNewPermission = Boolean(
@@ -1072,6 +1237,8 @@ export function useMobileBridge() {
       const crypto = await bridgeVault.importPairing(pairing);
       cryptoByRoomRef.current.set(crypto.identity.roomId, crypto);
       const nextHost = hostSummary({
+        hostId: pairing.hostId,
+        pairingEpoch: pairing.pairingEpoch,
         roomId: crypto.identity.roomId,
         desktopName: crypto.identity.desktopName,
         relayUrl: crypto.identity.relayUrl,
@@ -1080,12 +1247,13 @@ export function useMobileBridge() {
         activeEndpoint: pairing.activeEndpoint,
         iceServers: pairing.iceServers,
         updatedAt: Date.now(),
+        needsRepair: false,
         crypto,
       });
       setState((current) => ({
         ...current,
         loading: false,
-        hosts: [nextHost, ...current.hosts.filter((host) => host.roomId !== nextHost.roomId)],
+        hosts: [nextHost, ...current.hosts.filter((host) => host.hostId !== nextHost.hostId)],
       }));
       await start(crypto, true);
       return true;
@@ -1109,6 +1277,14 @@ export function useMobileBridge() {
       crypto = cryptoByRoomRef.current.get(roomId);
     }
     if (!crypto) throw new Error("Paired host not found");
+    const storedHost = await bridgeVault.getHost(roomId);
+    if (storedHost?.needsRepair) {
+      setState((current) => ({
+        ...current,
+        error: "V0.4.0 已轮换安全密钥，请在电脑端重新生成二维码。",
+      }));
+      return;
+    }
     await bridgeVault.touchHost(crypto).catch(() => undefined);
     await start(crypto, false, focusSessionId);
   }, [start]);
@@ -1128,6 +1304,9 @@ export function useMobileBridge() {
       permissions: [],
       focusSessionId: undefined,
       histories: {},
+      evidence: {},
+      artifactPreviews: {},
+      artifactTransfers: {},
       events: [],
       localTurns: [],
       latestSeq: 0,
@@ -1148,14 +1327,34 @@ export function useMobileBridge() {
           ...(current.histories[sessionId]?.nextCursor
             ? { nextCursor: current.histories[sessionId].nextCursor }
             : {}),
+          },
+        },
+      evidence: {
+        ...current.evidence,
+        [sessionId]: {
+          status: "loading",
+          items: current.evidence[sessionId]?.items ?? [],
+          hasMore: current.evidence[sessionId]?.hasMore ?? false,
+          ...(current.evidence[sessionId]?.nextCursor
+            ? { nextCursor: current.evidence[sessionId]!.nextCursor }
+            : {}),
         },
       },
     }));
     try {
-      const response = await sendRequest("session.open", { sessionId }, { wait: true });
+      const [response, evidenceResponse] = await Promise.all([
+        sendRequest("session.open", { sessionId }, { wait: true }),
+        sendRequest("evidence.list", { sessionId, limit: 30 }, {
+          wait: true,
+          timeoutMs: 45_000,
+        }).catch(() => undefined),
+      ]);
       if (!response?.ok) throw new Error(response?.error?.message ?? "会话打开失败");
       const result = response.result as { history?: BridgeHistoryPage; session?: BridgeSessionInfo };
       if (!result.history) throw new Error("电脑未返回会话历史");
+      const evidenceResult = evidenceResponse?.ok
+        ? evidenceResponse.result as { evidence?: BridgeEvidencePage }
+        : undefined;
       setState((current) => ({
         ...current,
         histories: {
@@ -1165,6 +1364,24 @@ export function useMobileBridge() {
             items: result.history!.items,
             hasMore: result.history!.hasMore,
             ...(result.history!.nextCursor ? { nextCursor: result.history!.nextCursor } : {}),
+          },
+        },
+        evidence: {
+          ...current.evidence,
+          [sessionId]: evidenceResult?.evidence ? {
+            status: "ready",
+            items: mergeEvidence(
+              current.evidence[sessionId]?.items ?? [],
+              evidenceResult.evidence.items,
+            ),
+            hasMore: evidenceResult.evidence.hasMore,
+            ...(evidenceResult.evidence.nextCursor
+              ? { nextCursor: evidenceResult.evidence.nextCursor }
+              : {}),
+          } : {
+            status: "error",
+            items: current.evidence[sessionId]?.items ?? [],
+            hasMore: false,
           },
         },
       }));
@@ -1179,8 +1396,108 @@ export function useMobileBridge() {
             hasMore: current.histories[sessionId]?.hasMore ?? false,
           },
         },
+        evidence: {
+          ...current.evidence,
+          [sessionId]: {
+            status: current.evidence[sessionId]?.items.length ? "ready" : "error",
+            items: current.evidence[sessionId]?.items ?? [],
+            hasMore: current.evidence[sessionId]?.hasMore ?? false,
+          },
+        },
         error: error instanceof Error ? error.message : "会话打开失败",
       }));
+    }
+  }, [sendRequest]);
+
+  const loadOlderEvidence = useCallback(async (sessionId: string) => {
+    const current = stateRef.current.evidence[sessionId];
+    if (!current?.nextCursor || current.status === "loading") return;
+    setState((stateValue) => ({
+      ...stateValue,
+      evidence: {
+        ...stateValue.evidence,
+        [sessionId]: { ...current, status: "loading" },
+      },
+    }));
+    try {
+      const response = await sendRequest("evidence.list", {
+        sessionId,
+        cursor: current.nextCursor,
+        limit: 30,
+      }, { wait: true, timeoutMs: 45_000 });
+      if (!response?.ok) throw new Error(response?.error?.message ?? "成果加载失败");
+      const result = response.result as { evidence?: BridgeEvidencePage };
+      if (!result.evidence) throw new Error("电脑未返回成果证据");
+      const page = result.evidence;
+      setState((stateValue) => ({
+        ...stateValue,
+        evidence: {
+          ...stateValue.evidence,
+          [sessionId]: {
+            status: "ready",
+            items: mergeEvidence(current.items, page.items),
+            hasMore: page.hasMore,
+            ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+          },
+        },
+      }));
+    } catch (error) {
+      setState((stateValue) => ({
+        ...stateValue,
+        evidence: {
+          ...stateValue.evidence,
+          [sessionId]: { ...current, status: "error" },
+        },
+        error: error instanceof Error ? error.message : "成果加载失败",
+      }));
+    }
+  }, [sendRequest]);
+
+  const previewArtifact = useCallback(async (
+    artifactId: string,
+  ): Promise<BridgeArtifactPreview> => {
+    const cached = stateRef.current.artifactPreviews[artifactId];
+    if (cached) return cached;
+    const response = await sendRequest("artifact.preview", { artifactId }, {
+      wait: true,
+      timeoutMs: 60_000,
+    });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "成果预览失败");
+    const result = response.result as { preview?: BridgeArtifactPreview };
+    if (!result.preview) throw new Error("电脑未返回成果预览");
+    setState((current) => ({
+      ...current,
+      artifactPreviews: {
+        ...current.artifactPreviews,
+        [artifactId]: result.preview!,
+      },
+    }));
+    return result.preview;
+  }, [sendRequest]);
+
+  const downloadArtifact = useCallback(async (artifact: BridgeArtifactManifest) => {
+    setState((current) => ({
+      ...current,
+      artifactTransfers: { ...current.artifactTransfers, [artifact.id]: 0 },
+    }));
+    try {
+      await downloadBridgeArtifact(
+        artifact,
+        (method, params, options) => sendRequest(method, params, options),
+        (progress) => setState((current) => ({
+          ...current,
+          artifactTransfers: {
+            ...current.artifactTransfers,
+            [artifact.id]: progress,
+          },
+        })),
+      );
+    } finally {
+      setState((current) => {
+        const artifactTransfers = { ...current.artifactTransfers };
+        delete artifactTransfers[artifact.id];
+        return { ...current, artifactTransfers };
+      });
     }
   }, [sendRequest]);
 
@@ -1425,6 +1742,9 @@ export function useMobileBridge() {
         permissions: [],
         focusSessionId: undefined,
         histories: {},
+        evidence: {},
+        artifactPreviews: {},
+        artifactTransfers: {},
         events: [],
         localTurns: [],
         latestSeq: 0,
@@ -1447,6 +1767,9 @@ export function useMobileBridge() {
     backToHosts,
     openSession,
     loadOlderHistory,
+    loadOlderEvidence,
+    previewArtifact,
+    downloadArtifact,
     sendTurn,
     interruptTurn,
     resolveUncertainDelivery,

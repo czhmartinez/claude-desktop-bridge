@@ -105,11 +105,13 @@ describe("mergeBridgeEvents", () => {
     const snapshot: BridgeHostSnapshot = {
       host: {
         hostId: "desktop-1",
+        pairingEpoch: 1,
         name: "Test Mac",
         relayUrl: "wss://relay.example/ws",
         online: true,
         lastSeenAt: 1,
         version: "0.2.3",
+        capabilities: [],
       },
       projects: [],
       sessions: [{

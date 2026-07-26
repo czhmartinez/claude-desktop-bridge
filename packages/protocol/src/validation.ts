@@ -31,6 +31,12 @@ const METHODS = new Set([
   "turn.interrupt",
   "permission.resolve",
   "events.resume",
+  "evidence.list",
+  "evidence.get",
+  "artifact.preview",
+  "artifact.transfer.open",
+  "artifact.transfer.read",
+  "artifact.transfer.close",
   "device.revoke",
 ]);
 
@@ -54,6 +60,7 @@ export function isEncryptedEnvelope(value: unknown): value is EncryptedEnvelope 
     (value.toDeviceId === undefined || (typeof value.toDeviceId === "string" && value.toDeviceId.length <= 64)) &&
     typeof value.sentAt === "number" && Number.isFinite(value.sentAt) &&
     typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) &&
+    (value.temporary === undefined || value.temporary === true) &&
     typeof value.nonce === "string" && value.nonce.length <= 32 &&
     typeof value.ciphertext === "string" && value.ciphertext.length <= 16_000_000
   );
@@ -71,6 +78,7 @@ export function isEncryptedEnvelopeChunk(value: unknown): value is EncryptedEnve
     (value.toDeviceId === undefined || (typeof value.toDeviceId === "string" && value.toDeviceId.length <= 64)) &&
     typeof value.sentAt === "number" && Number.isFinite(value.sentAt) &&
     typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) &&
+    (value.temporary === undefined || value.temporary === true) &&
     typeof value.index === "number" && Number.isInteger(value.index) && value.index >= 0 &&
     typeof value.total === "number" &&
     Number.isInteger(value.total) &&
@@ -94,6 +102,7 @@ export function isEnvelopeChunkManifest(value: unknown): value is EnvelopeChunkM
     (value.toDeviceId === undefined || (typeof value.toDeviceId === "string" && value.toDeviceId.length <= 64)) &&
     typeof value.sentAt === "number" && Number.isFinite(value.sentAt) &&
     typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) &&
+    (value.temporary === undefined || value.temporary === true) &&
     typeof value.total === "number" &&
     Number.isInteger(value.total) &&
     value.total > 1 &&

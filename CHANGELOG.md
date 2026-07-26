@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0
+
+- Add the evidence layer with per-turn tool records, command outcomes, file changes, artifact
+  manifests and explicit exact, inferred or partial confidence.
+- Preserve complete Agent SDK tool lifecycle data for Bridge turns and attribute workspace changes
+  against a bounded task-start baseline without claiming pre-existing dirty files.
+- Recover Claude Desktop tool use and result records incrementally from JSONL by inode, offset and
+  message ID while ignoring thinking content and avoiding project-directory scans.
+- Store evidence manifests in SQLite and encrypt content-addressed snapshots with an Electron
+  safeStorage-protected AES-256-GCM master key; retain manifests after 30-day/1-GiB LRU cleanup.
+- Add root-confined artifact access, sensitive-file blocking, symlink escape rejection and
+  credential redaction for captured tool output.
+- Add read-only text/code/diff and image previews plus sandboxed, network-disabled HTML screenshots.
+- Add on-demand 256-KiB artifact transfer with a ten-minute lease, missing-chunk retry, SHA-256
+  verification and a hard 20-MiB file limit; authenticated temporary responses bypass the durable
+  Relay queue entirely.
+- Add Desktop and Android conversation evidence summaries, a dedicated results view, offline
+  manifests, cached previews, native file save/share and transfer progress.
+- Upgrade to protocol V3 and pairing schema V4. Preserve stable host identity, settings, history and
+  local events while rotating rooms and keys, revoking V0.3 devices and requiring one fresh scan.
+- Explicitly exclude hidden chain of thought, private Claude Desktop CDP, live Desktop tool mirroring,
+  project browsing, remote editing, dynamic-site hosting and embedded PDF rendering.
+
 ## 0.3.6
 
 - Unify the Bridge desktop, Android and iOS app icons around the desktop-phone bridge mark.

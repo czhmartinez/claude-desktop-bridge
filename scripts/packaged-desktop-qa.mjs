@@ -34,6 +34,11 @@ try {
   ));
   const snapshot = await page.evaluate(() => window.bridgeDesktop.getSnapshot());
   assert.equal(snapshot.host.version, desktopPackage.version);
+  assert.ok(Number.isInteger(snapshot.host.pairingEpoch) && snapshot.host.pairingEpoch >= 1);
+  assert.deepEqual(
+    [...snapshot.host.capabilities].sort(),
+    ["artifact.preview.v1", "artifact.transfer.v1", "evidence.v1"],
+  );
   assert.ok(Array.isArray(snapshot.projects));
   assert.ok(Array.isArray(snapshot.sessions));
   assert.ok(Array.isArray(snapshot.devices));
@@ -41,6 +46,24 @@ try {
   assert.ok(["ready", "working", "auth-required", "unavailable"].includes(snapshot.runtime.state));
 
   let configurationProof;
+  let evidenceProof;
+  const selectedSession = snapshot.sessions[0];
+  if (selectedSession) {
+    const evidenceResponse = await page.evaluate(async (sessionId) => (
+      window.bridgeDesktop.request({
+        method: "evidence.list",
+        params: { sessionId, limit: 30 },
+      })
+    ), selectedSession.sessionId);
+    assert.equal(evidenceResponse.ok, true, evidenceResponse.error?.message);
+    assert.equal(evidenceResponse.result.evidence.sessionId, selectedSession.sessionId);
+    assert.ok(Array.isArray(evidenceResponse.result.evidence.items));
+    evidenceProof = {
+      sessionId: selectedSession.sessionId,
+      items: evidenceResponse.result.evidence.items.length,
+    };
+  }
+
   const longContextSession = snapshot.sessions.find((session) => session.model?.includes("[1m]"));
   if (longContextSession) {
     const configurationResponse = await page.evaluate(async (sessionId) => (
@@ -86,8 +109,11 @@ try {
   const configurationDialog = page.getByRole("dialog");
   await configurationDialog.waitFor();
   await configurationDialog.getByText("上下文", { exact: true }).waitFor();
+  await configurationDialog.getByRole("button", { name: "关闭" }).click();
+  await page.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
+  await page.locator(".evidence-panel, .evidence-empty").waitFor();
   assert.deepEqual(errors, []);
-  await page.screenshot({ path: resolve(artifacts, "desktop-configuration.png"), fullPage: true });
+  await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });
   process.stdout.write(`${JSON.stringify({
     ok: true,
     url: page.url(),
@@ -97,7 +123,8 @@ try {
     devices: snapshot.devices.length,
     runtime: snapshot.runtime.state,
     configuration: configurationProof,
-    screenshot: resolve(artifacts, "desktop-configuration.png"),
+    evidence: evidenceProof,
+    screenshot: resolve(artifacts, "desktop-evidence.png"),
   }, null, 2)}\n`);
 } finally {
   await browser.close();

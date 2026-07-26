@@ -77,6 +77,7 @@ export interface QueuedTurn {
   mode?: "start" | "steer";
   transport?: "claude-desktop-managed" | "bridge-host";
   turnId?: string;
+  evidenceId?: string;
   sessionAcceptedAt?: number;
   uncertainResolved?: "confirmed";
 }
@@ -178,6 +179,37 @@ export interface SessionBrokerOptions {
   runtimeRetryDelayMs?: number;
   managedDesktop?: ManagedDesktopRuntime;
   managedTransport?: ManagedDesktopTransportRuntime;
+  evidence?: {
+    startBridgeTurn(input: {
+      sessionId: string;
+      cwd: string;
+      commandId: string;
+      startedAt?: number;
+    }): Promise<string>;
+    attachTurn(evidenceId: string, turnId: string): Promise<void>;
+    recordToolStarted(input: {
+      sessionId: string;
+      turnId?: string;
+      itemId: string;
+      toolName: string;
+      toolInput: unknown;
+      at: number;
+    }): Promise<void>;
+    recordToolCompleted(input: {
+      sessionId: string;
+      turnId?: string;
+      itemId: string;
+      output: unknown;
+      at: number;
+    }): Promise<void>;
+    finalizeBridgeTurn(input: {
+      sessionId: string;
+      turnId?: string;
+      failed?: boolean;
+      error?: string;
+      completedAt?: number;
+    }): Promise<unknown>;
+  };
 }
 
 export interface StartTurnInput {
@@ -268,6 +300,7 @@ export class SessionBroker extends EventEmitter {
   private eventQueue: Promise<void> = Promise.resolve();
   private pumpQueue: Promise<void> = Promise.resolve();
   private readonly toolNames = new Map<string, string>();
+  private evidenceFailureReported = false;
   private readonly managedStatusListener = () => {
     const status = this.options.managedDesktop?.status();
     if (status) {
@@ -294,6 +327,18 @@ export class SessionBroker extends EventEmitter {
             permissionBroker: this.permissionBroker,
           })
         : undefined);
+  }
+
+  private async evidenceCall<T>(action: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await action();
+    } catch {
+      if (!this.evidenceFailureReported) {
+        this.evidenceFailureReported = true;
+        process.stderr.write("Bridge evidence capture failed; the Claude task will continue.\n");
+      }
+      return undefined;
+    }
   }
 
   async initialize(): Promise<void> {
@@ -1167,10 +1212,19 @@ export class SessionBroker extends EventEmitter {
       return;
     }
     let accepted: ReturnType<SessionHostRuntime["send"]>;
+    let evidenceId: string | undefined;
     try {
       const host = await this.ensureHost(turn.sessionId);
       await this.applyHostConfiguration(host, this.effectiveProfile(turn.sessionId, session.cwd));
       delete state.configurationPending;
+      if (this.options.evidence) {
+        evidenceId = await this.evidenceCall(() => this.options.evidence!.startBridgeTurn({
+          sessionId: turn.sessionId,
+          cwd: session.cwd,
+          commandId: turn.commandId,
+          startedAt: Date.now(),
+        }));
+      }
       turn.state = "running";
       turn.transport = "bridge-host";
       accepted = host.send({
@@ -1178,6 +1232,13 @@ export class SessionBroker extends EventEmitter {
         attachments: turn.attachments,
       }, turn.origin);
     } catch (error) {
+      if (evidenceId) {
+        void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+          sessionId: turn.sessionId,
+          failed: true,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
       await state.host?.close().catch(() => undefined);
       delete state.host;
       state.ownership = "DESKTOP_OBSERVED";
@@ -1200,6 +1261,10 @@ export class SessionBroker extends EventEmitter {
     }
     turn.attempts += 1;
     turn.turnId = accepted.turnId;
+    if (evidenceId) {
+      turn.evidenceId = evidenceId;
+      await this.evidenceCall(() => this.options.evidence!.attachTurn(evidenceId, accepted.turnId));
+    }
     state.active = turn;
     state.ownership = "BRIDGE_RUNNING";
     state.turnState = "running";
@@ -1619,6 +1684,16 @@ export class SessionBroker extends EventEmitter {
     if (event.type === "tool.started") {
       if (this.options.eventLog.hasItem(event.sessionId, "tool.started", event.itemId)) return;
       this.toolNames.set(event.itemId, event.toolName);
+      if (this.options.evidence) {
+        await this.evidenceCall(() => this.options.evidence!.recordToolStarted({
+          sessionId: event.sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          itemId: event.itemId,
+          toolName: event.toolName,
+          toolInput: event.input,
+          at: event.at,
+        }));
+      }
       await this.record({
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -1649,6 +1724,15 @@ export class SessionBroker extends EventEmitter {
     if (event.type === "tool.completed") {
       if (this.options.eventLog.hasItem(event.sessionId, "tool.completed", event.itemId)) return;
       const toolName = this.toolNames.get(event.itemId) ?? "";
+      if (this.options.evidence) {
+        await this.evidenceCall(() => this.options.evidence!.recordToolCompleted({
+          sessionId: event.sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          itemId: event.itemId,
+          output: event.output,
+          at: event.at,
+        }));
+      }
       await this.record({
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -1678,11 +1762,21 @@ export class SessionBroker extends EventEmitter {
           } : {}),
         },
       });
+      if (this.options.evidence) {
+        void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+          sessionId: event.sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          completedAt: event.at,
+        }));
+      }
       await this.finishTurn(event.sessionId, "completed");
       return;
     }
     if (event.type === "turn.failed" || event.type === "runtime.error") {
       await this.options.eventLog.flushDeltas(event.sessionId);
+      const failedTurnId = "turnId" in event && typeof event.turnId === "string"
+        ? event.turnId
+        : undefined;
       const shouldRetry = event.type === "runtime.error"
         && Boolean(state?.active)
         && !state?.active?.sessionAcceptedAt
@@ -1706,8 +1800,26 @@ export class SessionBroker extends EventEmitter {
         },
       });
       if (shouldRetry) {
+        if (this.options.evidence) {
+          void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+            sessionId: event.sessionId,
+            ...(failedTurnId ? { turnId: failedTurnId } : {}),
+            failed: true,
+            error: event.error,
+            completedAt: event.at,
+          }));
+        }
         await this.requeueActive(event.sessionId);
       } else if (state?.active) {
+        if (this.options.evidence) {
+          void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+            sessionId: event.sessionId,
+            ...(failedTurnId ? { turnId: failedTurnId } : {}),
+            failed: true,
+            error: event.error,
+            completedAt: event.at,
+          }));
+        }
         await this.finishTurn(event.sessionId, "failed");
       }
       return;
@@ -1729,6 +1841,15 @@ export class SessionBroker extends EventEmitter {
           } : {}),
         },
       });
+      if (this.options.evidence) {
+        void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+          sessionId: event.sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          failed: true,
+          error: "任务已停止",
+          completedAt: event.at,
+        }));
+      }
       await this.finishTurn(event.sessionId, "interrupted");
     }
   }

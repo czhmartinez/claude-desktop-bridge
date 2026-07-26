@@ -249,6 +249,7 @@ class MemoryRelayTransport implements BridgeTransport {
       Date.now(),
       options.ttlMs,
       options.toDeviceId,
+      options.temporary,
     );
     if (payload.kind === "peer-signal") this.network.signalIds.add(envelope.id);
     await this.sendEnvelope(envelope);

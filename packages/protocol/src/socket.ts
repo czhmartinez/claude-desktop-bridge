@@ -29,6 +29,7 @@ export interface SendOptions {
   toDeviceId?: string;
   crypto?: BridgeCrypto;
   ttlMs?: number;
+  temporary?: true;
 }
 
 export interface DeviceRegistrationOptions {
@@ -57,6 +58,7 @@ function sameChunkTransfer(left: EncryptedEnvelopeChunk, right: EncryptedEnvelop
     left.toDeviceId === right.toDeviceId &&
     left.sentAt === right.sentAt &&
     left.expiresAt === right.expiresAt &&
+    left.temporary === right.temporary &&
     left.total === right.total &&
     left.sha256 === right.sha256
   );
@@ -148,12 +150,16 @@ export class BridgeSocket {
       Date.now(),
       options.ttlMs,
       options.toDeviceId,
+      options.temporary,
     );
     await this.sendEnvelope(envelope);
     return envelope.id;
   }
 
   async sendEnvelope(envelope: EncryptedEnvelope): Promise<void> {
+    if (envelope.version !== PROTOCOL_VERSION) {
+      throw new Error(`Cannot send protocol V${envelope.version} envelope over a V${PROTOCOL_VERSION} socket`);
+    }
     if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
       throw new Error("Bridge is not connected");
     }
@@ -165,7 +171,7 @@ export class BridgeSocket {
     const digest = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", serialized)));
     const total = Math.ceil(serialized.byteLength / ENVELOPE_CHUNK_BYTES);
     const manifest: EnvelopeChunkManifest = {
-      version: envelope.version,
+      version: PROTOCOL_VERSION,
       transferId: envelope.id,
       roomId: envelope.roomId,
       from: envelope.from,
@@ -174,6 +180,7 @@ export class BridgeSocket {
       ...(envelope.toDeviceId ? { toDeviceId: envelope.toDeviceId } : {}),
       sentAt: envelope.sentAt,
       expiresAt: envelope.expiresAt,
+      ...(envelope.temporary ? { temporary: true } : {}),
       total,
       sha256: digest,
     };
@@ -370,7 +377,8 @@ export class BridgeSocket {
       envelope.to !== chunk.to ||
       envelope.toDeviceId !== chunk.toDeviceId ||
       envelope.sentAt !== chunk.sentAt ||
-      envelope.expiresAt !== chunk.expiresAt
+      envelope.expiresAt !== chunk.expiresAt ||
+      envelope.temporary !== chunk.temporary
     ) return undefined;
     return envelope;
   }

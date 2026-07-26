@@ -1,12 +1,14 @@
 import {
   BridgeCrypto,
   BridgeSocket,
+  PROTOCOL_VERSION,
   type BridgePayload,
   type DecryptedEnvelope,
   type RelayEnvelopeItem,
   type ServerFrame,
 } from "@bridge/protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
 import { startRelayServer, type RunningRelay } from "./server.js";
 import { MemoryRelayStore } from "./store.js";
 import type { DeviceRecord } from "./store.js";
@@ -115,7 +117,7 @@ async function connectedPair(relayUrl: string) {
   return { host, device, desktopDeviceCrypto, mobileCrypto, desktopSocket, mobileSocket };
 }
 
-describe("relay v2", () => {
+describe("relay v3", () => {
   it("publishes liveness, readiness and content-free operational metrics", async () => {
     const relay = await startRelayServer({
       port: 0,
@@ -128,7 +130,7 @@ describe("relay v2", () => {
     const ready = await fetch(`${origin}/ready`);
     const metrics = await fetch(`${origin}/metrics`);
 
-    expect(await health.json()).toMatchObject({ ok: true, version: 3 });
+    expect(await health.json()).toMatchObject({ ok: true, version: PROTOCOL_VERSION });
     expect(await ready.json()).toMatchObject({
       ok: true,
       storage: { rooms: 0, devices: 0, queuedFrames: 0 },
@@ -150,6 +152,39 @@ describe("relay v2", () => {
 
     expect((await message).payload).toMatchObject({ kind: "request", method: "turn.start" });
     expect((await stored).type).toBe("stored");
+  });
+
+  it("rejects protocol v2 clients with an explicit re-pairing error", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const socket = new WebSocket(relay.url);
+    const error = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for upgrade error")), 3_000);
+      socket.on("open", () => {
+        socket.send(JSON.stringify({
+          type: "hello",
+          version: 2,
+          roomId: "legacy-room-12345678",
+          role: "mobile",
+          deviceId: "legacy-phone",
+          authToken: "x".repeat(43),
+        }));
+      });
+      socket.on("message", (data) => {
+        clearTimeout(timeout);
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>);
+      });
+    });
+
+    await expect(error).resolves.toMatchObject({
+      type: "error",
+      code: "UPGRADE_REQUIRED",
+    });
+    socket.close();
   });
 
   it("chunks, hashes and reassembles an encrypted payload larger than a websocket frame", async () => {
@@ -179,6 +214,36 @@ describe("relay v2", () => {
     await retried;
     expect(store.enqueuedFrames).toBe(initiallyStoredFrames);
     expect(relay.metrics().envelopesStored).toBeGreaterThanOrEqual(1);
+  });
+
+  it("forwards temporary artifact bodies without entering the persistent queue", async () => {
+    const store = new CountingRelayStore();
+    const relay = await startRelayServer({
+      port: 0,
+      store,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    const text = "preview".repeat(140_000);
+    const received = nextMessage(pair.desktopSocket, 5_000);
+    const envelope = await pair.mobileCrypto.encrypt(
+      turnRequest(text),
+      "mobile",
+      "desktop",
+      Date.now(),
+      10 * 60 * 1_000,
+      undefined,
+      true,
+    );
+    await pair.mobileSocket.sendEnvelope(envelope);
+
+    const payload = (await received).payload;
+    expect(payload.kind).toBe("request");
+    if (payload.kind !== "request") throw new Error("Expected a request payload");
+    expect(payload.params.text).toBe(text);
+    expect(store.enqueuedFrames).toBe(0);
+    expect(relay.metrics().envelopesStored).toBe(0);
   });
 
   it("replays an offline request until the exact host device acknowledges it", async () => {

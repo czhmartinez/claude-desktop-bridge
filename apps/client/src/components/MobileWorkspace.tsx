@@ -1,6 +1,9 @@
 import type {
   BridgeAttachment,
+  BridgeArtifactManifest,
+  BridgeArtifactPreview,
   BridgeDeliveryState,
+  BridgeEvidenceBundle,
   BridgeEvent,
   BridgeHistoryItem,
   BridgeHostSnapshot,
@@ -40,6 +43,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   LocalTurn,
   MobileConnectionIssue,
+  SessionEvidenceState,
   SessionHistoryState,
 } from "../hooks/useMobileBridge.js";
 import type { Theme } from "../hooks/useTheme.js";
@@ -51,6 +55,7 @@ import {
 } from "../lib/project-groups.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
+import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { IconButton } from "./IconButton.js";
 import {
   SessionConfigurationDialog,
@@ -63,6 +68,10 @@ interface ConversationItem extends BridgeHistoryItem {
   commandId?: string;
   live?: boolean;
 }
+
+export type ConversationTimelineEntry =
+  | { kind: "message"; item: ConversationItem }
+  | { kind: "evidence"; evidence: BridgeEvidenceBundle };
 
 function formatTime(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(value);
@@ -90,9 +99,12 @@ function mobileConnectionLabel(
   return "局域网连接";
 }
 
-function ownershipLabel(session: BridgeSessionInfo): string {
+export function ownershipLabel(session: BridgeSessionInfo): string {
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
+  if (session.ownership === "DESKTOP_OBSERVED" && session.turnState === "running") {
+    return "桌面运行中";
+  }
   if (session.turnState === "running") return "运行中";
   if (session.turnState === "queued") return `${session.pendingCount} 条排队`;
   if (session.turnState === "waiting") return "需处理";
@@ -284,6 +296,53 @@ export function conversationItems(
   for (const item of deltaByItem.values()) items.set(item.id, item);
   for (const item of toolByItem.values()) items.set(item.id, item);
   return [...items.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
+export function conversationTimeline(
+  items: ConversationItem[],
+  evidenceItems: BridgeEvidenceBundle[],
+): ConversationTimelineEntry[] {
+  const latestByTurn = new Map<string, BridgeEvidenceBundle>();
+  for (const evidence of evidenceItems) {
+    if (!evidence.turnId || evidence.state === "collecting") continue;
+    const previous = latestByTurn.get(evidence.turnId);
+    const completedAt = evidence.completedAt ?? evidence.startedAt;
+    const previousCompletedAt = previous?.completedAt ?? previous?.startedAt ?? 0;
+    if (!previous || completedAt > previousCompletedAt) latestByTurn.set(evidence.turnId, evidence);
+  }
+
+  const evidenceAfter = new Map<number, BridgeEvidenceBundle[]>();
+  for (const evidence of latestByTurn.values()) {
+    const matchingTurnIndexes = items.flatMap((item, index) => (
+      item.turnId === evidence.turnId ? [index] : []
+    ));
+    let anchorIndex = matchingTurnIndexes.at(-1);
+    if (anchorIndex === undefined) {
+      const userIndex = items.findIndex((item) => (
+        item.role === "user" && item.id === evidence.turnId
+      ));
+      if (userIndex < 0) continue;
+      const nextUserOffset = items
+        .slice(userIndex + 1)
+        .findIndex((item) => item.role === "user");
+      anchorIndex = nextUserOffset < 0
+        ? items.length - 1
+        : userIndex + nextUserOffset;
+    }
+    const anchored = evidenceAfter.get(anchorIndex) ?? [];
+    anchored.push(evidence);
+    evidenceAfter.set(anchorIndex, anchored);
+  }
+
+  const timeline: ConversationTimelineEntry[] = [];
+  items.forEach((item, index) => {
+    timeline.push({ kind: "message", item });
+    for (const evidence of (evidenceAfter.get(index) ?? [])
+      .sort((left, right) => left.startedAt - right.startedAt)) {
+      timeline.push({ kind: "evidence", evidence });
+    }
+  });
+  return timeline;
 }
 
 export async function fileToAttachment(file: File): Promise<BridgeAttachment> {
@@ -576,6 +635,9 @@ export function MobileWorkspace({
   permissions,
   focusSessionId,
   histories,
+  evidence,
+  artifactPreviews,
+  artifactTransfers,
   events,
   localTurns,
   connectionIssue,
@@ -585,6 +647,9 @@ export function MobileWorkspace({
   onToggleTheme,
   onOpenSession,
   onLoadOlderHistory,
+  onLoadOlderEvidence,
+  onPreviewArtifact,
+  onDownloadArtifact,
   onSendTurn,
   onInterruptTurn,
   onResolveUncertain,
@@ -605,6 +670,9 @@ export function MobileWorkspace({
   permissions: BridgePermissionInfo[];
   focusSessionId?: string | undefined;
   histories: Record<string, SessionHistoryState>;
+  evidence: Record<string, SessionEvidenceState>;
+  artifactPreviews: Record<string, BridgeArtifactPreview>;
+  artifactTransfers: Record<string, number>;
   events: BridgeEvent[];
   localTurns: LocalTurn[];
   connectionIssue?: MobileConnectionIssue | undefined;
@@ -614,6 +682,9 @@ export function MobileWorkspace({
   onToggleTheme(): void;
   onOpenSession(sessionId: string): Promise<void>;
   onLoadOlderHistory(sessionId: string): Promise<void>;
+  onLoadOlderEvidence(sessionId: string): Promise<void>;
+  onPreviewArtifact(artifactId: string): Promise<BridgeArtifactPreview>;
+  onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onResolveUncertain(commandId: string, action: "confirm" | "retry"): Promise<void>;
@@ -636,6 +707,7 @@ export function MobileWorkspace({
   onRetry(): Promise<void>;
 }) {
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
+  const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [search, setSearch] = useState("");
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<BridgeAttachment[]>([]);
@@ -660,11 +732,16 @@ export function MobileWorkspace({
   const sessions = snapshot?.sessions ?? [];
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
+  const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
     () => selectedSessionId
       ? conversationItems(selectedSessionId, selectedHistory, events, localTurns)
       : [],
     [events, localTurns, selectedHistory, selectedSessionId],
+  );
+  const timeline = useMemo(
+    () => conversationTimeline(items, selectedEvidence?.items ?? []),
+    [items, selectedEvidence?.items],
   );
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
@@ -763,6 +840,7 @@ export function MobileWorkspace({
 
   async function selectSession(sessionId: string): Promise<void> {
     setConfigurationOpen(false);
+    setSessionView("conversation");
     setSelectedSessionId(sessionId);
     await onOpenSession(sessionId);
   }
@@ -893,6 +971,24 @@ export function MobileWorkspace({
           </div>
         )}
 
+        <nav className="session-view-switch" aria-label="会话视图">
+          <button
+            type="button"
+            className={sessionView === "conversation" ? "active" : ""}
+            onClick={() => setSessionView("conversation")}
+          >
+            对话
+          </button>
+          <button
+            type="button"
+            className={sessionView === "evidence" ? "active" : ""}
+            onClick={() => setSessionView("evidence")}
+          >
+            成果
+            {(selectedEvidence?.items.length ?? 0) > 0 && <b>{selectedEvidence!.items.length}</b>}
+          </button>
+        </nav>
+
         <div className={`permission-dock-slot ${activePermission || otherPermission ? "has-attention" : ""}`}>
           {activePermission ? (
             <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
@@ -909,6 +1005,7 @@ export function MobileWorkspace({
           ) : null}
         </div>
 
+        {sessionView === "conversation" ? (
         <section className="conversation-stream" aria-live="polite">
           {selectedHistory?.hasMore && (
             <button
@@ -936,30 +1033,50 @@ export function MobileWorkspace({
               <span>从下方发出第一条指令。</span>
             </div>
           )}
-          {items.map((item) => (
-            <article className={`conversation-item ${item.role} ${item.live ? "live" : ""}`} key={item.id}>
+          {timeline.map((entry) => entry.kind === "evidence" ? (
+            <EvidenceInlineSummary
+              evidence={entry.evidence}
+              key={`evidence:${entry.evidence.id}`}
+              onOpen={() => setSessionView("evidence")}
+            />
+          ) : (
+            <article className={`conversation-item ${entry.item.role} ${entry.item.live ? "live" : ""}`} key={entry.item.id}>
               <div className="conversation-item-meta">
-                <strong>{item.role === "user" ? "你" : item.role === "assistant" ? "Claude" : item.role === "tool" ? item.toolName : "Bridge"}</strong>
-                <time>{formatTime(item.createdAt)}</time>
+                <strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? "Claude" : entry.item.role === "tool" ? entry.item.toolName : "Bridge"}</strong>
+                <time>{formatTime(entry.item.createdAt)}</time>
               </div>
-              {item.role === "tool" && <Wrench size={16} aria-hidden="true" />}
-              {item.text && <div className="conversation-text">{item.text}</div>}
-              {item.attachments?.length ? (
-                <div className="attachment-summary">{item.attachments.map((attachment) => <span key={attachment.id}>{attachment.name}</span>)}</div>
+              {entry.item.role === "tool" && <Wrench size={16} aria-hidden="true" />}
+              {entry.item.text && <div className="conversation-text">{entry.item.text}</div>}
+              {entry.item.attachments?.length ? (
+                <div className="attachment-summary">{entry.item.attachments.map((attachment) => <span key={attachment.id}>{attachment.name}</span>)}</div>
               ) : null}
-              {item.delivery && <div className={`delivery-state ${item.delivery}`}>{deliveryLabel(item.delivery)}</div>}
-              {item.delivery === "uncertain" && item.commandId && (
+              {entry.item.delivery && <div className={`delivery-state ${entry.item.delivery}`}>{deliveryLabel(entry.item.delivery)}</div>}
+              {entry.item.delivery === "uncertain" && entry.item.commandId && (
                 <div className="uncertain-delivery-actions">
-                  <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "confirm")}>确认已发送</button>
-                  <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "retry")}>检查后重发</button>
+                  <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(entry.item.commandId!, "confirm")}>确认已发送</button>
+                  <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(entry.item.commandId!, "retry")}>检查后重发</button>
                 </div>
               )}
-              {item.live && <span className="stream-caret" aria-label="正在生成" />}
+              {entry.item.live && <span className="stream-caret" aria-label="正在生成" />}
             </article>
           ))}
           <div ref={endRef} />
         </section>
+        ) : (
+          <section className="mobile-evidence-view">
+            <EvidencePanel
+              state={selectedEvidence}
+              previews={artifactPreviews}
+              transfers={artifactTransfers}
+              online={connection === "connected" && desktopOnline}
+              onLoadMore={() => onLoadOlderEvidence(selectedSession.sessionId)}
+              onPreview={onPreviewArtifact}
+              onDownload={onDownloadArtifact}
+            />
+          </section>
+        )}
 
+        {sessionView === "conversation" && (
         <section className="mobile-composer">
           {connectionIssue && (
             <button type="button" className="composer-connection" onClick={() => void onRetry()}>
@@ -1007,6 +1124,7 @@ export function MobileWorkspace({
             </button>
           </form>
         </section>
+        )}
         {configurationOpen && (
           <SessionConfigurationDialog
             session={selectedSession}

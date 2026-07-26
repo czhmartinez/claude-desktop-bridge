@@ -2,7 +2,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DesktopConfigRepository, fileSecretProtector, type SecretProtector } from "./config.js";
+import {
+  DesktopConfigRepository,
+  fileSecretProtector,
+  safeStorageSecretProtector,
+  type SecretProtector,
+} from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
 
 const directories: string[] = [];
@@ -26,6 +31,49 @@ describe("desktop configuration", () => {
     expect(fileProtector.unprotect(protectedValue)).toBe("host-secret");
   });
 
+  it("uses Electron safeStorage for the evidence key when available", () => {
+    const storage = {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`sealed:${value}`, "utf8"),
+      decryptString: (value: Buffer) => value.toString("utf8").slice("sealed:".length),
+    };
+    const safeProtector = safeStorageSecretProtector(storage);
+    const protectedValue = safeProtector.protect("evidence-master-key");
+
+    expect(protectedValue).toMatch(/^os:/u);
+    expect(protectedValue).not.toContain("evidence-master-key");
+    expect(safeProtector.unprotect(protectedValue)).toBe("evidence-master-key");
+  });
+
+  it("keeps transport identities in the mode-0600 config and seals only the evidence key", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const evidenceProtector = safeStorageSecretProtector({
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`sealed:${value}`, "utf8"),
+      decryptString: (value: Buffer) => value.toString("utf8").slice("sealed:".length),
+    });
+    const repository = new DesktopConfigRepository(
+      path,
+      fileSecretProtector(),
+      {
+        relayUrl: "wss://relay.example/ws",
+        desktopName: "Test PC",
+      },
+      evidenceProtector,
+    );
+    await repository.loadOrCreate();
+    const stored = JSON.parse(await readFile(path, "utf8")) as {
+      protectedHostSecret: string;
+      protectedEvidenceKey: string;
+    };
+
+    expect(stored.protectedHostSecret).toMatch(/^file:/u);
+    expect(stored.protectedEvidenceKey).toMatch(/^os:/u);
+    await expect(repository.load()).resolves.toBeTruthy();
+  });
+
   it("persists the host secret and independent device secrets in protected form", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
@@ -47,6 +95,7 @@ describe("desktop configuration", () => {
     const raw = await readFile(path, "utf8");
 
     expect(raw).not.toContain(created.hostSecret);
+    expect(raw).not.toContain(created.evidenceKey);
     expect(raw).not.toContain("independent-device-secret");
     expect((await repository.load())?.devices[0]?.secret).toBe("independent-device-secret");
   });
@@ -92,7 +141,7 @@ describe("desktop configuration", () => {
     expect((await localDefault.load())?.relayUrl).toBe("wss://relay.example/ws");
   });
 
-  it("migrates a v2 LAN config to public-first schema v3 without rotating credentials", async () => {
+  it("migrates v2 to pairing schema v4 while preserving host identity and rotating credentials", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
     const path = join(directory, "bridge-config.json");
@@ -126,19 +175,19 @@ describe("desktop configuration", () => {
 
     const loaded = await repository.loadOrCreate();
     expect(loaded).toMatchObject({
-      configVersion: 3,
-      roomId: "room-legacy-12345678",
+      configVersion: 4,
+      protocolVersion: 3,
+      pairingEpoch: 1,
+      hostDeviceId: "desktop-1",
       relayUrl: "wss://bridge.example/ws",
       activeEndpoint: "public",
       serviceOrigin: "https://bridge.example",
       iceServers: [{ urls: "stun:stun.example:3478" }],
-      hostSecret: "host-secret",
     });
-    expect(loaded.devices[0]).toMatchObject({
-      deviceId: "phone-1",
-      secret: "phone-secret",
-      pairedAt: 2_000,
-    });
+    expect(loaded.roomId).not.toBe("room-legacy-12345678");
+    expect(loaded.hostSecret).not.toBe("host-secret");
+    expect(loaded.evidenceKey).toBeTruthy();
+    expect(loaded.devices).toEqual([]);
     expect(loaded.relayEndpoints).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "public", kind: "public-relay" }),
       expect.objectContaining({ kind: "lan-relay", url: "ws://10.0.0.8:8788/ws" }),
@@ -146,10 +195,12 @@ describe("desktop configuration", () => {
 
     await repository.save(loaded);
     const persisted = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-    expect(persisted.version).toBe(3);
+    expect(persisted.version).toBe(4);
+    expect(persisted.protocolVersion).toBe(3);
     expect(persisted).not.toHaveProperty("relayUrl");
     expect(JSON.stringify(persisted)).not.toContain("host-secret");
     expect(JSON.stringify(persisted)).not.toContain("phone-secret");
+    expect(JSON.stringify(persisted)).not.toContain(loaded.evidenceKey);
   });
 
   it("refreshes public service and ICE defaults for an existing schema v3 pairing", async () => {
@@ -207,7 +258,8 @@ describe("desktop configuration", () => {
     });
     const created = await repository.loadOrCreate();
 
-    expect(created.protocolVersion).toBe(2);
+    expect(created.protocolVersion).toBe(3);
+    expect(created.configVersion).toBe(4);
     expect(created.devices).toEqual([]);
     expect((await import("node:fs/promises").then(({ readdir }) => readdir(directory))))
       .toEqual(expect.arrayContaining([expect.stringMatching(/^bridge-config\.json\.v1-archive-/u)]));

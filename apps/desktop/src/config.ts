@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -15,7 +15,7 @@ import {
   type BridgeIceServer,
 } from "@bridge/protocol";
 
-const CONFIG_VERSION = 3 as const;
+const CONFIG_VERSION = 4 as const;
 
 export interface SecretProtector {
   available(): boolean;
@@ -30,6 +30,29 @@ export function fileSecretProtector(): SecretProtector {
     unprotect: (value) => {
       if (!value.startsWith("file:")) throw new Error("Unsupported secret protection format");
       return Buffer.from(value.slice(5), "base64").toString("utf8");
+    },
+  };
+}
+
+export interface SafeStorageLike {
+  isEncryptionAvailable(): boolean;
+  encryptString(value: string): Buffer;
+  decryptString(value: Buffer): string;
+}
+
+export function safeStorageSecretProtector(storage: SafeStorageLike): SecretProtector {
+  const fallback = fileSecretProtector();
+  return {
+    available: () => storage.isEncryptionAvailable(),
+    protect: (value) => storage.isEncryptionAvailable()
+      ? `os:${storage.encryptString(value).toString("base64")}`
+      : fallback.protect(value),
+    unprotect: (value) => {
+      if (value.startsWith("os:")) {
+        if (!storage.isEncryptionAvailable()) throw new Error("OS secret storage is unavailable");
+        return storage.decryptString(Buffer.from(value.slice(3), "base64"));
+      }
+      return fallback.unprotect(value);
     },
   };
 }
@@ -49,7 +72,7 @@ interface StoredDeviceConfig {
 
 interface DesktopConfigFileV2 {
   version: 2;
-  protocolVersion: typeof PROTOCOL_VERSION;
+  protocolVersion: number;
   roomId: string;
   relayUrl: string;
   desktopName: string;
@@ -62,8 +85,8 @@ interface DesktopConfigFileV2 {
 }
 
 interface DesktopConfigFileV3 {
-  version: typeof CONFIG_VERSION;
-  protocolVersion: typeof PROTOCOL_VERSION;
+  version: 3;
+  protocolVersion: number;
   roomId: string;
   serviceOrigin: string;
   relayEndpoints: BridgeEndpoint[];
@@ -79,7 +102,14 @@ interface DesktopConfigFileV3 {
   devices: StoredDeviceConfig[];
 }
 
-type DesktopConfigFile = DesktopConfigFileV2 | DesktopConfigFileV3;
+interface DesktopConfigFileV4 extends Omit<DesktopConfigFileV3, "version" | "protocolVersion"> {
+  version: typeof CONFIG_VERSION;
+  protocolVersion: typeof PROTOCOL_VERSION;
+  pairingEpoch: number;
+  protectedEvidenceKey?: string;
+}
+
+type DesktopConfigFile = DesktopConfigFileV2 | DesktopConfigFileV3 | DesktopConfigFileV4;
 
 export interface LoadedDeviceConfig {
   deviceId: string;
@@ -97,6 +127,7 @@ export interface LoadedDeviceConfig {
 export interface LoadedDesktopConfig {
   configVersion: typeof CONFIG_VERSION;
   protocolVersion: typeof PROTOCOL_VERSION;
+  pairingEpoch: number;
   roomId: string;
   serviceOrigin: string;
   relayEndpoints: BridgeEndpoint[];
@@ -108,6 +139,7 @@ export interface LoadedDesktopConfig {
   desktopName: string;
   hostDeviceId: string;
   hostSecret: string;
+  evidenceKey: string;
   createdAt: number;
   launchAtLogin: boolean;
   managedDesktopEnabled: boolean;
@@ -141,6 +173,7 @@ function assertConfig(value: unknown): DesktopConfigFile {
   const config = value as {
     version?: unknown;
     protocolVersion?: unknown;
+    pairingEpoch?: unknown;
     roomId?: unknown;
     relayUrl?: unknown;
     serviceOrigin?: unknown;
@@ -151,14 +184,15 @@ function assertConfig(value: unknown): DesktopConfigFile {
     desktopName?: unknown;
     hostDeviceId?: unknown;
     protectedHostSecret?: unknown;
+    protectedEvidenceKey?: unknown;
     createdAt?: unknown;
     launchAtLogin?: unknown;
     managedDesktopEnabled?: unknown;
     devices?: unknown;
   };
   if (
-    (config.version !== 2 && config.version !== CONFIG_VERSION) ||
-    config.protocolVersion !== PROTOCOL_VERSION ||
+    (config.version !== 2 && config.version !== 3 && config.version !== CONFIG_VERSION) ||
+    typeof config.protocolVersion !== "number" ||
     typeof config.roomId !== "string" ||
     typeof config.desktopName !== "string" ||
     typeof config.hostDeviceId !== "string" ||
@@ -182,7 +216,17 @@ function assertConfig(value: unknown): DesktopConfigFile {
       !config.iceServers.every(isBridgeIceServer)
     ))
   ) throw new Error("Desktop transport config is incomplete");
-  return config as unknown as DesktopConfigFileV3;
+  if (
+    config.version === CONFIG_VERSION &&
+    (
+      config.protocolVersion !== PROTOCOL_VERSION ||
+      typeof config.pairingEpoch !== "number" ||
+      !Number.isInteger(config.pairingEpoch) ||
+      config.pairingEpoch < 1 ||
+      (config.protectedEvidenceKey !== undefined && typeof config.protectedEvidenceKey !== "string")
+    )
+  ) throw new Error("Desktop pairing epoch is invalid");
+  return config as unknown as DesktopConfigFile;
 }
 
 function isLoopbackRelay(value: string): boolean {
@@ -286,7 +330,7 @@ function migrateV2(config: DesktopConfigFileV2, defaults: DesktopConfigDefaults)
 }
 
 function refreshV3Endpoints(
-  config: DesktopConfigFileV3,
+  config: DesktopConfigFileV3 | DesktopConfigFileV4,
   defaults: DesktopConfigDefaults,
 ): BridgeEndpoint[] {
   const refreshed = config.relayEndpoints.map((endpoint) => (
@@ -321,6 +365,7 @@ export class DesktopConfigRepository {
     readonly path: string,
     private readonly protector: SecretProtector,
     private readonly defaults: DesktopConfigDefaults,
+    private readonly evidenceProtector: SecretProtector = protector,
   ) {}
 
   async load(): Promise<LoadedDesktopConfig | undefined> {
@@ -351,9 +396,35 @@ export class DesktopConfigRepository {
         : undefined
     ) ?? selectBridgeEndpoint(transport.relayEndpoints, transport.activeEndpoint);
     if (!active) throw new Error("No active relay endpoint is configured");
-    return {
+    if (config.version !== CONFIG_VERSION || config.protocolVersion !== PROTOCOL_VERSION) {
+      const rotated = await BridgeCrypto.createHost(active.url, config.desktopName);
+      const migrated: LoadedDesktopConfig = {
+        configVersion: CONFIG_VERSION,
+        protocolVersion: PROTOCOL_VERSION,
+        pairingEpoch: 1,
+        roomId: rotated.crypto.identity.roomId,
+        serviceOrigin: transport.serviceOrigin || serviceOriginForRelay(active.url),
+        relayEndpoints: transport.relayEndpoints,
+        activeEndpoint: active.id,
+        iceServers: transport.iceServers,
+        migratedAt: Date.now(),
+        relayUrl: active.url,
+        desktopName: config.desktopName,
+        hostDeviceId: config.hostDeviceId,
+        hostSecret: rotated.secret,
+        evidenceKey: randomBytes(32).toString("base64url"),
+        createdAt: config.createdAt,
+        launchAtLogin: config.launchAtLogin,
+        managedDesktopEnabled: false,
+        devices: [],
+      };
+      await this.save(migrated);
+      return migrated;
+    }
+    const loaded: LoadedDesktopConfig = {
       configVersion: CONFIG_VERSION,
       protocolVersion: PROTOCOL_VERSION,
+      pairingEpoch: config.pairingEpoch,
       roomId: config.roomId,
       serviceOrigin: transport.serviceOrigin || serviceOriginForRelay(active.url),
       relayEndpoints: transport.relayEndpoints,
@@ -364,12 +435,17 @@ export class DesktopConfigRepository {
       desktopName: config.desktopName,
       hostDeviceId: config.hostDeviceId,
       hostSecret: this.protector.unprotect(config.protectedHostSecret),
+      evidenceKey: config.protectedEvidenceKey
+        ? this.evidenceProtector.unprotect(config.protectedEvidenceKey)
+        : randomBytes(32).toString("base64url"),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
       // The unsupported managed Desktop experiment remains disabled during upgrade.
       managedDesktopEnabled: false,
       devices: config.devices.map((device) => loadDevice(device, this.protector)),
     };
+    if (!config.protectedEvidenceKey) await this.save(loaded);
+    return loaded;
   }
 
   async loadOrCreate(): Promise<LoadedDesktopConfig> {
@@ -393,6 +469,7 @@ export class DesktopConfigRepository {
     const loaded: LoadedDesktopConfig = {
       configVersion: CONFIG_VERSION,
       protocolVersion: PROTOCOL_VERSION,
+      pairingEpoch: 1,
       roomId: crypto.identity.roomId,
       serviceOrigin: this.defaults.serviceOrigin ?? serviceOriginForRelay(active.url),
       relayEndpoints,
@@ -402,6 +479,7 @@ export class DesktopConfigRepository {
       desktopName: crypto.identity.desktopName,
       hostDeviceId: crypto.identity.deviceId,
       hostSecret: secret,
+      evidenceKey: randomBytes(32).toString("base64url"),
       createdAt: Date.now(),
       launchAtLogin,
       managedDesktopEnabled: false,
@@ -415,9 +493,10 @@ export class DesktopConfigRepository {
     const endpoints = normalizeBridgeEndpoints(config.relayEndpoints);
     const active = selectBridgeEndpoint(endpoints, config.activeEndpoint);
     if (!active) throw new Error("No active relay endpoint is configured");
-    const stored: DesktopConfigFileV3 = {
+    const stored: DesktopConfigFileV4 = {
       version: CONFIG_VERSION,
       protocolVersion: PROTOCOL_VERSION,
+      pairingEpoch: config.pairingEpoch,
       roomId: config.roomId,
       serviceOrigin: config.serviceOrigin,
       relayEndpoints: endpoints,
@@ -427,6 +506,7 @@ export class DesktopConfigRepository {
       desktopName: config.desktopName,
       hostDeviceId: config.hostDeviceId,
       protectedHostSecret: this.protector.protect(config.hostSecret),
+      protectedEvidenceKey: this.evidenceProtector.protect(config.evidenceKey),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
       managedDesktopEnabled: config.managedDesktopEnabled,

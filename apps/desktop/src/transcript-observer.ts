@@ -1,10 +1,13 @@
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type { ClaudeHistoryMessage } from "@bridge/protocol";
 import {
+  ClaudeTranscriptEvidenceCursor,
   isClaudeTranscriptAtTurnBoundary,
   parseClaudeTranscriptSnapshot,
 } from "./claude-history.js";
+import type { ObservedDesktopEvidence } from "./evidence-manager.js";
 import {
   scanClaudeCatalog,
   type ClaudeCatalogSnapshot,
@@ -19,6 +22,9 @@ export interface TranscriptObserverOptions {
   pollIntervalMs?: number;
   catalogIntervalMs?: number;
   idleGraceMs?: number;
+  evidence?: {
+    upsertDesktopEvidence(input: ObservedDesktopEvidence): Promise<unknown>;
+  };
 }
 
 export class TranscriptObserver extends EventEmitter {
@@ -33,7 +39,15 @@ export class TranscriptObserver extends EventEmitter {
   private readonly knownUserMessages = new Map<string, Map<string, string>>();
   private readonly lastChangedAt = new Map<string, number>();
   private readonly lastMtime = new Map<string, number>();
+  private readonly transcriptTurnBoundaries = new Map<string, boolean>();
   private readonly externalWriteVersions = new Map<string, number>();
+  private readonly knownEvidence = new Map<string, string>();
+  private evidenceFailureReported = false;
+  private readonly evidenceCursors = new Map<string, {
+    path: string;
+    cursor: ClaudeTranscriptEvidenceCursor;
+  }>();
+  private readonly evidenceBackfill = new Set<string>();
   private nextCatalogAt = 0;
 
   constructor(private readonly options: TranscriptObserverOptions) {
@@ -60,8 +74,12 @@ export class TranscriptObserver extends EventEmitter {
   isDesktopBusy(sessionId: string, now = Date.now()): boolean {
     const session = this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
     if (!session) return false;
+    if (session.activeTask) return true;
+    if (!session.processAlive) return false;
+    const atTurnBoundary = this.transcriptTurnBoundaries.get(sessionId);
+    if (atTurnBoundary !== undefined) return !atTurnBoundary;
     const changedAt = this.lastChangedAt.get(sessionId) ?? session.transcriptMtimeMs;
-    return session.activeTask || (session.processAlive && now - changedAt < this.idleGraceMs);
+    return now - changedAt < this.idleGraceMs;
   }
 
   externalWriteVersion(sessionId: string): number {
@@ -102,6 +120,9 @@ export class TranscriptObserver extends EventEmitter {
             .map((session) => session.sessionId),
         );
         for (const session of catalog.sessions) {
+          if (session.transcriptPath && !this.evidenceCursors.has(session.sessionId)) {
+            this.evidenceBackfill.add(session.sessionId);
+          }
           const previousMtime = this.lastMtime.get(session.sessionId);
           this.lastMtime.set(session.sessionId, session.transcriptMtimeMs);
           if (
@@ -116,9 +137,11 @@ export class TranscriptObserver extends EventEmitter {
         }
         this.catalogValue = catalog;
         this.nextCatalogAt = now + this.catalogIntervalMs;
+        await this.backfillEvidence(8);
         changed = true;
       } else {
         changed = await this.pollRecentTranscripts(now);
+        await this.backfillEvidence(8);
       }
       if (changed) this.emit("catalog", this.catalogValue);
     } finally {
@@ -154,6 +177,7 @@ export class TranscriptObserver extends EventEmitter {
   private async observeTranscript(session: ObservedClaudeSession): Promise<void> {
     if (!session.transcriptPath) return;
     const result = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 50 });
+    this.updateTurnBoundary(session.sessionId, result.atTurnBoundary);
     const known = this.knownMessages.get(session.sessionId) ?? new Map<string, string>();
     const knownUsers = this.knownUserMessages.get(session.sessionId) ?? new Map<string, string>();
     // A competing Desktop input can land on a non-terminal branch while Bridge keeps writing.
@@ -187,11 +211,13 @@ export class TranscriptObserver extends EventEmitter {
       await this.appendObserved(session, message);
     }
     this.knownMessages.set(session.sessionId, known);
+    await this.observeEvidence(session);
   }
 
   private async primeTranscript(session: ObservedClaudeSession): Promise<void> {
     if (!session.transcriptPath) return;
     const result = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 50 });
+    this.updateTurnBoundary(session.sessionId, result.atTurnBoundary);
     this.knownMessages.set(
       session.sessionId,
       new Map(result.messages.map((message) => [message.id, message.text])),
@@ -200,6 +226,75 @@ export class TranscriptObserver extends EventEmitter {
       session.sessionId,
       new Map(result.userMessages.map((message) => [message.id, message.text])),
     );
+    await this.observeEvidence(session);
+  }
+
+  private updateTurnBoundary(sessionId: string, atTurnBoundary: boolean | undefined): void {
+    if (atTurnBoundary === undefined) {
+      this.transcriptTurnBoundaries.delete(sessionId);
+      return;
+    }
+    this.transcriptTurnBoundaries.set(sessionId, atTurnBoundary);
+  }
+
+  private async observeEvidence(session: ObservedClaudeSession): Promise<void> {
+    if (!this.options.evidence || !session.transcriptPath) return;
+    const existingCursor = this.evidenceCursors.get(session.sessionId);
+    const cursor = existingCursor?.path === session.transcriptPath
+      ? existingCursor.cursor
+      : new ClaudeTranscriptEvidenceCursor();
+    this.evidenceCursors.set(session.sessionId, {
+      path: session.transcriptPath,
+      cursor,
+    });
+    this.evidenceBackfill.delete(session.sessionId);
+    const turns = await cursor.read(session.transcriptPath);
+    for (const turn of turns) {
+      const tools = turn.tools.filter((tool) => !this.options.eventLog.hasItem(
+        session.sessionId,
+        "tool.started",
+        tool.id,
+      ));
+      if (tools.length === 0) continue;
+      const evidenceId = `desktop-${createHash("sha256")
+        .update(`${session.sessionId}\0${turn.id}`)
+        .digest("base64url")
+        .slice(0, 32)}`;
+      const input: ObservedDesktopEvidence = {
+        id: evidenceId,
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        turnId: turn.id,
+        startedAt: turn.startedAt,
+        completedAt: turn.completedAt,
+        tools,
+        paths: turn.paths,
+      };
+      const signature = createHash("sha256").update(JSON.stringify(input)).digest("base64url");
+      if (this.knownEvidence.get(evidenceId) === signature) continue;
+      try {
+        await this.options.evidence.upsertDesktopEvidence(input);
+        this.knownEvidence.set(evidenceId, signature);
+      } catch {
+        if (!this.evidenceFailureReported) {
+          this.evidenceFailureReported = true;
+          process.stderr.write("Claude Desktop evidence recovery failed; transcript observation will continue.\n");
+        }
+      }
+    }
+  }
+
+  private async backfillEvidence(limit: number): Promise<void> {
+    if (!this.options.evidence || this.evidenceBackfill.size === 0) return;
+    const sessionIds = [...this.evidenceBackfill].slice(0, limit);
+    for (const sessionId of sessionIds) {
+      const session = this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
+      if (!session?.transcriptPath) {
+        this.evidenceBackfill.delete(sessionId);
+        continue;
+      }
+      await this.observeEvidence(session);
+    }
   }
 
   private async appendObserved(session: ObservedClaudeSession, message: ClaudeHistoryMessage): Promise<void> {

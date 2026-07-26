@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   BridgeCrypto,
+  ARTIFACT_TRANSFER_TTL_MS,
   PAIRING_SCHEMA_VERSION,
   PROTOCOL_VERSION,
   RelayTransport,
@@ -35,6 +36,7 @@ import {
   type LoadedDeviceConfig,
 } from "./config.js";
 import type { SessionBroker } from "./session-broker.js";
+import type { EvidenceManager } from "./evidence-manager.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
@@ -66,6 +68,12 @@ function stringParam(params: Record<string, unknown>, key: string, required = tr
 function numberParam(params: Record<string, unknown>, key: string, fallback: number): number {
   const value = params[key];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function integerParam(params: Record<string, unknown>, key: string): number {
+  const value = params[key];
+  if (typeof value !== "number" || !Number.isInteger(value)) throw new Error(`${key} must be an integer`);
+  return value;
 }
 
 function nullableStringParam(params: Record<string, unknown>, key: string): string | null | undefined {
@@ -125,6 +133,8 @@ function pairingForDevice(config: LoadedDesktopConfig, device: LoadedDeviceConfi
   return {
     version: PAIRING_SCHEMA_VERSION,
     protocolVersion: PROTOCOL_VERSION,
+    hostId: config.hostDeviceId,
+    pairingEpoch: config.pairingEpoch,
     roomId: config.roomId,
     deviceId: device.deviceId,
     secret: device.secret,
@@ -187,6 +197,7 @@ export class DesktopController extends EventEmitter {
     private readonly relayConnectUrl: string,
     private readonly broker: SessionBroker,
     private readonly eventLog: SessionEventLog,
+    private readonly evidence: EvidenceManager,
     private readonly claudeDesktop: ClaudeDesktopLifecycle,
     private readonly RTCPeerConnectionImpl?: typeof RTCPeerConnection,
   ) {
@@ -199,6 +210,8 @@ export class DesktopController extends EventEmitter {
     this.config.launchAtLogin = await isLaunchAtLoginEnabled(this.app);
     await this.repository.save(this.config);
     this.hostCrypto = await BridgeCrypto.fromHostSecret({
+      hostId: this.config.hostDeviceId,
+      pairingEpoch: this.config.pairingEpoch,
       roomId: this.config.roomId,
       relayUrl: this.config.relayUrl,
       desktopName: this.config.desktopName,
@@ -220,6 +233,11 @@ export class DesktopController extends EventEmitter {
     this.broker.on("changed", () => void this.publish());
     await this.broker.initialize();
     await this.connect();
+    if (!this.config.devices.some((device) => (
+      !device.revokedAt && (Boolean(device.pairedAt) || device.expiresAt > Date.now())
+    ))) {
+      await this.createPairing();
+    }
   }
 
   async snapshot(): Promise<DesktopControlSnapshot> {
@@ -230,11 +248,13 @@ export class DesktopController extends EventEmitter {
     return {
       host: {
         hostId: this.config.hostDeviceId,
+        pairingEpoch: this.config.pairingEpoch,
         name: this.config.desktopName,
         relayUrl: this.config.relayUrl,
         online: this.connection === "connected",
         lastSeenAt: this.lastSeenAt,
         version: this.app.getVersion(),
+        capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1"],
       },
       projects: this.broker.listProjects(),
       sessions: this.broker.listSessions(),
@@ -277,6 +297,8 @@ export class DesktopController extends EventEmitter {
   async createPairing(): Promise<DesktopControlSnapshot> {
     if (!this.config) throw new Error("Desktop controller is not initialized");
     const created = await BridgeCrypto.createDevicePairing({
+      hostId: this.config.hostDeviceId,
+      pairingEpoch: this.config.pairingEpoch,
       roomId: this.config.roomId,
       relayUrl: this.config.relayUrl,
       desktopName: this.config.desktopName,
@@ -366,7 +388,7 @@ export class DesktopController extends EventEmitter {
     return {
       generatedAt: new Date().toISOString(),
       bridgeVersion: this.app.getVersion(),
-      protocolVersion: 2,
+      protocolVersion: PROTOCOL_VERSION,
       platform: process.platform,
       arch: process.arch,
       node: process.version,
@@ -539,8 +561,16 @@ export class DesktopController extends EventEmitter {
     } catch (error) {
       response = errorResponse(message.payload.requestId, error);
     }
-    this.cacheResponse(response);
-    await this.sendToDevice(response, message.header.fromDeviceId).catch(() => undefined);
+    if (
+      message.payload.method !== "artifact.preview" &&
+      message.payload.method !== "artifact.transfer.read"
+    ) this.cacheResponse(response);
+    await this.sendToDevice(
+      response,
+      message.header.fromDeviceId,
+      message.payload.method.startsWith("artifact.") ? ARTIFACT_TRANSFER_TTL_MS : undefined,
+      message.payload.method.startsWith("artifact."),
+    ).catch(() => undefined);
     this.socket?.ack([encrypted.id]);
     if (
       message.payload.method === "device.revoke" &&
@@ -715,6 +745,52 @@ export class DesktopController extends EventEmitter {
         hasMore: nextSeq < latestSeq,
       };
     }
+    if (request.method === "evidence.list") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (!this.broker.session(sessionId)) throw new Error("Session not found");
+      return {
+        evidence: this.evidence.list(
+          sessionId,
+          stringParam(params, "cursor", false),
+          numberParam(params, "limit", 30),
+        ),
+      };
+    }
+    if (request.method === "evidence.get") {
+      const evidence = this.evidence.get(stringParam(params, "evidenceId")!);
+      if (!evidence) throw new Error("Evidence not found");
+      return { evidence };
+    }
+    if (request.method === "artifact.preview") {
+      return {
+        preview: await this.evidence.preview(stringParam(params, "artifactId")!),
+      };
+    }
+    if (request.method === "artifact.transfer.open") {
+      return {
+        transfer: await this.evidence.openTransfer(
+          stringParam(params, "artifactId")!,
+          sourceDeviceId ?? "desktop",
+        ),
+      };
+    }
+    if (request.method === "artifact.transfer.read") {
+      return {
+        chunk: this.evidence.readTransfer(
+          stringParam(params, "transferId")!,
+          integerParam(params, "index"),
+          sourceDeviceId ?? "desktop",
+        ),
+      };
+    }
+    if (request.method === "artifact.transfer.close") {
+      return {
+        closed: this.evidence.closeTransfer(
+          stringParam(params, "transferId")!,
+          sourceDeviceId ?? "desktop",
+        ),
+      };
+    }
     if (request.method === "device.revoke") {
       const deviceId = stringParam(params, "deviceId")!;
       if (origin === "mobile" && sourceDeviceId !== deviceId) throw new Error("A phone can only revoke itself");
@@ -727,13 +803,20 @@ export class DesktopController extends EventEmitter {
     await this.sendToDevice({ kind: "snapshot", snapshot: await this.snapshot() }, deviceId).catch(() => undefined);
   }
 
-  private async sendToDevice(payload: BridgePayload, deviceId: string): Promise<string> {
+  private async sendToDevice(
+    payload: BridgePayload,
+    deviceId: string,
+    ttlMs?: number,
+    temporary = false,
+  ): Promise<string> {
     if (!this.socket || this.connection !== "connected") throw new Error("Bridge is not connected");
     const crypto = this.deviceCryptos.get(deviceId);
     if (!crypto) throw new Error("Device key is unavailable");
     return this.socket.send(payload, "mobile", {
       toDeviceId: deviceId,
       crypto,
+      ...(ttlMs !== undefined ? { ttlMs } : {}),
+      ...(temporary ? { temporary: true } : {}),
     });
   }
 

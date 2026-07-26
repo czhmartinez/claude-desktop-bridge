@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
+  PROTOCOL_VERSION,
   parseClientFrame,
   type BridgeRole,
   type ClientHello,
@@ -108,7 +109,11 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
   const httpServer = createServer((request, response) => {
     if (request.method === "GET" && request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(JSON.stringify({ ok: true, service: "claude-bridge-relay", version: 3 }));
+      response.end(JSON.stringify({
+        ok: true,
+        service: "claude-bridge-relay",
+        version: PROTOCOL_VERSION,
+      }));
       return;
     }
     if (request.method === "GET" && request.url === "/ready") {
@@ -254,7 +259,7 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
         return;
       }
     } else {
-      sendError(ws, "ROLE_UNSUPPORTED", "Agent relay clients are not used by protocol v2", 1008);
+      sendError(ws, "ROLE_UNSUPPORTED", "Agent relay clients are not used by protocol v3", 1008);
       return;
     }
 
@@ -352,6 +357,24 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
         try {
           frame = parseClientFrame(raw);
         } catch {
+          try {
+            const candidate = JSON.parse(raw) as { type?: unknown; version?: unknown };
+            if (
+              candidate.type === "hello" &&
+              typeof candidate.version === "number" &&
+              candidate.version !== PROTOCOL_VERSION
+            ) {
+              sendError(
+                ws,
+                "UPGRADE_REQUIRED",
+                `Protocol ${PROTOCOL_VERSION} requires re-pairing`,
+                1008,
+              );
+              return;
+            }
+          } catch {
+            // The generic invalid-frame response below covers malformed JSON.
+          }
           sendError(ws, "INVALID_FRAME", "The frame could not be read");
           return;
         }
@@ -436,11 +459,13 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
             sendError(ws, "INVALID_ENVELOPE", "Chunk metadata does not match this connection");
             return;
           }
-          const storedIndexes = new Set(store.chunkIndexes(
-            client.roomId,
-            frame.manifest.transferId,
-            client.deviceId,
-          ));
+          const storedIndexes = frame.manifest.temporary
+            ? new Set<number>()
+            : new Set(store.chunkIndexes(
+                client.roomId,
+                frame.manifest.transferId,
+                client.deviceId,
+              ));
           const indexes = Array.from(
             { length: frame.manifest.total },
             (_, index) => index,
@@ -473,6 +498,18 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
         const item = frame.type === "envelope-chunk" ? frame.chunk : frame.envelope;
         if (!validateEnvelope(client, item)) {
           sendError(ws, "INVALID_ENVELOPE", "Envelope metadata does not match this connection");
+          return;
+        }
+        if (item.temporary) {
+          const recipients = roomClients(
+            client.roomId,
+            item.to,
+            item.toDeviceId,
+          );
+          for (const [target] of recipients) safeSend(target, "transferId" in item
+            ? { type: "envelope-chunk", chunk: item }
+            : { type: "envelope", envelope: item });
+          safeSend(ws, { type: "stored", ids: [relayItemId(item)] });
           return;
         }
         const completeBefore = "transferId" in item && store.chunkIndexes(

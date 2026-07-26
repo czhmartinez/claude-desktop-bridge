@@ -40,8 +40,9 @@ export function serializeHeader(header: {
   toDeviceId?: string;
   sentAt: number;
   expiresAt: number;
+  temporary?: true;
 }): Uint8Array<ArrayBuffer> {
-  return utf8([
+  const fields: Array<string | number> = [
     header.version,
     header.id,
     header.roomId,
@@ -51,5 +52,9 @@ export function serializeHeader(header: {
     header.toDeviceId ?? "",
     header.sentAt,
     header.expiresAt,
-  ].join("\u001f"));
+  ];
+  // Keep reliable V1/V2/V3 vault records byte-compatible; append only for
+  // authenticated transient V3 envelopes.
+  if (header.temporary) fields.push("temporary");
+  return utf8(fields.join("\u001f"));
 }

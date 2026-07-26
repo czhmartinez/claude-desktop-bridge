@@ -1,11 +1,13 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ClaudeTranscriptEvidenceCursor,
   findClaudeTranscriptFile,
   isClaudeTranscriptAtTurnBoundary,
   parseClaudeTranscript,
+  parseClaudeTranscriptEvidence,
   readClaudeSessionContextEstimate,
   readClaudeSessionHistory,
   readClaudeTranscriptUserMessages,
@@ -295,5 +297,151 @@ describe("Claude transcript history", () => {
       totalTokens: 81_000,
       model: "wire-model",
     });
+  });
+
+  it("recovers completed tool evidence without exposing thinking or duplicating tool results", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-evidence-"));
+    directories.push(root);
+    const transcript = join(root, "evidence.jsonl");
+    await writeFile(transcript, [
+      line({
+        type: "user",
+        uuid: "user-1",
+        parentUuid: null,
+        message: { role: "user", content: "Build the report" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "assistant-tool",
+        parentUuid: "user-1",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "hidden chain of thought" },
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Bash",
+              input: { command: "node ./scripts/build.js > ./dist/report.html" },
+            },
+          ],
+          stop_reason: "tool_use",
+        },
+      }),
+      line({
+        type: "user",
+        uuid: "result-1",
+        parentUuid: "assistant-tool",
+        toolUseResult: { exitCode: 0, stdout: "done" },
+        message: {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: { exitCode: 0, stdout: "done" },
+          }],
+        },
+      }),
+      line({
+        type: "assistant",
+        uuid: "assistant-end",
+        parentUuid: "result-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "still hidden" }],
+          stop_reason: "end_turn",
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    const evidence = await parseClaudeTranscriptEvidence(transcript);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      id: "user-1",
+      tools: [{
+        id: "tool-1",
+        toolName: "Bash",
+        output: {
+          bodyOmitted: true,
+          byteLength: 30,
+          lineCount: 1,
+          truncated: false,
+          exitCode: 0,
+        },
+      }],
+    });
+    expect(evidence[0]?.paths).toEqual(expect.arrayContaining([
+      "./scripts/build.js",
+      "./dist/report.html",
+    ]));
+    expect(JSON.stringify(evidence)).not.toContain("hidden chain of thought");
+  });
+
+  it("incrementally survives duplicate scans, half-written records, truncation and rotation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-evidence-cursor-"));
+    directories.push(root);
+    const transcript = join(root, "cursor.jsonl");
+    const cursor = new ClaudeTranscriptEvidenceCursor();
+    const user = line({
+      type: "user",
+      uuid: "user-1",
+      parentUuid: null,
+      message: { role: "user", content: "Read" },
+    });
+    const tool = line({
+      type: "assistant",
+      uuid: "assistant-tool",
+      parentUuid: "user-1",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "a.txt" } }],
+        stop_reason: "tool_use",
+      },
+    });
+    const result = line({
+      type: "user",
+      uuid: "result-1",
+      parentUuid: "assistant-tool",
+      toolUseResult: "ok",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }] },
+    });
+    await writeFile(transcript, `${user}\n${tool}\n${result.slice(0, 30)}`, "utf8");
+    await expect(cursor.read(transcript)).resolves.toEqual([]);
+    await appendFile(transcript, `${result.slice(30)}\n`, "utf8");
+    const completed = await cursor.read(transcript);
+    expect(completed).toHaveLength(1);
+    await expect(cursor.read(transcript)).resolves.toEqual(completed);
+
+    const replacement = [
+      line({
+        type: "user",
+        uuid: "user-2",
+        parentUuid: null,
+        message: { role: "user", content: "Write" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "tool-2-node",
+        parentUuid: "user-2",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "tool-2", name: "Write", input: { file_path: "b.txt" } }],
+          stop_reason: "tool_use",
+        },
+      }),
+      line({
+        type: "user",
+        uuid: "result-2",
+        parentUuid: "tool-2-node",
+        tool_use_result: "ok",
+        message: { role: "user", content: [] },
+      }),
+    ].join("\n");
+    await writeFile(transcript, replacement, "utf8");
+    expect((await cursor.read(transcript))[0]?.id).toBe("user-2");
+
+    await rename(transcript, `${transcript}.old`);
+    await writeFile(transcript, replacement.replaceAll("user-2", "user-3"), "utf8");
+    expect((await cursor.read(transcript))[0]?.id).toBe("user-3");
   });
 });

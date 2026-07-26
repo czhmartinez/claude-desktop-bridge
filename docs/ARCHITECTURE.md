@@ -1,4 +1,4 @@
-# Bridge 0.3 架构
+# Bridge 0.4 架构
 
 ## 产品边界
 
@@ -10,13 +10,17 @@ flowchart LR
   M["Android / iOS"] <-->|"WebRTC DataChannel"| D["Bridge Desktop"]
   M <-->|"公网 WSS / 局域网 WS"| T["TransportRouter"]
   D <-->|"公网 WSS / 局域网 WS"| T
-  T <-->|"协议 v2 加密信封"| R["Relay"]
+  T <-->|"协议 V3 加密信封"| R["Relay"]
   M -.->|"STUN Binding"| S["STUN"]
   D -.->|"STUN Binding"| S
   D --> B["SessionBroker"]
   B --> H["ClaudeSessionHost"]
   H <-->|"Agent SDK Streaming Input"| C["Claude Host"]
   O["TranscriptObserver"] -->|"只读 JSONL 与元数据"| B
+  B --> EM["EvidenceManager"]
+  O -->|"事后工具记录"| EM
+  EM --> ES[("Evidence SQLite + AES-GCM blobs")]
+  EM --> AP["ArtifactPreview"]
   B --> E[("SessionEventLog JSONL")]
   R -. "仅见路由元数据与密文" .-> Q[("SQLite WAL 按设备离线队列")]
 ```
@@ -30,10 +34,13 @@ Claude Desktop 当前窗口不承诺即时刷新；释放后仍可从相同 `ses
 |---|---|
 | `ClaudeSessionHost` | Agent SDK 持久输入、准确 resume、流式事件、工具审批和中断 |
 | `SessionBroker` | 单写入者、所有权状态、两路并发、持久队列和幂等 |
-| `TranscriptObserver` | 只读观察 Claude Desktop 会话、历史和运行状态 |
+| `TranscriptObserver` | 只读观察 Claude Desktop 会话，并增量恢复事后工具记录 |
 | `SessionEventLog` | 追加式 JSONL、单调 `seq`、delta 合并、history/cursor |
 | `PermissionBroker` | `canUseTool` 与 `AskUserQuestion` 的首次有效答复 |
-| `packages/protocol` | 请求/响应/事件/快照、AES-GCM、设备定向 ACK |
+| `EvidenceManager` | 每轮证据生命周期、工具脱敏、变更归因、预览和传输租约 |
+| `EvidenceStore` | SQLite 清单、加密内容寻址快照、保留策略和按需重建 |
+| `ArtifactPreview` | 图片缩放和隔离、禁网的 HTML 静态截图 |
+| `packages/protocol` | 请求/响应/事件/证据/快照、AES-GCM、设备定向 ACK |
 | `BridgeTransport` | 公网与局域网使用同一 Envelope、ACK、幂等和事件 cursor |
 | `WebRtcTransport` | 加密信令、五秒直连竞争、DataChannel 分块、ACK 与无缝回退 |
 | `apps/relay` | 鉴权、SQLite 离线密文、分块、撤销、指标、备份和无正文推送 |
@@ -74,6 +81,27 @@ Bridge 自身事件写入 `events-v2.jsonl`，最终消息、工具结果、审�
 客户端保存最后 `seq`，重连后调用 `events.resume`。Relay ACK 只表示密文已保存或
 目标设备已收到；`session-received`、`running` 和最终状态只能由 Host 事件产生。
 
+## 成果证据
+
+Bridge 任务在进入 Agent SDK 前创建证据占位和工作区基线。工具输入、进度、结果、
+退出码和脱敏输出直接来自 SDK 事件；turn 结束后等待文件系统静默一秒，最多五秒，
+再将结构化工具路径、命令提及路径和文件监听结果取并集。任务开始前已有的脏改动
+不归入本轮；同目录并发任务、基线超限或监听不完整时，可信度降为 `partial`。
+
+`TranscriptObserver` 对已发现的 Claude JSONL 使用 inode、字节偏移量、半行缓冲和
+消息 ID 游标增量解析。它只保留 `tool_use/tool_result`、命令和路径线索，明确忽略
+`thinking`，也不会为了补证据扫描项目目录。此来源固定为 `inferred`；用户打开
+产物时才通过当前项目根目录校验路径、读取文件并缓存当时版本。
+
+证据清单写入 SQLite WAL。可预览或下载的正文使用由 Electron `safeStorage` 保护的
+主密钥，以 AES-256-GCM 加密为内容寻址 blob。正文达到 30 天或 1 GiB 时按 LRU
+清理，清单继续保留；只有源文件哈希仍一致时才能重建失效快照。
+
+事件 `evidence.started/updated/ready/failed` 只携带摘要和清单。`artifact.preview`
+按需返回有界预览；`artifact.transfer.open/read/close` 使用 256 KiB 分块、十分钟
+租约、缺块重试和最终 SHA-256 校验，单文件上限 20 MiB。产物响应为十分钟临时
+消息，不进入 Relay 七天离线队列。
+
 ## 配对与推送
 
 每次二维码生成一个十分钟有效的设备凭据。Relay 只允许该设备凭据首次绑定到一个
@@ -83,12 +111,16 @@ Bridge 自身事件写入 `events-v2.jsonl`，最终消息、工具结果、审�
 FCM/APNs 只发送 `bridge-wake` 或 `content-available`，不包含会话 ID、消息摘要或
 正文。App 唤醒后再从 Relay 获取并端到端解密。
 
-配置和配对 schema v3 将 Relay 端点从加密身份中解耦。旧 `relayUrl` 自动保留为
-局域网候选，固定公网 WSS 优先；切换端点不会改变 `roomId`、设备凭据、Envelope
-ID 或事件 cursor。大信封先加密再按 64 KiB 分块，Relay 不参与解密；目标端完成
-SHA-256 校验、重组和 AES-GCM 解密后才发送最终 ACK。
+协议 V3 与配对 schema V4 有意拒绝 V0.3 设备。首次迁移保留稳定 `hostId`、设置、
+会话历史和本地事件，同时提升 `pairingEpoch`，轮换房间、Host 凭据和端到端密钥，
+并清空旧设备授权。手机将旧记录标为“需要重新配对”；新二维码包含相同 `hostId`，
+重配后本地缓存重新挂回该主机。
 
-0.3.1 在可靠 Relay 之上增加 WebRTC DataChannel。手机通过加密 Envelope 发送
+Relay 端点仍与加密身份解耦，固定公网 WSS 优先，局域网端点作为候选。大信封先
+加密再按 64 KiB 传输分块，Relay 不参与解密；目标端完成 SHA-256 校验、重组和
+AES-GCM 解密后才发送最终 ACK。
+
+可靠 Relay 之上同时提供 WebRTC DataChannel。手机通过加密 Envelope 发送
 SDP/ICE，Relay 无法读取候选地址；STUN 只返回公网映射，不承载 Bridge 业务数据。
 直连打开前仍使用 WSS，打开后相同 Envelope ID 直接传输；DataChannel 中断时，
 未确认 outbox 使用原 ID 回退 Relay，因此不会重复执行指令。首版不使用 TURN，
@@ -103,3 +135,9 @@ Bridge 只使用 Claude Desktop 已经存在的第三方 Host 凭据路径，不
 Desktop 会话元数据继承精确 `model` 与 `effort`，包括 `[1m]` 上下文后缀，避免
 恢复自定义模型别名时静默退回默认上下文通道。如果 SDK 将来不兼容，
 唯一允许的降级是持久 `stream-json` 进程，不能退回单次 `-p`。
+
+## 明确不做
+
+Bridge 不展示、存储或从行为推断隐藏 CoT，也不重新接入 Claude Desktop 私有 CDP。
+V0.4 不提供项目目录树、远程编辑器、动态站点直播、自动启动开发服务、PDF 内嵌
+渲染或超过 20 MiB 的文件传输。

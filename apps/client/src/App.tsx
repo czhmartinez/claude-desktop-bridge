@@ -63,6 +63,7 @@ export function App() {
         onSelect={mobile.selectHost}
         onRemove={mobile.forgetHost}
         onAdd={() => setPairingOpen(true)}
+        onRepair={() => setPairingOpen(true)}
       />
     );
   }
@@ -75,6 +76,9 @@ export function App() {
       permissions={mobile.state.permissions}
       focusSessionId={mobile.state.focusSessionId}
       histories={mobile.state.histories}
+      evidence={mobile.state.evidence}
+      artifactPreviews={mobile.state.artifactPreviews}
+      artifactTransfers={mobile.state.artifactTransfers}
       events={mobile.state.events}
       localTurns={mobile.state.localTurns}
       connectionIssue={mobile.state.connectionIssue}
@@ -84,6 +88,9 @@ export function App() {
       onToggleTheme={toggleTheme}
       onOpenSession={mobile.openSession}
       onLoadOlderHistory={mobile.loadOlderHistory}
+      onLoadOlderEvidence={mobile.loadOlderEvidence}
+      onPreviewArtifact={mobile.previewArtifact}
+      onDownloadArtifact={mobile.downloadArtifact}
       onSendTurn={mobile.sendTurn}
       onInterruptTurn={mobile.interruptTurn}
       onResolveUncertain={mobile.resolveUncertainDelivery}

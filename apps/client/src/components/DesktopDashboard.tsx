@@ -1,5 +1,9 @@
 import type {
   BridgeAttachment,
+  BridgeArtifactManifest,
+  BridgeArtifactPreview,
+  BridgeEvidenceBundle,
+  BridgeEvidencePage,
   BridgeEvent,
   BridgeHistoryPage,
   BridgeResponse,
@@ -33,7 +37,8 @@ import {
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "../hooks/useTheme.js";
-import type { SessionHistoryState } from "../hooks/useMobileBridge.js";
+import type { SessionEvidenceState, SessionHistoryState } from "../hooks/useMobileBridge.js";
+import { downloadBridgeArtifact } from "../lib/artifact-download.js";
 import {
   collapseProjects,
   expandAllProjects,
@@ -43,8 +48,14 @@ import {
 import type { LocalBridgeRequest } from "../runtime/desktop.js";
 import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
+import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { IconButton } from "./IconButton.js";
-import { conversationItems, fileToAttachment, PermissionPrompt } from "./MobileWorkspace.js";
+import {
+  conversationItems,
+  conversationTimeline,
+  fileToAttachment,
+  PermissionPrompt,
+} from "./MobileWorkspace.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -79,6 +90,9 @@ function connectionLabel(snapshot: DesktopControlSnapshot): string {
 function sessionState(session: BridgeSessionInfo): string {
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
+  if (session.ownership === "DESKTOP_OBSERVED" && session.turnState === "running") {
+    return "桌面运行中";
+  }
   if (session.turnState === "running") return "运行中";
   if (session.turnState === "queued") return "排队中";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
@@ -111,6 +125,10 @@ function DesktopSessions({
 }) {
   const [selectedId, setSelectedId] = useState(snapshot.sessions[0]?.sessionId);
   const [history, setHistory] = useState<Record<string, SessionHistoryState>>({});
+  const [evidence, setEvidence] = useState<Record<string, SessionEvidenceState>>({});
+  const [artifactPreviews, setArtifactPreviews] = useState<Record<string, BridgeArtifactPreview>>({});
+  const [artifactTransfers, setArtifactTransfers] = useState<Record<string, number>>({});
+  const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<BridgeAttachment[]>([]);
   const [steer, setSteer] = useState(false);
@@ -123,6 +141,7 @@ function DesktopSessions({
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
   const bridgeRunning = selected?.turnState === "running" && (
     selected.ownership === "BRIDGE_RUNNING" ||
     selected.ownership === "DESKTOP_MANAGED_RUNNING"
@@ -130,6 +149,10 @@ function DesktopSessions({
   const items = useMemo(() => (
     selectedId ? conversationItems(selectedId, history[selectedId], events, []) : []
   ), [events, history, selectedId]);
+  const timeline = useMemo(
+    () => conversationTimeline(items, selectedEvidence?.items ?? []),
+    [items, selectedEvidence?.items],
+  );
   const grouped = useMemo(() => {
     const map = new Map<string, BridgeSessionInfo[]>();
     for (const session of snapshot.sessions) {
@@ -165,9 +188,40 @@ function DesktopSessions({
   useEffect(() => {
     if (!selectedId) return;
     setSteer(false);
+    setSessionView("conversation");
     setConfigurationOpen(false);
     void openSession(selectedId);
   }, [selectedId]);
+
+  useEffect(() => {
+    const incoming = events.flatMap((event): BridgeEvidenceBundle[] => {
+      if (!event.type.startsWith("evidence.")) return [];
+      const item = event.data.evidence as Partial<BridgeEvidenceBundle> | undefined;
+      if (
+        !item ||
+        typeof item.id !== "string" ||
+        typeof item.sessionId !== "string" ||
+        !Array.isArray(item.tools) ||
+        !Array.isArray(item.artifacts)
+      ) return [];
+      return [item as BridgeEvidenceBundle];
+    });
+    if (incoming.length === 0) return;
+    setEvidence((current) => {
+      const next = { ...current };
+      for (const item of incoming) {
+        const previous = next[item.sessionId] ?? { status: "ready", items: [], hasMore: false };
+        const merged = new Map(previous.items.map((candidate) => [candidate.id, candidate]));
+        merged.set(item.id, item);
+        next[item.sessionId] = {
+          ...previous,
+          status: "ready",
+          items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
+        };
+      }
+      return next;
+    });
+  }, [events]);
 
   useEffect(() => {
     if (selectedId && snapshot.sessions.some((session) => session.sessionId === selectedId)) return;
@@ -187,11 +241,28 @@ function DesktopSessions({
         hasMore: current[sessionId]?.hasMore ?? false,
       },
     }));
+    setEvidence((current) => ({
+      ...current,
+      [sessionId]: {
+        status: "loading",
+        items: current[sessionId]?.items ?? [],
+        hasMore: current[sessionId]?.hasMore ?? false,
+      },
+    }));
     try {
-      const result = unwrap<{ history: BridgeHistoryPage }>(await apiRequest({
-        method: "session.open",
-        params: { sessionId },
-      }));
+      const [result, evidenceResult] = await Promise.all([
+        apiRequest({
+          method: "session.open",
+          params: { sessionId },
+        }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)),
+        apiRequest({
+          method: "evidence.list",
+          params: { sessionId, limit: 30 },
+        }).then((response) => response.ok
+          ? response.result as { evidence: BridgeEvidencePage }
+          : undefined)
+          .catch(() => undefined),
+      ]);
       setHistory((current) => ({
         ...current,
         [sessionId]: {
@@ -201,11 +272,99 @@ function DesktopSessions({
           ...(result.history.nextCursor ? { nextCursor: result.history.nextCursor } : {}),
         },
       }));
+      setEvidence((current) => {
+        const merged = new Map(
+          (current[sessionId]?.items ?? []).map((item) => [item.id, item]),
+        );
+        for (const item of evidenceResult?.evidence.items ?? []) merged.set(item.id, item);
+        return {
+          ...current,
+          [sessionId]: {
+            status: evidenceResult ? "ready" : merged.size > 0 ? "ready" : "error",
+            items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
+            hasMore: evidenceResult?.evidence.hasMore ?? false,
+            ...(evidenceResult?.evidence.nextCursor
+              ? { nextCursor: evidenceResult.evidence.nextCursor }
+              : {}),
+          },
+        };
+      });
     } catch {
       setHistory((current) => ({
         ...current,
         [sessionId]: { status: "error", items: current[sessionId]?.items ?? [], hasMore: false },
       }));
+      setEvidence((current) => ({
+        ...current,
+        [sessionId]: {
+          status: current[sessionId]?.items.length ? "ready" : "error",
+          items: current[sessionId]?.items ?? [],
+          hasMore: current[sessionId]?.hasMore ?? false,
+        },
+      }));
+    }
+  }
+
+  async function loadOlderEvidence(): Promise<void> {
+    if (!selectedId) return;
+    const current = evidence[selectedId];
+    if (!current?.nextCursor || current.status === "loading") return;
+    setEvidence((value) => ({
+      ...value,
+      [selectedId]: { ...current, status: "loading" },
+    }));
+    try {
+      const result = unwrap<{ evidence: BridgeEvidencePage }>(await apiRequest({
+        method: "evidence.list",
+        params: { sessionId: selectedId, cursor: current.nextCursor, limit: 30 },
+      }));
+      const merged = new Map(current.items.map((item) => [item.id, item]));
+      for (const item of result.evidence.items) merged.set(item.id, item);
+      setEvidence((value) => ({
+        ...value,
+        [selectedId]: {
+          status: "ready",
+          items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
+          hasMore: result.evidence.hasMore,
+          ...(result.evidence.nextCursor ? { nextCursor: result.evidence.nextCursor } : {}),
+        },
+      }));
+    } catch {
+      setEvidence((value) => ({
+        ...value,
+        [selectedId]: { ...current, status: "error" },
+      }));
+    }
+  }
+
+  async function previewArtifact(artifactId: string): Promise<BridgeArtifactPreview> {
+    const cached = artifactPreviews[artifactId];
+    if (cached) return cached;
+    const preview = unwrap<{ preview: BridgeArtifactPreview }>(await apiRequest({
+      method: "artifact.preview",
+      params: { artifactId },
+    })).preview;
+    setArtifactPreviews((current) => ({ ...current, [artifactId]: preview }));
+    return preview;
+  }
+
+  async function downloadArtifact(artifact: BridgeArtifactManifest): Promise<void> {
+    setArtifactTransfers((current) => ({ ...current, [artifact.id]: 0 }));
+    try {
+      await downloadBridgeArtifact(
+        artifact,
+        async (method, params) => apiRequest({ method, params }),
+        (progress) => setArtifactTransfers((current) => ({
+          ...current,
+          [artifact.id]: progress,
+        })),
+      );
+    } finally {
+      setArtifactTransfers((current) => {
+        const next = { ...current };
+        delete next[artifact.id];
+        return next;
+      });
     }
   }
 
@@ -385,12 +544,36 @@ function DesktopSessions({
                 <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；持续冲突时再结束重复进程。</span>
               </div>
             )}
+            <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
+              <button
+                type="button"
+                className={sessionView === "conversation" ? "active" : ""}
+                onClick={() => setSessionView("conversation")}
+              >
+                对话
+              </button>
+              <button
+                type="button"
+                className={sessionView === "evidence" ? "active" : ""}
+                onClick={() => setSessionView("evidence")}
+              >
+                成果
+                {(selectedEvidence?.items.length ?? 0) > 0 && <b>{selectedEvidence!.items.length}</b>}
+              </button>
+            </nav>
+            {sessionView === "conversation" ? (
             <div className="desktop-conversation-stream" ref={streamRef}>
               {history[selected.sessionId]?.status === "loading" && items.length === 0 && <div className="desktop-conversation-empty">正在读取会话</div>}
-              {items.map((item) => (
-                <article className={`conversation-item ${item.role}`} key={item.id}>
-                  <div className="conversation-item-meta"><strong>{item.role === "user" ? "你" : item.role === "assistant" ? "Claude" : item.toolName ?? "Bridge"}</strong></div>
-                  <div className="conversation-text">{item.text}</div>
+              {timeline.map((entry) => entry.kind === "evidence" ? (
+                <EvidenceInlineSummary
+                  evidence={entry.evidence}
+                  key={`evidence:${entry.evidence.id}`}
+                  onOpen={() => setSessionView("evidence")}
+                />
+              ) : (
+                <article className={`conversation-item ${entry.item.role}`} key={entry.item.id}>
+                  <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? "Claude" : entry.item.toolName ?? "Bridge"}</strong></div>
+                  <div className="conversation-text">{entry.item.text}</div>
                 </article>
               ))}
               {snapshot.permissions
@@ -415,6 +598,20 @@ function DesktopSessions({
                 </article>
               ))}
             </div>
+            ) : (
+              <div className="desktop-evidence-view">
+                <EvidencePanel
+                  state={selectedEvidence}
+                  previews={artifactPreviews}
+                  transfers={artifactTransfers}
+                  online
+                  onLoadMore={loadOlderEvidence}
+                  onPreview={previewArtifact}
+                  onDownload={downloadArtifact}
+                />
+              </div>
+            )}
+            {sessionView === "conversation" && (
             <div className="desktop-composer">
               {attachments.length > 0 && (
                 <div className="composer-attachments">
@@ -434,6 +631,7 @@ function DesktopSessions({
                 <button type="submit" className="send-button" aria-label="发送" disabled={sending || (!text.trim() && attachments.length === 0)}><Send size={18} /></button>
               </form>
             </div>
+            )}
           </>
         ) : (
           <div className="desktop-conversation-empty"><MessageSquare size={24} /><span>从左侧选择会话</span></div>
@@ -484,7 +682,7 @@ function DesktopDevices({
           <div>
             <span>一次性配对</span>
             <h2>使用手机 Bridge 扫描</h2>
-            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。请使用 0.3.5 或更新版本的手机端扫码。</p>
+            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。V0.4.0 使用新配对密钥，旧设备需要重新扫码。</p>
             <small>{Math.max(0, Math.ceil((snapshot.pairingExpiresAt - Date.now()) / 60_000))} 分钟后过期</small>
           </div>
         </section>

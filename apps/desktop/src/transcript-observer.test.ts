@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionEventLog } from "./session-event-log.js";
+import type { ObservedDesktopEvidence } from "./evidence-manager.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 
 const directories: string[] = [];
@@ -176,6 +177,106 @@ describe("TranscriptObserver", () => {
     await eventLog.close();
   });
 
+  it("keeps a Desktop tool turn running until the transcript reaches an end-turn boundary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-running-turn-"));
+    directories.push(root);
+    const desktopSessions = join(root, "desktop-sessions");
+    const paths = {
+      sessions: join(root, "sessions"),
+      tasks: join(root, "tasks"),
+      projects: join(root, "projects"),
+      desktopSessions: [desktopSessions],
+    };
+    await Promise.all([
+      mkdir(paths.sessions, { recursive: true }),
+      mkdir(paths.tasks, { recursive: true }),
+      mkdir(paths.projects, { recursive: true }),
+      mkdir(desktopSessions, { recursive: true }),
+    ]);
+    const sessionId = "session-running-turn";
+    const cwd = join(root, "work");
+    const transcript = join(paths.projects, `${sessionId}.jsonl`);
+    const oldTimestamp = Date.now() - 60_000;
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
+      pid: process.pid,
+      sessionId,
+      cwd,
+      startedAt: oldTimestamp,
+      entrypoint: "claude-desktop-3p",
+    }));
+    await writeFile(join(desktopSessions, "local_running-turn.json"), JSON.stringify({
+      sessionId: "desktop-running-turn",
+      cliSessionId: sessionId,
+      cwd,
+      createdAt: oldTimestamp,
+      lastFocusedAt: oldTimestamp,
+      lastActivityAt: oldTimestamp,
+      title: "Running turn",
+    }));
+    await writeFile(transcript, [
+      JSON.stringify({
+        type: "user",
+        uuid: "user-1",
+        parentUuid: null,
+        timestamp: new Date(oldTimestamp).toISOString(),
+        message: { role: "user", content: "Run checks" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        uuid: "tool-1",
+        parentUuid: "user-1",
+        timestamp: new Date(oldTimestamp + 1).toISOString(),
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "call-1", name: "Bash", input: { command: "npm test" } }],
+          stop_reason: "tool_use",
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        uuid: "result-1",
+        parentUuid: "tool-1",
+        timestamp: new Date(oldTimestamp + 2).toISOString(),
+        toolUseResult: "passed",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "call-1", content: "passed" }],
+        },
+      }),
+      "",
+    ].join("\n"));
+    await utimes(transcript, oldTimestamp / 1_000, oldTimestamp / 1_000);
+
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({
+      paths,
+      eventLog,
+      pollIntervalMs: 20,
+      catalogIntervalMs: 20,
+      idleGraceMs: 1,
+    });
+    await observer.start();
+    await waitFor(() => observer.catalog.sessions.some((session) => session.sessionId === sessionId));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(observer.isDesktopBusy(sessionId)).toBe(true);
+    await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+
+    await appendFile(transcript, `${JSON.stringify({
+      type: "assistant",
+      uuid: "assistant-final",
+      parentUuid: "result-1",
+      timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: "Finished", stop_reason: "end_turn" },
+    })}\n`);
+    await waitFor(() => !observer.isDesktopBusy(sessionId));
+
+    await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
+    await observer.close();
+    await eventLog.close();
+  });
+
   it("publishes an updated observed message when an assistant chain grows", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-"));
     directories.push(root);
@@ -332,6 +433,106 @@ describe("TranscriptObserver", () => {
     })}\n`);
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(observer.externalWriteVersion(sessionId)).toBe(0);
+
+    await observer.close();
+    await eventLog.close();
+  });
+
+  it("upserts Desktop tool evidence idempotently and never treats thinking as chat", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-evidence-"));
+    directories.push(root);
+    const desktopSessions = join(root, "desktop-sessions");
+    const paths = {
+      sessions: join(root, "sessions"),
+      tasks: join(root, "tasks"),
+      projects: join(root, "projects"),
+      desktopSessions: [desktopSessions],
+    };
+    await Promise.all([
+      mkdir(paths.sessions, { recursive: true }),
+      mkdir(paths.tasks, { recursive: true }),
+      mkdir(paths.projects, { recursive: true }),
+      mkdir(desktopSessions, { recursive: true }),
+    ]);
+    const sessionId = "session-evidence";
+    const cwd = join(root, "work");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(desktopSessions, "local_evidence.json"), JSON.stringify({
+      sessionId: "desktop-evidence",
+      cliSessionId: sessionId,
+      cwd,
+      createdAt: Date.now(),
+      lastFocusedAt: Date.now(),
+      lastActivityAt: Date.now(),
+      title: "Evidence",
+    }));
+    const transcript = join(paths.projects, `${sessionId}.jsonl`);
+    await writeFile(transcript, [
+      JSON.stringify({
+        type: "user",
+        uuid: "user-1",
+        parentUuid: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: "Inspect" },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        uuid: "tool-node",
+        parentUuid: "user-1",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private analysis" },
+            { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "report.txt" } },
+          ],
+          stop_reason: "tool_use",
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        uuid: "result-1",
+        parentUuid: "tool-node",
+        timestamp: new Date().toISOString(),
+        toolUseResult: "ok",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }],
+        },
+      }),
+      "",
+    ].join("\n"));
+    const recovered: ObservedDesktopEvidence[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({
+      paths,
+      eventLog,
+      pollIntervalMs: 20,
+      catalogIntervalMs: 20,
+      evidence: {
+        async upsertDesktopEvidence(input) {
+          recovered.push(input);
+        },
+      },
+    });
+    await observer.start();
+    await waitFor(() => recovered.length === 1);
+
+    expect(recovered[0]).toMatchObject({
+      sessionId,
+      tools: [{ id: "tool-1", toolName: "Read" }],
+      paths: ["report.txt"],
+    });
+    expect(JSON.stringify(recovered)).not.toContain("private analysis");
+    await appendFile(transcript, `${JSON.stringify({
+      type: "assistant",
+      uuid: "thinking-only",
+      parentUuid: "result-1",
+      timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "still private" }] },
+    })}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(recovered).toHaveLength(1);
 
     await observer.close();
     await eventLog.close();

@@ -175,6 +175,27 @@ class FakeHost implements SessionHostRuntime {
     this.current = undefined;
   }
 
+  runTool(itemId: string, output: unknown): void {
+    if (!this.current) return;
+    this.emit({
+      type: "tool.started",
+      sessionId: this.options.sessionId,
+      turnId: this.current.turnId,
+      itemId,
+      toolName: "Bash",
+      input: { command: "npm test" },
+      at: Date.now(),
+    });
+    this.emit({
+      type: "tool.completed",
+      sessionId: this.options.sessionId,
+      turnId: this.current.turnId,
+      itemId,
+      output,
+      at: Date.now(),
+    });
+  }
+
   private emit(event: SessionHostEvent): void {
     this.events.emit("event", event);
   }
@@ -1275,6 +1296,98 @@ describe("SessionBroker", () => {
     expect(hosts[0]?.options.persistSession).toBe(false);
     expect(hosts[0]?.closed).toBe(true);
     expect(broker.session(sessionId)?.ownership).toBe("DESKTOP_OBSERVED");
+
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("preserves complete Agent SDK tool results in the turn evidence lifecycle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-evidence-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    await mkdir(cwd, { recursive: true });
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd)],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const calls: Array<{ type: string; value?: unknown }> = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+      evidence: {
+        async startBridgeTurn(input) {
+          calls.push({ type: "start", value: input });
+          return "evidence-1";
+        },
+        async attachTurn(_evidenceId, turnId) {
+          calls.push({ type: "attach", value: turnId });
+        },
+        async recordToolStarted(input) {
+          calls.push({ type: "tool-start", value: input });
+        },
+        async recordToolCompleted(input) {
+          calls.push({ type: "tool-complete", value: input.output });
+        },
+        async finalizeBridgeTurn(input) {
+          calls.push({ type: "finalize", value: input });
+          return undefined;
+        },
+      },
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "request-1",
+      idempotencyKey: "idempotency-1",
+      sessionId,
+      text: "Run tests",
+      origin: "mobile",
+    });
+    await waitFor(() => hosts.some((host) => host.current));
+    const host = hosts.find((candidate) => candidate.options.sessionId === sessionId)!;
+    host.runTool("tool-1", {
+      exitCode: 1,
+      stdout: "full command output",
+      stderr: "failed",
+    });
+    host.complete();
+    await waitFor(() => calls.some((call) => call.type === "finalize"));
+
+    expect(calls.map((call) => call.type)).toEqual(expect.arrayContaining([
+      "start",
+      "attach",
+      "tool-start",
+      "tool-complete",
+      "finalize",
+    ]));
+    expect(calls.find((call) => call.type === "tool-complete")?.value).toEqual({
+      exitCode: 1,
+      stdout: "full command output",
+      stderr: "failed",
+    });
+    expect(calls.findIndex((call) => call.type === "start"))
+      .toBeLessThan(calls.findIndex((call) => call.type === "attach"));
 
     await broker.close();
     await eventLog.close();

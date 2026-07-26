@@ -1,8 +1,24 @@
 import { join } from "node:path";
 import { rename, writeFile } from "node:fs/promises";
 import { parseBridgeIceServers, relayPathForUrl } from "@bridge/protocol";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, shell, Tray } from "electron";
-import { DesktopConfigRepository, fileSecretProtector } from "./config.js";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  powerMonitor,
+  protocol,
+  safeStorage,
+  shell,
+  Tray,
+} from "electron";
+import {
+  DesktopConfigRepository,
+  fileSecretProtector,
+  safeStorageSecretProtector,
+} from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
 import { DesktopController, type LocalBridgeRequest } from "./controller.js";
 import { claudeRuntimePaths, connectorPaths, defaultDesktopName, networkReachableUrl } from "./platform.js";
@@ -10,6 +26,9 @@ import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
+import { ElectronEvidencePreviewRenderer } from "./artifact-preview.js";
+import { EvidenceManager } from "./evidence-manager.js";
+import { EvidenceStore } from "./evidence-store.js";
 import {
   cleanupDesktopPeerConnection,
   loadDesktopPeerConnection,
@@ -20,6 +39,14 @@ declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PAIRING_BASE__: string;
 declare const __BRIDGE_DEFAULT_SERVICE_ORIGIN__: string;
 declare const __BRIDGE_DEFAULT_ICE_SERVERS__: string;
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: "bridge-artifact",
+  privileges: {
+    standard: true,
+    secure: true,
+  },
+}]);
 
 const CONFIGURED_RELAY = process.env.BRIDGE_RELAY_URL
   ?? __BRIDGE_DEFAULT_RELAY__;
@@ -50,7 +77,8 @@ async function archiveLegacyQueue(userDataPath: string): Promise<void> {
 
 async function desktopMain(): Promise<void> {
   app.enableSandbox();
-  const singleInstance = app.requestSingleInstanceLock();
+  const isolatedPackagedQa = process.argv.includes("--bridge-packaged-qa");
+  const singleInstance = isolatedPackagedQa || app.requestSingleInstanceLock();
   if (!singleInstance) {
     app.quit();
     return;
@@ -61,16 +89,40 @@ async function desktopMain(): Promise<void> {
   await archiveLegacyQueue(userDataPath);
   await removeLegacyConnector(connectorPaths()).catch(() => undefined);
 
-  const repository = new DesktopConfigRepository(configPath(), fileSecretProtector(), {
-    relayUrl: DEFAULT_RELAY,
-    ...(CONFIGURED_PUBLIC_RELAY ? { publicRelayUrl: CONFIGURED_PUBLIC_RELAY } : {}),
-    serviceOrigin: DEFAULT_SERVICE_ORIGIN,
-    iceServers: DEFAULT_ICE_SERVERS,
-    desktopName: defaultDesktopName(),
-  });
+  const identityProtector = fileSecretProtector();
+  const evidenceProtector = isolatedPackagedQa
+    ? fileSecretProtector()
+    : safeStorageSecretProtector(safeStorage);
+  if (!evidenceProtector.available()) {
+    throw new Error("OS secret storage is required for the evidence encryption key");
+  }
+  const repository = new DesktopConfigRepository(
+    configPath(),
+    identityProtector,
+    {
+      relayUrl: DEFAULT_RELAY,
+      ...(CONFIGURED_PUBLIC_RELAY ? { publicRelayUrl: CONFIGURED_PUBLIC_RELAY } : {}),
+      serviceOrigin: DEFAULT_SERVICE_ORIGIN,
+      iceServers: DEFAULT_ICE_SERVERS,
+      desktopName: defaultDesktopName(),
+    },
+    evidenceProtector,
+  );
+  const pairingConfig = await repository.loadOrCreate();
   const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));
+  const evidenceStore = new EvidenceStore({
+    databasePath: join(userDataPath, "evidence-v1.sqlite"),
+    blobsPath: join(userDataPath, "evidence-blobs-v1"),
+    masterSecret: pairingConfig.evidenceKey,
+  });
+  const evidence = new EvidenceManager({
+    store: evidenceStore,
+    eventLog,
+    previewRenderer: new ElectronEvidencePreviewRenderer(),
+  });
+  await evidence.initialize();
   const runtimePaths = claudeRuntimePaths();
-  const observer = new TranscriptObserver({ paths: runtimePaths, eventLog });
+  const observer = new TranscriptObserver({ paths: runtimePaths, eventLog, evidence });
   await observer.start();
   const broker = new SessionBroker({
     paths: runtimePaths,
@@ -78,6 +130,7 @@ async function desktopMain(): Promise<void> {
     observer,
     sessionsPath: join(userDataPath, "sessions-v2.json"),
     queuePath: join(userDataPath, "turn-queue-v2.json"),
+    evidence,
   });
   const claudeDesktop = new ClaudeDesktopLifecycle();
   let RTCPeerConnectionImpl: typeof RTCPeerConnection | undefined;
@@ -97,6 +150,7 @@ async function desktopMain(): Promise<void> {
     CONFIGURED_RELAY,
     broker,
     eventLog,
+    evidence,
     claudeDesktop,
     RTCPeerConnectionImpl,
   );
@@ -244,6 +298,7 @@ async function desktopMain(): Promise<void> {
     void (async () => {
       await broker.close().catch(() => undefined);
       await observer.close().catch(() => undefined);
+      await evidence.close().catch(() => undefined);
       await eventLog.close().catch(() => undefined);
       cleanupDesktopPeerConnection();
       app.quit();

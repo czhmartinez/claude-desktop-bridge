@@ -1,7 +1,10 @@
-export const PROTOCOL_VERSION = 2 as const;
-export const PAIRING_SCHEMA_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 3 as const;
+export const PAIRING_SCHEMA_VERSION = 4 as const;
 export const ENVELOPE_CHUNK_BYTES = 64 * 1024;
 export const MAX_ENVELOPE_CHUNKS = 384;
+export const ARTIFACT_MAX_BYTES = 20 * 1024 * 1024;
+export const ARTIFACT_TRANSFER_CHUNK_BYTES = 256 * 1024;
+export const ARTIFACT_TRANSFER_TTL_MS = 10 * 60 * 1000;
 
 export type BridgeRole = "desktop" | "mobile" | "agent";
 export type MessageTarget = BridgeRole;
@@ -24,6 +27,8 @@ export interface BridgeIceServer {
 export interface PairingBundle {
   version: typeof PAIRING_SCHEMA_VERSION;
   protocolVersion: typeof PROTOCOL_VERSION;
+  hostId: string;
+  pairingEpoch: number;
   roomId: string;
   deviceId: string;
   secret: string;
@@ -40,7 +45,7 @@ export interface PairingBundle {
 }
 
 export interface LegacyPairingBundle {
-  version: typeof PROTOCOL_VERSION;
+  version: number;
   roomId: string;
   deviceId: string;
   secret: string;
@@ -52,7 +57,9 @@ export interface LegacyPairingBundle {
 }
 
 export interface StoredIdentity {
-  version: typeof PROTOCOL_VERSION;
+  version: number;
+  hostId?: string;
+  pairingEpoch?: number;
   roomId: string;
   relayUrl: string;
   desktopName: string;
@@ -93,6 +100,123 @@ export type BridgeDeliveryState =
   | "failed"
   | "cancelled"
   | "uncertain";
+
+export type BridgeCapability =
+  | "evidence.v1"
+  | "artifact.preview.v1"
+  | "artifact.transfer.v1";
+
+export type BridgeEvidenceSource = "bridge-host" | "claude-desktop";
+export type BridgeEvidenceConfidence = "exact" | "inferred" | "partial";
+export type BridgeEvidenceState = "collecting" | "ready" | "failed";
+export type BridgeArtifactKind =
+  | "text"
+  | "code"
+  | "diff"
+  | "image"
+  | "html"
+  | "pdf"
+  | "binary"
+  | "log";
+export type BridgeArtifactChangeKind =
+  | "created"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "observed";
+export type BridgeArtifactAvailability =
+  | "snapshot"
+  | "current-file"
+  | "expired"
+  | "blocked";
+export type BridgeArtifactPreviewMode =
+  | "text"
+  | "diff"
+  | "image"
+  | "html-screenshot"
+  | "none";
+
+export interface BridgeToolEvidence {
+  id: string;
+  toolName: string;
+  status: "running" | "completed" | "failed";
+  summary: string;
+  startedAt: number;
+  completedAt?: number;
+  exitCode?: number;
+  outputSummary?: string;
+  truncated: boolean;
+}
+
+export interface BridgeArtifactManifest {
+  id: string;
+  evidenceId: string;
+  relativePath: string;
+  previousPath?: string;
+  name: string;
+  kind: BridgeArtifactKind;
+  changeKind: BridgeArtifactChangeKind;
+  mimeType: string;
+  size: number;
+  sha256?: string;
+  availability: BridgeArtifactAvailability;
+  previewMode: BridgeArtifactPreviewMode;
+  downloadAllowed: boolean;
+  blockedReason?: string;
+  capturedAt?: number;
+}
+
+export interface BridgeEvidenceBundle {
+  id: string;
+  sessionId: string;
+  turnId?: string;
+  source: BridgeEvidenceSource;
+  confidence: BridgeEvidenceConfidence;
+  state: BridgeEvidenceState;
+  startedAt: number;
+  completedAt?: number;
+  toolCount: number;
+  changeCount: number;
+  artifactCount: number;
+  tools: BridgeToolEvidence[];
+  artifacts: BridgeArtifactManifest[];
+  warnings: string[];
+}
+
+export interface BridgeEvidencePage {
+  sessionId: string;
+  items: BridgeEvidenceBundle[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+export interface BridgeArtifactPreview {
+  artifactId: string;
+  mode: Exclude<BridgeArtifactPreviewMode, "none">;
+  mimeType: string;
+  encoding: "utf8" | "base64";
+  data: string;
+  truncated: boolean;
+  generatedAt: number;
+}
+
+export interface BridgeArtifactTransferInfo {
+  transferId: string;
+  artifactId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  chunkBytes: number;
+  totalChunks: number;
+  expiresAt: number;
+}
+
+export interface BridgeArtifactTransferChunk {
+  transferId: string;
+  index: number;
+  data: string;
+}
 
 export interface BridgeAttachment {
   id: string;
@@ -263,11 +387,13 @@ export interface ClaudeDesktopAppStatus {
 export interface BridgeHostSnapshot {
   host: {
     hostId: string;
+    pairingEpoch: number;
     name: string;
     relayUrl: string;
     online: boolean;
     lastSeenAt: number;
     version: string;
+    capabilities: BridgeCapability[];
   };
   projects: BridgeProjectInfo[];
   sessions: BridgeSessionInfo[];
@@ -306,6 +432,12 @@ export type BridgeMethod =
   | "turn.interrupt"
   | "permission.resolve"
   | "events.resume"
+  | "evidence.list"
+  | "evidence.get"
+  | "artifact.preview"
+  | "artifact.transfer.open"
+  | "artifact.transfer.read"
+  | "artifact.transfer.close"
   | "device.revoke";
 
 export interface BridgeRequest {
@@ -353,6 +485,10 @@ export type BridgeEventType =
   | "turn.completed"
   | "turn.failed"
   | "turn.interrupted"
+  | "evidence.started"
+  | "evidence.updated"
+  | "evidence.ready"
+  | "evidence.failed"
   | "device.paired"
   | "device.revoked"
   | "runtime.compatibility"
@@ -413,7 +549,8 @@ export type BridgePayload =
   | BridgePeerSignalPayload;
 
 export interface EnvelopeHeader {
-  version: typeof PROTOCOL_VERSION;
+  // Local vault migration may read legacy envelopes; network validation accepts V3 only.
+  version: number;
   id: string;
   roomId: string;
   from: BridgeRole;
@@ -422,6 +559,7 @@ export interface EnvelopeHeader {
   toDeviceId?: string;
   sentAt: number;
   expiresAt: number;
+  temporary?: true;
 }
 
 export interface EncryptedEnvelope extends EnvelopeHeader {
@@ -439,6 +577,7 @@ export interface EncryptedEnvelopeChunk {
   toDeviceId?: string;
   sentAt: number;
   expiresAt: number;
+  temporary?: true;
   index: number;
   total: number;
   sha256: string;

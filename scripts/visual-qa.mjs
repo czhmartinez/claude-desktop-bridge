@@ -41,7 +41,7 @@ const sessions = [
     projectId: project.projectId,
     projectName: project.name,
     cwd: project.cwd,
-    title: "Bridge 0.3.6 直连联调",
+    title: "Bridge 0.4.0 成果证据联调",
     source: "desktop",
     ownership: "BRIDGE_RUNNING",
     turnState: "running",
@@ -57,7 +57,7 @@ const sessions = [
     projectId: project.projectId,
     projectName: project.name,
     cwd: project.cwd,
-    title: "协议 v2 与设备安全",
+    title: "协议 V3 与设备安全",
     source: "desktop",
     ownership: "DESKTOP_OBSERVED",
     turnState: "idle",
@@ -87,6 +87,7 @@ const history = {
     {
       id: "history-user",
       sessionId: "session-running",
+      turnId: "turn-evidence",
       role: "user",
       text: "把 Bridge 重构为同一会话的远程控制客户端。",
       createdAt: now - 120_000,
@@ -95,24 +96,192 @@ const history = {
     {
       id: "history-assistant",
       sessionId: "session-running",
+      turnId: "turn-evidence",
       role: "assistant",
       text: "会话内核已接管相同 sessionId，正在验证实时事件与审批。",
       createdAt: now - 90_000,
       origin: "claude-host",
     },
     {
+      id: "history-current-user",
+      sessionId: "session-running",
+      turnId: "turn-active",
+      role: "user",
+      text: "继续执行当前验证任务。",
+      createdAt: now - 45_000,
+      origin: "mobile",
+    },
+    {
       id: "history-tool",
       sessionId: "session-running",
+      turnId: "turn-active",
       role: "tool",
       text: "npm run verify: 24 tests passed",
       createdAt: now - 30_000,
       origin: "claude-host",
       toolName: "Bash",
-      state: "completed",
+      state: "running",
     },
   ],
   hasMore: true,
   nextCursor: "older-page",
+};
+const evidence = {
+  sessionId: "session-running",
+  items: [
+    {
+      id: "evidence-exact",
+      sessionId: "session-running",
+      turnId: "turn-evidence",
+      source: "bridge-host",
+      confidence: "exact",
+      state: "ready",
+      startedAt: now - 82_000,
+      completedAt: now - 20_000,
+      toolCount: 2,
+      changeCount: 3,
+      artifactCount: 3,
+      tools: [
+        {
+          id: "tool-test",
+          toolName: "Bash",
+          status: "completed",
+          summary: "npm run test",
+          startedAt: now - 78_000,
+          completedAt: now - 65_000,
+          exitCode: 0,
+          outputSummary: "104 tests passed",
+          truncated: false,
+        },
+        {
+          id: "tool-build",
+          toolName: "Bash",
+          status: "failed",
+          summary: "npm run build:preview",
+          startedAt: now - 60_000,
+          completedAt: now - 55_000,
+          exitCode: 1,
+          outputSummary: "Preview command exited with code 1",
+          truncated: false,
+        },
+      ],
+      artifacts: [
+        {
+          id: "artifact-diff",
+          evidenceId: "evidence-exact",
+          relativePath: "apps/desktop/src/evidence-manager.ts",
+          name: "evidence-manager.ts",
+          kind: "code",
+          changeKind: "modified",
+          mimeType: "text/plain",
+          size: 18_420,
+          sha256: "f".repeat(64),
+          availability: "snapshot",
+          previewMode: "diff",
+          downloadAllowed: true,
+          capturedAt: now - 20_000,
+        },
+        {
+          id: "artifact-image",
+          evidenceId: "evidence-exact",
+          relativePath: "artifacts/visual-qa/evidence-mobile.png",
+          name: "evidence-mobile.png",
+          kind: "image",
+          changeKind: "created",
+          mimeType: "image/png",
+          size: 428_160,
+          sha256: "e".repeat(64),
+          availability: "snapshot",
+          previewMode: "image",
+          downloadAllowed: true,
+          capturedAt: now - 20_000,
+        },
+        {
+          id: "artifact-pdf",
+          evidenceId: "evidence-exact",
+          relativePath: "artifacts/release/V0.4.0-acceptance.pdf",
+          name: "V0.4.0-acceptance.pdf",
+          kind: "pdf",
+          changeKind: "created",
+          mimeType: "application/pdf",
+          size: 1_284_992,
+          sha256: "d".repeat(64),
+          availability: "snapshot",
+          previewMode: "none",
+          downloadAllowed: true,
+          capturedAt: now - 20_000,
+        },
+      ],
+      warnings: [],
+    },
+    {
+      id: "evidence-inferred",
+      sessionId: "session-running",
+      turnId: "turn-desktop",
+      source: "claude-desktop",
+      confidence: "inferred",
+      state: "ready",
+      startedAt: now - 1_200_000,
+      completedAt: now - 1_100_000,
+      toolCount: 1,
+      changeCount: 1,
+      artifactCount: 1,
+      tools: [{
+        id: "tool-desktop",
+        toolName: "Write",
+        status: "completed",
+        summary: "写入 docs/SECURITY.md",
+        startedAt: now - 1_190_000,
+        completedAt: now - 1_180_000,
+        truncated: false,
+      }],
+      artifacts: [{
+        id: "artifact-inferred",
+        evidenceId: "evidence-inferred",
+        relativePath: "docs/SECURITY.md",
+        name: "SECURITY.md",
+        kind: "code",
+        changeKind: "observed",
+        mimeType: "text/plain",
+        size: 0,
+        availability: "current-file",
+        previewMode: "text",
+        downloadAllowed: false,
+      }],
+      warnings: ["来自 Claude Desktop 事后记录，不代表实时或完整工作区差异"],
+    },
+    {
+      id: "evidence-collecting",
+      sessionId: "session-running",
+      turnId: "turn-active",
+      source: "bridge-host",
+      confidence: "exact",
+      state: "collecting",
+      startedAt: now - 45_000,
+      toolCount: 1,
+      changeCount: 0,
+      artifactCount: 0,
+      tools: [],
+      artifacts: [],
+      warnings: [],
+    },
+  ],
+  hasMore: false,
+};
+const artifactPreview = {
+  artifactId: "artifact-diff",
+  mode: "diff",
+  mimeType: "text/x-diff",
+  encoding: "utf8",
+  data: [
+    "--- a/apps/desktop/src/evidence-manager.ts",
+    "+++ b/apps/desktop/src/evidence-manager.ts",
+    "@@ -1,3 +1,4 @@",
+    "+const PROTOCOL_VERSION = 3;",
+    " const evidence = true;",
+  ].join("\n"),
+  truncated: false,
+  generatedAt: now,
 };
 let sessionConfiguration = {
   sessionId: "session-running",
@@ -180,12 +349,14 @@ const { crypto: desktopCrypto, pairing } = await BridgeCrypto.createDesktop(rela
 const pairingUrl = buildPairingUrl(baseUrl, pairing);
 const hostSnapshot = {
   host: {
-    hostId: desktopCrypto.identity.deviceId,
+    hostId: desktopCrypto.identity.hostId ?? desktopCrypto.identity.deviceId,
     name: "Martinez-MacBook-Pro",
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.3.6",
+    version: "0.4.0",
+    pairingEpoch: 1,
+    capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1"],
   },
   projects: [project, secondaryProject],
   sessions,
@@ -286,6 +457,10 @@ desktopSocket.onMessage((message, encrypted) => {
       result = { events: [], latestSeq: eventSeq };
     } else if (request.method === "session.open") {
       result = { session: sessions[0], history, latestSeq: eventSeq };
+    } else if (request.method === "evidence.list") {
+      result = { evidence };
+    } else if (request.method === "artifact.preview") {
+      result = { preview: artifactPreview };
     } else if (request.method === "session.history") {
       result = { history: { ...history, items: history.items.slice(0, 1), hasMore: false } };
     } else if (request.method === "session.configuration") {
@@ -394,7 +569,7 @@ try {
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
-  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.3.6 直连联调" });
+  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.4.0 成果证据联调" });
   await waitingSessionRow.waitFor();
   if (await mobile.locator(".session-row-v2").count() !== 3) {
     errors.push("mobile catalog: expected three expanded session rows");
@@ -415,6 +590,9 @@ try {
 
   await waitingSessionRow.click();
   await mobile.getByText("会话内核已接管相同 sessionId，正在验证实时事件与审批。").waitFor();
+  if (await mobile.locator(".evidence-inline-summary").count() !== 1) {
+    errors.push("mobile conversation: evidence summaries were not anchored to completed turns");
+  }
   await mobile.getByText("Bash 请求权限").waitFor();
   await mobile.getByText("npm run verify", { exact: true }).waitFor();
   await checkPage(mobile, "mobile conversation");
@@ -458,6 +636,20 @@ try {
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-session-configuration-390x844.png"), fullPage: true });
   await mobile.getByRole("button", { name: "关闭" }).click();
 
+  await mobile.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
+  const mobileExactEvidence = mobile.locator(".evidence-bundle").filter({ hasText: "2 工具" });
+  await mobileExactEvidence.locator("summary").click();
+  await mobile.getByText("evidence-manager.ts", { exact: true }).waitFor();
+  await mobile.getByText("事后恢复", { exact: true }).waitFor();
+  await checkPage(mobile, "mobile evidence");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-evidence-390x844.png"), fullPage: true });
+  await mobile.getByLabel("预览 evidence-manager.ts").click();
+  await mobile.getByRole("heading", { name: "evidence-manager.ts" }).waitFor();
+  await checkPage(mobile, "mobile evidence preview");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-evidence-preview-390x844.png"), fullPage: true });
+  await mobile.getByLabel("关闭预览").click();
+  await mobile.getByRole("button", { name: "对话", exact: true }).click();
+
   await mobile.getByLabel("给 Claude 发指令").fill("继续验证同一会话的手机消息。");
   await mobile.getByRole("button", { name: "发送", exact: true }).click();
   await mobile.getByText("收到。回复与手机消息已经写入同一个 Claude 会话。").waitFor();
@@ -484,7 +676,14 @@ try {
   });
   const desktop = await desktopContext.newPage();
   watch(desktop, "desktop");
-  await desktop.addInitScript(({ snapshot, pairingUrl, history, sessionConfiguration }) => {
+  await desktop.addInitScript(({
+    snapshot,
+    pairingUrl,
+    history,
+    evidence,
+    artifactPreview,
+    sessionConfiguration,
+  }) => {
     let current = snapshot;
     let currentConfiguration = sessionConfiguration;
     const snapshotListeners = new Set();
@@ -549,6 +748,12 @@ try {
         if (request.method === "session.open") {
           return response(request, { session: current.sessions[0], history, latestSeq: current.latestSeq });
         }
+        if (request.method === "evidence.list") {
+          return response(request, { evidence });
+        }
+        if (request.method === "artifact.preview") {
+          return response(request, { preview: artifactPreview });
+        }
         if (request.method === "session.create") {
           return response(request, { session: current.sessions[1] });
         }
@@ -577,10 +782,20 @@ try {
         return () => eventListeners.delete(listener);
       },
     };
-  }, { snapshot: desktopSnapshot, pairingUrl, history, sessionConfiguration });
+  }, {
+    snapshot: desktopSnapshot,
+    pairingUrl,
+    history,
+    evidence,
+    artifactPreview,
+    sessionConfiguration,
+  });
   await desktop.goto(baseUrl, { waitUntil: "networkidle" });
   await desktop.getByRole("heading", { name: "会话", exact: true }).waitFor();
   await desktop.getByText("会话内核已接管相同 sessionId，正在验证实时事件与审批。").waitFor();
+  if (await desktop.locator(".evidence-inline-summary").count() !== 1) {
+    errors.push("desktop conversation: evidence summaries were not anchored to completed turns");
+  }
   if (await desktop.locator(".desktop-session-row").count() !== 3) {
     errors.push("desktop sessions: expected three expanded session rows");
   }
@@ -597,6 +812,17 @@ try {
   await checkPage(desktop, "desktop session configuration");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-session-configuration-1200x800.png"), fullPage: true });
   await desktop.getByRole("button", { name: "关闭" }).click();
+  await desktop.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
+  const desktopExactEvidence = desktop.locator(".evidence-bundle").filter({ hasText: "2 工具" });
+  await desktopExactEvidence.locator("summary").click();
+  await desktop.getByText("evidence-manager.ts", { exact: true }).waitFor();
+  await checkPage(desktop, "desktop evidence");
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-evidence-1200x800.png"), fullPage: true });
+  await desktop.getByLabel("预览 evidence-manager.ts").click();
+  await desktop.getByRole("heading", { name: "evidence-manager.ts" }).waitFor();
+  await checkPage(desktop, "desktop evidence preview");
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-evidence-preview-1200x800.png"), fullPage: true });
+  await desktop.getByLabel("关闭预览").click();
 
   await desktop.getByRole("button", { name: "设备", exact: true }).click();
   await desktop.getByRole("heading", { name: "设备", exact: true }).waitFor();

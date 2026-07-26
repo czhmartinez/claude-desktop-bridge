@@ -23,7 +23,7 @@ function request(text: string): BridgeRequest {
   };
 }
 
-describe("BridgeCrypto v2", () => {
+describe("BridgeCrypto v3", () => {
   it("encrypts device-targeted requests with authenticated metadata", async () => {
     const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop("ws://localhost:8788/ws", "Studio Mac");
     const mobile = await BridgeCrypto.fromPairing(pairing);
@@ -81,9 +81,33 @@ describe("BridgeCrypto v2", () => {
     await expect(mobile.decrypt({ ...envelope, toDeviceId: "another-phone" })).rejects.toThrow();
   });
 
+  it("authenticates the temporary delivery marker", async () => {
+    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop("ws://localhost:8788/ws", "Studio Mac");
+    const mobile = await BridgeCrypto.fromPairing(pairing);
+    const envelope = await mobile.encrypt(
+      request("Preview"),
+      "mobile",
+      "desktop",
+      Date.now(),
+      10 * 60 * 1_000,
+      undefined,
+      true,
+    );
+
+    expect(envelope.temporary).toBe(true);
+    const { temporary: _temporary, ...tampered } = envelope;
+    await expect(desktop.decrypt(tampered)).rejects.toThrow();
+    expect((await desktop.decrypt(envelope)).payload).toMatchObject({
+      kind: "request",
+      method: "turn.start",
+    });
+  });
+
   it("round-trips a ten-minute single-use pairing URL", async () => {
     const host = await BridgeCrypto.createHost("wss://relay.example/ws", "Workstation");
     const { pairing } = await BridgeCrypto.createDevicePairing({
+      hostId: host.crypto.identity.hostId ?? host.crypto.identity.deviceId,
+      pairingEpoch: host.crypto.identity.pairingEpoch ?? 1,
       roomId: host.crypto.identity.roomId,
       relayUrl: host.crypto.identity.relayUrl,
       desktopName: host.crypto.identity.desktopName,
@@ -98,8 +122,10 @@ describe("BridgeCrypto v2", () => {
     expect(pairingBundleFromUrl(url)).toEqual(pairing);
     expect(pairing.expiresAt - pairing.createdAt).toBe(10 * 60 * 1_000);
     expect(pairing).toMatchObject({
-      version: 3,
-      protocolVersion: 2,
+      version: 4,
+      protocolVersion: 3,
+      hostId: host.crypto.identity.hostId,
+      pairingEpoch: 1,
       activeEndpoint: "public",
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
     });
@@ -125,18 +151,18 @@ describe("BridgeCrypto v2", () => {
     const encoded = encodePairingBundle(pairing);
     const wireValue = JSON.parse(decodeUtf8(fromBase64Url(encoded))) as unknown[];
 
-    expect(wireValue[0]).toBe("b3");
+    expect(wireValue[0]).toBe("b4");
     expect(encoded.length).toBeLessThan(500);
     expect(encoded.length).toBeLessThan(legacyEncoded.length * 0.65);
     expect(decodePairingBundle(encoded)).toEqual(pairing);
   });
 
   it("rejects malformed compact pairing payloads", () => {
-    const malformed = toBase64Url(utf8(JSON.stringify(["b3", "room"])));
+    const malformed = toBase64Url(utf8(JSON.stringify(["b4", "room"])));
     expect(() => decodePairingBundle(malformed)).toThrow("Invalid pairing bundle");
   });
 
-  it("normalizes a 0.2 pairing bundle without rotating its device secret", () => {
+  it("rejects legacy pairing bundles that have not been re-paired", () => {
     const legacy = {
       version: 2,
       roomId: "legacy-room-12345678",
@@ -148,21 +174,8 @@ describe("BridgeCrypto v2", () => {
       expiresAt: 601_000,
       singleUse: true,
     };
-    const normalized = decodePairingBundle(toBase64Url(utf8(JSON.stringify(legacy))));
-
-    expect(normalized).toMatchObject({
-      version: 3,
-      protocolVersion: 2,
-      roomId: legacy.roomId,
-      deviceId: legacy.deviceId,
-      secret: legacy.secret,
-      activeEndpoint: "legacy",
-      relayUrl: legacy.relayUrl,
-      iceServers: [],
-    });
-    expect(normalized.relayEndpoints).toEqual([
-      expect.objectContaining({ kind: "lan-relay", url: legacy.relayUrl }),
-    ]);
+    expect(() => decodePairingBundle(toBase64Url(utf8(JSON.stringify(legacy)))))
+      .toThrow("Invalid pairing bundle");
   });
 
   it("accepts authenticated Claude Desktop lifecycle requests", () => {
@@ -170,6 +183,25 @@ describe("BridgeCrypto v2", () => {
       "claude.desktop.status",
       "claude.desktop.launch",
       "claude.desktop.quit",
+    ] as const) {
+      expect(isBridgePayload({
+        kind: "request",
+        requestId: `request:${method}`,
+        idempotencyKey: `idempotency:${method}`,
+        method,
+        params: {},
+      })).toBe(true);
+    }
+  });
+
+  it("accepts the V0.4 evidence and artifact request surface", () => {
+    for (const method of [
+      "evidence.list",
+      "evidence.get",
+      "artifact.preview",
+      "artifact.transfer.open",
+      "artifact.transfer.read",
+      "artifact.transfer.close",
     ] as const) {
       expect(isBridgePayload({
         kind: "request",

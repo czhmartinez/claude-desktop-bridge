@@ -31,8 +31,8 @@ import { normalizeBridgeIceServers } from "./ice.js";
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 10 * 60 * 1000;
-// Pairing QR codes use this compact tuple; decoding still accepts legacy JSON objects.
-const COMPACT_PAIRING_MARKER = "b3";
+// Pairing QR codes use this compact tuple; legacy pairing objects are intentionally rejected.
+const COMPACT_PAIRING_MARKER = "b4";
 
 type CompactEndpointKind = 0 | 1 | 2;
 type CompactPairingEndpoint = [
@@ -48,6 +48,8 @@ type CompactPairingIceServer = [
 ];
 type CompactPairingBundle = [
   marker: typeof COMPACT_PAIRING_MARKER,
+  hostId: string,
+  pairingEpoch: number,
   roomId: string,
   deviceId: string,
   secret: string,
@@ -95,6 +97,8 @@ function compactPairingBundle(pairing: PairingBundle): CompactPairingBundle {
   const derivedServiceOrigin = serviceOriginForRelay(active.url);
   return [
     COMPACT_PAIRING_MARKER,
+    pairing.hostId,
+    pairing.pairingEpoch,
     pairing.roomId,
     pairing.deviceId,
     pairing.secret,
@@ -119,11 +123,13 @@ function compactPairingBundle(pairing: PairingBundle): CompactPairingBundle {
 }
 
 function expandCompactPairingBundle(value: unknown): unknown {
-  if (!Array.isArray(value) || value[0] !== COMPACT_PAIRING_MARKER || value.length !== 10) {
+  if (!Array.isArray(value) || value[0] !== COMPACT_PAIRING_MARKER || value.length !== 12) {
     return value;
   }
   const [
     ,
+    hostId,
+    pairingEpoch,
     roomId,
     deviceId,
     secret,
@@ -135,6 +141,10 @@ function expandCompactPairingBundle(value: unknown): unknown {
     compactIceServers,
   ] = value;
   if (
+    typeof hostId !== "string" ||
+    typeof pairingEpoch !== "number" ||
+    !Number.isInteger(pairingEpoch) ||
+    pairingEpoch < 1 ||
     typeof roomId !== "string" ||
     typeof deviceId !== "string" ||
     typeof secret !== "string" ||
@@ -186,6 +196,8 @@ function expandCompactPairingBundle(value: unknown): unknown {
   return {
     version: PAIRING_SCHEMA_VERSION,
     protocolVersion: PROTOCOL_VERSION,
+    hostId,
+    pairingEpoch,
     roomId,
     deviceId,
     secret,
@@ -225,7 +237,7 @@ async function deriveKeyMaterial(secret: Uint8Array<ArrayBuffer>, roomId: string
   authToken: string;
 }> {
   const baseKey = await crypto.subtle.importKey("raw", secret, "HKDF", false, ["deriveKey", "deriveBits"]);
-  const salt = utf8(`claude-bridge/v2/${roomId}`);
+  const salt = utf8(`claude-bridge/v3/${roomId}`);
   const encryptionKey = await crypto.subtle.deriveKey(
     { name: "HKDF", hash: "SHA-256", salt, info: utf8("payload-encryption") },
     baseKey,
@@ -263,6 +275,8 @@ export class BridgeCrypto {
   ): Promise<{ crypto: BridgeCrypto; pairing: PairingBundle }> {
     const host = await BridgeCrypto.createHost(relayUrl, desktopName);
     const device = await BridgeCrypto.createDevicePairing({
+      hostId: host.crypto.identity.hostId ?? host.crypto.identity.deviceId,
+      pairingEpoch: host.crypto.identity.pairingEpoch ?? 1,
       roomId: host.crypto.identity.roomId,
       relayUrl,
       desktopName,
@@ -292,6 +306,8 @@ export class BridgeCrypto {
         encryptionKey,
         identity: {
           version: PROTOCOL_VERSION,
+          hostId: deviceId,
+          pairingEpoch: 1,
           roomId,
           relayUrl,
           desktopName,
@@ -304,6 +320,8 @@ export class BridgeCrypto {
   }
 
   static async fromHostSecret(options: {
+    hostId?: string;
+    pairingEpoch?: number;
     roomId: string;
     relayUrl: string;
     desktopName: string;
@@ -317,6 +335,8 @@ export class BridgeCrypto {
       encryptionKey,
       identity: {
         version: PROTOCOL_VERSION,
+        hostId: options.hostId ?? options.deviceId,
+        pairingEpoch: options.pairingEpoch ?? 1,
         roomId: options.roomId,
         relayUrl: options.relayUrl,
         desktopName: options.desktopName,
@@ -327,6 +347,8 @@ export class BridgeCrypto {
   }
 
   static async createDevicePairing(options: {
+    hostId?: string;
+    pairingEpoch?: number;
     roomId: string;
     relayUrl: string;
     desktopName: string;
@@ -339,6 +361,8 @@ export class BridgeCrypto {
   }): Promise<{ pairing: PairingBundle; desktopCrypto: BridgeCrypto }> {
     const secret = randomBytes(32);
     const deviceId = options.deviceId ?? randomId(12);
+    const hostId = options.hostId ?? options.roomId;
+    const pairingEpoch = options.pairingEpoch ?? 1;
     const createdAt = options.now ?? Date.now();
     const { encryptionKey, authToken } = await deriveKeyMaterial(secret, options.roomId);
     const { endpoints, active } = pairingEndpoint(
@@ -349,6 +373,8 @@ export class BridgeCrypto {
     const pairing: PairingBundle = {
       version: PAIRING_SCHEMA_VERSION,
       protocolVersion: PROTOCOL_VERSION,
+      hostId,
+      pairingEpoch,
       roomId: options.roomId,
       deviceId,
       secret: toBase64Url(secret),
@@ -368,6 +394,8 @@ export class BridgeCrypto {
         encryptionKey,
         identity: {
           version: PROTOCOL_VERSION,
+          hostId,
+          pairingEpoch,
           roomId: options.roomId,
           relayUrl: options.relayUrl,
           desktopName: options.desktopName,
@@ -397,6 +425,8 @@ export class BridgeCrypto {
       encryptionKey,
       identity: {
         version: PROTOCOL_VERSION,
+        hostId: pairing.hostId,
+        pairingEpoch: pairing.pairingEpoch,
         roomId: pairing.roomId,
         relayUrl,
         desktopName: pairing.desktopName,
@@ -421,9 +451,10 @@ export class BridgeCrypto {
     now = Date.now(),
     ttlMs = DEFAULT_TTL_MS,
     toDeviceId?: string,
+    temporary?: true,
   ): Promise<EncryptedEnvelope> {
     const header: EnvelopeHeader = {
-      version: PROTOCOL_VERSION,
+      version: this.identity.version,
       id: randomId(),
       roomId: this.identity.roomId,
       from,
@@ -432,6 +463,7 @@ export class BridgeCrypto {
       ...(toDeviceId ? { toDeviceId } : {}),
       sentAt: now,
       expiresAt: now + ttlMs,
+      ...(temporary ? { temporary } : {}),
     };
     const nonce = randomBytes(12);
     const plaintext = utf8(JSON.stringify(payload));
@@ -448,7 +480,7 @@ export class BridgeCrypto {
   }
 
   async decrypt(envelope: EncryptedEnvelope, now = Date.now()): Promise<DecryptedEnvelope> {
-    if (envelope.version !== PROTOCOL_VERSION) throw new Error("Unsupported envelope version");
+    if (envelope.version !== this.identity.version) throw new Error("Unsupported envelope version");
     if (envelope.roomId !== this.identity.roomId) throw new Error("Envelope belongs to another room");
     if (envelope.toDeviceId && envelope.toDeviceId !== this.identity.deviceId) {
       throw new Error("Envelope belongs to another device");
@@ -478,6 +510,8 @@ export function normalizePairingBundle(value: unknown): PairingBundle {
   const parsed = value as {
     version?: unknown;
     protocolVersion?: unknown;
+    hostId?: unknown;
+    pairingEpoch?: unknown;
     roomId?: unknown;
     deviceId?: unknown;
     secret?: unknown;
@@ -492,6 +526,10 @@ export function normalizePairingBundle(value: unknown): PairingBundle {
     singleUse?: unknown;
   };
   if (
+    typeof parsed.hostId !== "string" ||
+    typeof parsed.pairingEpoch !== "number" ||
+    !Number.isInteger(parsed.pairingEpoch) ||
+    parsed.pairingEpoch < 1 ||
     typeof parsed.roomId !== "string" ||
     typeof parsed.deviceId !== "string" ||
     typeof parsed.secret !== "string" ||
@@ -502,25 +540,6 @@ export function normalizePairingBundle(value: unknown): PairingBundle {
     parsed.singleUse !== true
   ) {
     throw new Error("Invalid pairing bundle");
-  }
-  if (parsed.version === PROTOCOL_VERSION) {
-    const endpoint = bridgeEndpoint(parsed.relayUrl, 100, "legacy");
-    return {
-      version: PAIRING_SCHEMA_VERSION,
-      protocolVersion: PROTOCOL_VERSION,
-      roomId: parsed.roomId,
-      deviceId: parsed.deviceId,
-      secret: parsed.secret,
-      relayUrl: parsed.relayUrl,
-      serviceOrigin: serviceOriginForRelay(parsed.relayUrl),
-      relayEndpoints: [endpoint],
-      activeEndpoint: endpoint.id,
-      iceServers: [],
-      desktopName: parsed.desktopName,
-      createdAt: parsed.createdAt,
-      expiresAt: parsed.expiresAt,
-      singleUse: true,
-    };
   }
   if (
     parsed.version !== PAIRING_SCHEMA_VERSION ||
@@ -538,6 +557,8 @@ export function normalizePairingBundle(value: unknown): PairingBundle {
   return {
     version: PAIRING_SCHEMA_VERSION,
     protocolVersion: PROTOCOL_VERSION,
+    hostId: parsed.hostId,
+    pairingEpoch: parsed.pairingEpoch,
     roomId: parsed.roomId,
     deviceId: parsed.deviceId,
     secret: parsed.secret,
