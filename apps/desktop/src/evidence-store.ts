@@ -217,6 +217,35 @@ export class EvidenceStore {
     );
   }
 
+  failCollectingBundles(
+    warning: string,
+    completedAt = Date.now(),
+  ): BridgeEvidenceBundle[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM evidence_bundles
+      WHERE state = 'collecting'
+      ORDER BY started_at ASC, id ASC
+    `).all() as SqlRow[];
+    const recovered = rows.map((row) => {
+      const bundle = bundleFromRow(row);
+      const next: BridgeEvidenceBundle = {
+        ...bundle,
+        confidence: "partial",
+        state: "failed",
+        completedAt,
+        tools: bundle.tools.map((tool) => (
+          tool.status === "running"
+            ? { ...tool, status: "failed" as const, completedAt }
+            : tool
+        )),
+        warnings: [...new Set([...bundle.warnings, warning])],
+      };
+      this.saveBundle(next);
+      return this.bundleWithArtifacts(next);
+    });
+    return recovered;
+  }
+
   async replaceArtifacts(evidenceId: string, artifacts: EvidenceArtifactInput[]): Promise<void> {
     const uniqueArtifacts = [...new Map(
       artifacts.map((artifact) => [artifact.manifest.id, artifact]),

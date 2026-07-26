@@ -685,6 +685,7 @@ export class DesktopController extends EventEmitter {
         interrupted: await this.broker.interruptTurn(
           stringParam(params, "sessionId")!,
           stringParam(params, "commandId", false),
+          params.force === true,
         ),
       };
     }

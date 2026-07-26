@@ -666,6 +666,29 @@ try {
 
   const desktopSnapshot = {
     ...hostSnapshot,
+    sessions: [
+      {
+        ...hostSnapshot.sessions[0],
+        ownership: "DESKTOP_OBSERVED",
+        turnState: "running",
+        pendingCount: 0,
+        activeTurnId: undefined,
+      },
+      {
+        ...hostSnapshot.sessions[0],
+        sessionId: "session-recovered-blocker",
+        title: "未完成任务：覆盖安装前的任务",
+        source: "bridge",
+        ownership: "BRIDGE_IDLE",
+        transport: "bridge-host",
+        turnState: "queued",
+        pendingCount: 1,
+        activeTurnId: undefined,
+        currentSummary: "恢复的未完成任务 · 覆盖安装前的任务",
+        lastActivityAt: now - 10_000,
+      },
+      ...hostSnapshot.sessions.slice(1),
+    ],
     connection: "connected",
     launchAtLogin: true,
   };
@@ -694,6 +717,7 @@ try {
       ok: true,
       result,
     });
+    window.__bridgeQaRequests = [];
     window.bridgeDesktop = {
       getSnapshot: async () => current,
       createPairing: async () => {
@@ -745,6 +769,7 @@ try {
         return current;
       },
       request: async (request) => {
+        window.__bridgeQaRequests.push(request);
         if (request.method === "session.open") {
           return response(request, { session: current.sessions[0], history, latestSeq: current.latestSeq });
         }
@@ -793,11 +818,22 @@ try {
   await desktop.goto(baseUrl, { waitUntil: "networkidle" });
   await desktop.getByRole("heading", { name: "会话", exact: true }).waitFor();
   await desktop.getByText("会话内核已接管相同 sessionId，正在验证实时事件与审批。").waitFor();
+  const desktopStop = desktop.getByRole("button", { name: "停止阻塞的 Bridge 任务" });
+  await desktopStop.waitFor();
+  await desktopStop.click();
+  const forceStopSent = await desktop.evaluate(() => (
+    window.__bridgeQaRequests.some((request) => (
+      request.method === "turn.interrupt"
+      && request.params.force === true
+      && request.params.sessionId === "session-recovered-blocker"
+    ))
+  ));
+  if (!forceStopSent) errors.push("desktop blocker stop: recovered queue was not force interrupted");
   if (await desktop.locator(".evidence-inline-summary").count() !== 1) {
     errors.push("desktop conversation: evidence summaries were not anchored to completed turns");
   }
-  if (await desktop.locator(".desktop-session-row").count() !== 3) {
-    errors.push("desktop sessions: expected three expanded session rows");
+  if (await desktop.locator(".desktop-session-row").count() !== 4) {
+    errors.push("desktop sessions: expected four expanded session rows");
   }
   await desktop.getByRole("button", { name: "全部折叠" }).click();
   if (await desktop.locator(".desktop-session-row").count() !== 0) {

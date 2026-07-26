@@ -7,10 +7,12 @@ import type {
 } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  canStopBridgeTask,
   conversationItems,
   conversationTimeline,
   ownershipLabel,
   permissionPresentation,
+  stoppableBridgeTask,
 } from "./MobileWorkspace.js";
 
 function evidence(
@@ -54,6 +56,62 @@ describe("ownershipLabel", () => {
     };
 
     expect(ownershipLabel(session)).toBe("桌面运行中");
+  });
+});
+
+describe("canStopBridgeTask", () => {
+  const session = (overrides: Partial<BridgeSessionInfo>): BridgeSessionInfo => ({
+    sessionId: "session-1",
+    projectId: "project-1",
+    projectName: "Project",
+    cwd: "/tmp/project",
+    title: "Task",
+    source: "desktop",
+    ownership: "DESKTOP_OBSERVED",
+    transport: "bridge-host",
+    turnState: "idle",
+    lastActivityAt: 1,
+    pendingCount: 0,
+    ...overrides,
+  });
+
+  it("keeps stop available for queued and uncertain Bridge work", () => {
+    expect(canStopBridgeTask(session({
+      turnState: "queued",
+      pendingCount: 1,
+    }))).toBe(true);
+    expect(canStopBridgeTask(session({
+      ownership: "DESKTOP_MANAGED_RUNNING",
+      transport: "claude-desktop-managed",
+      turnState: "waiting",
+      pendingCount: 1,
+    }))).toBe(true);
+  });
+
+  it("does not offer Bridge stop for an idle or native observed Desktop turn", () => {
+    expect(canStopBridgeTask(session({}))).toBe(false);
+    expect(canStopBridgeTask(session({
+      ownership: "DESKTOP_OBSERVED",
+      turnState: "running",
+    }))).toBe(false);
+  });
+
+  it("finds a recovered blocker even when a native Desktop turn is selected", () => {
+    const native = session({
+      sessionId: "desktop-current",
+      ownership: "DESKTOP_OBSERVED",
+      turnState: "running",
+    });
+    const recovered = session({
+      sessionId: "recovered-queue",
+      source: "bridge",
+      ownership: "BRIDGE_IDLE",
+      turnState: "queued",
+      pendingCount: 1,
+    });
+
+    expect(stoppableBridgeTask([native, recovered], native.sessionId)?.sessionId)
+      .toBe(recovered.sessionId);
   });
 });
 

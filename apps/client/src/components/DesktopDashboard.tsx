@@ -21,6 +21,7 @@ import {
   Download,
   ImagePlus,
   Laptop,
+  LoaderCircle,
   MessageSquare,
   Moon,
   Play,
@@ -55,6 +56,7 @@ import {
   conversationTimeline,
   fileToAttachment,
   PermissionPrompt,
+  stoppableBridgeTask,
 } from "./MobileWorkspace.js";
 import {
   SessionConfigurationDialog,
@@ -133,6 +135,8 @@ function DesktopSessions({
   const [attachments, setAttachments] = useState<BridgeAttachment[]>([]);
   const [steer, setSteer] = useState(false);
   const [sending, setSending] = useState(false);
+  const [stoppingSessionId, setStoppingSessionId] = useState<string>();
+  const [stopError, setStopError] = useState<string>();
   const [createOpen, setCreateOpen] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
@@ -146,6 +150,10 @@ function DesktopSessions({
     selected.ownership === "BRIDGE_RUNNING" ||
     selected.ownership === "DESKTOP_MANAGED_RUNNING"
   );
+  const stopTarget = stoppableBridgeTask(snapshot.sessions, selected?.sessionId);
+  const canStop = Boolean(stopTarget);
+  const stopping = stopTarget?.sessionId === stoppingSessionId;
+  const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== selected?.sessionId);
   const items = useMemo(() => (
     selectedId ? conversationItems(selectedId, history[selectedId], events, []) : []
   ), [events, history, selectedId]);
@@ -190,6 +198,7 @@ function DesktopSessions({
     setSteer(false);
     setSessionView("conversation");
     setConfigurationOpen(false);
+    setStopError(undefined);
     void openSession(selectedId);
   }, [selectedId]);
 
@@ -394,6 +403,23 @@ function DesktopSessions({
     }
   }
 
+  async function stopCurrentTask(): Promise<void> {
+    if (!stopTarget || stoppingSessionId) return;
+    setStoppingSessionId(stopTarget.sessionId);
+    setStopError(undefined);
+    try {
+      const result = unwrap<{ interrupted: boolean }>(await apiRequest({
+        method: "turn.interrupt",
+        params: { sessionId: stopTarget.sessionId, force: true },
+      }));
+      if (!result.interrupted) throw new Error("当前没有可停止的 Bridge 任务");
+    } catch (error) {
+      setStopError(error instanceof Error ? error.message : "任务停止失败");
+    } finally {
+      setStoppingSessionId(undefined);
+    }
+  }
+
   async function createSession(): Promise<void> {
     const project = snapshot.projects.find((candidate) => candidate.projectId === projectId);
     if (!project) return;
@@ -525,9 +551,16 @@ function DesktopSessions({
                   <Settings2 size={15} />
                   <span>{sessionProfile(selected)}</span>
                 </button>
-                {bridgeRunning && (
-                  <button type="button" className="secondary-button" onClick={() => void apiRequest({ method: "turn.interrupt", params: { sessionId: selected.sessionId } })}>
-                    <CircleStop size={16} />停止
+                {canStop && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={stopping}
+                    aria-label={stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
+                    onClick={() => void stopCurrentTask()}
+                  >
+                    {stopping ? <LoaderCircle className="is-spinning" size={16} /> : <CircleStop size={16} />}
+                    {stopping ? "停止中" : stoppingBlocker ? "停止阻塞任务" : "停止"}
                   </button>
                 )}
               </div>
@@ -542,6 +575,12 @@ function DesktopSessions({
               <div className="desktop-channel-banner danger">
                 <AlertTriangle size={18} />
                 <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；持续冲突时再结束重复进程。</span>
+              </div>
+            )}
+            {stopError && (
+              <div className="desktop-channel-banner danger">
+                <AlertTriangle size={18} />
+                <span><strong>任务停止失败</strong>{stopError}</span>
               </div>
             )}
             <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">

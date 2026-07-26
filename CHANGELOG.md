@@ -18,6 +18,9 @@
   Relay queue entirely.
 - Add Desktop and Android conversation evidence summaries, a dedicated results view, offline
   manifests, cached previews, native file save/share and transfer progress.
+- Recover evidence interrupted by a desktop restart as failed/partial instead of leaving it
+  collecting forever. Surface queued work orphaned by a Claude Desktop session-ID rotation without
+  replaying it, and expose an independent force-stop control for running, waiting or queued turns.
 - Upgrade to protocol V3 and pairing schema V4. Preserve stable host identity, settings, history and
   local events while rotating rooms and keys, revoking V0.3 devices and requiring one fresh scan.
 - Explicitly exclude hidden chain of thought, private Claude Desktop CDP, live Desktop tool mirroring,

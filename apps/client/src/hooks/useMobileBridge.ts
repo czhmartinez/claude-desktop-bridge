@@ -476,6 +476,9 @@ export function applyEventToSnapshot(
         event.type === "turn.failed" ||
         event.type === "turn.interrupted"
       ) {
+        const pendingCount = event.type === "turn.interrupted" && event.data.wasQueued === true
+          ? Math.max(0, session.pendingCount - 1)
+          : session.pendingCount;
         const {
           activeTurnId: _activeTurnId,
           currentSummary: _currentSummary,
@@ -486,7 +489,8 @@ export function applyEventToSnapshot(
           ownership: session.transport === "claude-desktop-managed"
             ? "DESKTOP_MANAGED_IDLE"
             : "BRIDGE_IDLE",
-          turnState: session.pendingCount > 0 ? "queued" : "idle",
+          turnState: pendingCount > 0 ? "queued" : "idle",
+          pendingCount,
         };
       }
       return session;
@@ -1558,11 +1562,16 @@ export function useMobileBridge() {
   }, [sendRequest]);
 
   const interruptTurn = useCallback(async (sessionId: string, commandId?: string) => {
-    await sendRequest("turn.interrupt", {
+    const response = await sendRequest("turn.interrupt", {
       sessionId,
       ...(commandId ? { commandId } : {}),
-    }, { allowOffline: false });
-  }, [sendRequest]);
+      force: true,
+    }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "任务停止失败");
+    const result = response.result as { interrupted?: boolean } | undefined;
+    if (result?.interrupted !== true) throw new Error("当前没有可停止的 Bridge 任务");
+    await resumeEvents();
+  }, [resumeEvents, sendRequest]);
 
   const resolveUncertainDelivery = useCallback(async (
     commandId: string,

@@ -224,6 +224,12 @@ export class EvidenceManager {
 
   async initialize(): Promise<void> {
     await this.options.store.initialize();
+    const interrupted = this.options.store.failCollectingBundles(
+      "Bridge 在成果归档完成前重新启动，本轮证据已停止且可能不完整",
+    );
+    for (const bundle of interrupted) {
+      await this.emitEvidence("evidence.failed", bundle);
+    }
   }
 
   async close(): Promise<void> {

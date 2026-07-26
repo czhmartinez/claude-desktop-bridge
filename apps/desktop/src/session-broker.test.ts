@@ -1014,6 +1014,265 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
+  it("lets a force stop remove a Bridge turn restored as queued after restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-restart-stop-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    const queuePath = join(root, "queue.json");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(queuePath, JSON.stringify({
+      version: 2,
+      pending: [{
+        commandId: "restart-command",
+        requestId: "restart-request",
+        idempotencyKey: "restart-idempotency",
+        sessionId,
+        text: "stale task",
+        attachments: [],
+        origin: "desktop",
+        requestedAt: 1_000,
+        priority: 0,
+        attempts: 1,
+        state: "running",
+        mode: "start",
+        transport: "bridge-host",
+        turnId: "restart-turn",
+        evidenceId: "restart-evidence",
+      }],
+      completedIdempotencyKeys: [],
+      terminalTurns: [],
+    }));
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd)],
+      observedAt: Date.now(),
+    });
+    observer.busy = true;
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath,
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    expect(broker.session(sessionId)).toMatchObject({
+      turnState: "queued",
+      pendingCount: 1,
+    });
+
+    await expect(broker.interruptTurn(sessionId, undefined, true)).resolves.toBe(true);
+
+    expect(broker.session(sessionId)).toMatchObject({
+      ownership: "DESKTOP_OBSERVED",
+      turnState: "running",
+      pendingCount: 0,
+    });
+    expect(JSON.parse(await readFile(queuePath, "utf8"))).toMatchObject({
+      pending: [],
+      terminalTurns: [{
+        commandId: "restart-command",
+        state: "cancelled",
+      }],
+    });
+    expect(eventLog.replay().at(-1)).toMatchObject({
+      type: "turn.interrupted",
+      itemId: "restart-command",
+    });
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("surfaces a rotated-session queue as a blocked recovery task instead of replaying it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-orphan-stop-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const projectsRoot = join(root, "projects");
+    const staleSessionId = randomUUID();
+    const currentSessionId = randomUUID();
+    const queuePath = join(root, "queue.json");
+    await Promise.all([mkdir(cwd, { recursive: true }), mkdir(projectsRoot, { recursive: true })]);
+    await writeFile(
+      join(projectsRoot, `${staleSessionId}.jsonl`),
+      `${JSON.stringify({ type: "attachment", sessionId: staleSessionId, cwd })}\n`,
+    );
+    await writeFile(queuePath, JSON.stringify({
+      version: 2,
+      pending: [{
+        commandId: "orphan-command",
+        requestId: "orphan-request",
+        idempotencyKey: "orphan-idempotency",
+        sessionId: staleSessionId,
+        text: "stale task after install",
+        attachments: [],
+        origin: "desktop",
+        requestedAt: 1_000,
+        priority: 0,
+        attempts: 0,
+        state: "running",
+        mode: "start",
+        transport: "bridge-host",
+      }],
+      completedIdempotencyKeys: [],
+      terminalTurns: [],
+    }));
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(currentSessionId, cwd)],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: projectsRoot,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath,
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+
+    await broker.initialize();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(hosts).toHaveLength(0);
+    expect(broker.session(staleSessionId)).toMatchObject({
+      cwd,
+      title: "未完成任务：stale task after install",
+      source: "bridge",
+      ownership: "BRIDGE_IDLE",
+      turnState: "queued",
+      pendingCount: 1,
+    });
+
+    await expect(broker.interruptTurn(staleSessionId, undefined, true)).resolves.toBe(true);
+    expect(broker.session(staleSessionId)).toBeUndefined();
+    expect(JSON.parse(await readFile(queuePath, "utf8"))).toMatchObject({
+      pending: [],
+      terminalTurns: [{
+        commandId: "orphan-command",
+        state: "cancelled",
+      }],
+    });
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("force-stops an unavailable managed turn so later sessions can run", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-uncertain-stop-"));
+    directories.push(root);
+    const staleSessionId = randomUUID();
+    const nextSessionId = randomUUID();
+    const staleCwd = join(root, "stale-project");
+    const nextCwd = join(root, "next-project");
+    const queuePath = join(root, "queue.json");
+    await Promise.all([mkdir(staleCwd, { recursive: true }), mkdir(nextCwd, { recursive: true })]);
+    await writeFile(queuePath, JSON.stringify({
+      version: 2,
+      pending: [{
+        commandId: "uncertain-command",
+        requestId: "uncertain-request",
+        idempotencyKey: "uncertain-idempotency",
+        sessionId: staleSessionId,
+        text: "stale managed task",
+        attachments: [],
+        origin: "desktop",
+        requestedAt: 1_000,
+        priority: 0,
+        attempts: 1,
+        state: "running",
+        mode: "start",
+        transport: "claude-desktop-managed",
+        turnId: "uncertain-turn",
+      }],
+      completedIdempotencyKeys: [],
+      terminalTurns: [],
+    }));
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [
+        observed(staleSessionId, staleCwd),
+        observed(nextSessionId, nextCwd),
+      ],
+      observedAt: Date.now(),
+    });
+    const managedTransport = new FakeManagedTransport();
+    managedTransport.ready = false;
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath,
+      maxParallelTurns: 1,
+      managedTransport,
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "next-request",
+      idempotencyKey: "next-idempotency",
+      sessionId: nextSessionId,
+      text: "run after stale task",
+      origin: "desktop",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(hosts).toHaveLength(0);
+
+    await expect(broker.interruptTurn(staleSessionId, undefined, true)).resolves.toBe(true);
+    await waitFor(() => hosts[0]?.sends === 1);
+
+    expect(broker.session(staleSessionId)).toMatchObject({
+      turnState: "idle",
+      pendingCount: 0,
+    });
+    expect(hosts[0]?.options.sessionId).toBe(nextSessionId);
+    await broker.close();
+    await eventLog.close();
+  });
+
   it("runs at most two turns and leaves the third durably queued", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-"));
     directories.push(root);

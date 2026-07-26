@@ -113,6 +113,22 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
   return "待机";
 }
 
+export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
+  if (session.pendingCount > 0 || session.turnState === "queued") return true;
+  if (session.turnState !== "running" && session.turnState !== "waiting") return false;
+  return session.ownership === "BRIDGE_RUNNING"
+    || session.ownership === "DESKTOP_MANAGED_RUNNING";
+}
+
+export function stoppableBridgeTask(
+  sessions: BridgeSessionInfo[],
+  selectedSessionId?: string,
+): BridgeSessionInfo | undefined {
+  const selected = sessions.find((session) => session.sessionId === selectedSessionId);
+  if (selected && canStopBridgeTask(selected)) return selected;
+  return sessions.find(canStopBridgeTask);
+}
+
 function deliveryLabel(state: BridgeDeliveryState): string {
   if (state === "local-saved") return "已保存到手机";
   if (state === "relay-received") return "Relay 已接收";
@@ -719,6 +735,8 @@ export function MobileWorkspace({
   const [createBusy, setCreateBusy] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [imageError, setImageError] = useState<string>();
+  const [stoppingSessionId, setStoppingSessionId] = useState<string>();
+  const [stopError, setStopError] = useState<string>();
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [desktopAction, setDesktopAction] = useState<"launch" | "quit">();
@@ -841,6 +859,7 @@ export function MobileWorkspace({
   async function selectSession(sessionId: string): Promise<void> {
     setConfigurationOpen(false);
     setSessionView("conversation");
+    setStopError(undefined);
     setSelectedSessionId(sessionId);
     await onOpenSession(sessionId);
   }
@@ -879,6 +898,19 @@ export function MobileWorkspace({
       setAttachments(nextAttachments);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function stopTask(sessionId: string): Promise<void> {
+    if (stoppingSessionId) return;
+    setStoppingSessionId(sessionId);
+    setStopError(undefined);
+    try {
+      await onInterruptTurn(sessionId);
+    } catch (error) {
+      setStopError(error instanceof Error ? error.message : "任务停止失败");
+    } finally {
+      setStoppingSessionId(undefined);
     }
   }
 
@@ -923,9 +955,10 @@ export function MobileWorkspace({
         selectedSession.ownership === "BRIDGE_RUNNING" ||
         selectedSession.ownership === "DESKTOP_MANAGED_RUNNING"
       );
-    const activeTurn = localTurns
-      .filter((turn) => turn.sessionId === selectedSession.sessionId && turn.delivery === "running")
-      .at(-1);
+    const stopTarget = stoppableBridgeTask(sessions, selectedSession.sessionId);
+    const canStop = Boolean(stopTarget);
+    const stopping = stoppingSessionId === stopTarget?.sessionId;
+    const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== selectedSession.sessionId);
     const sessionPermissions = permissions.filter((permission) => permission.sessionId === selectedSession.sessionId);
     const activePermission = sessionPermissions[0];
     const otherPermission = permissions.find((permission) => permission.sessionId !== selectedSession.sessionId);
@@ -946,9 +979,13 @@ export function MobileWorkspace({
             <IconButton label="模型与 Effort" onClick={() => setConfigurationOpen(true)}>
               <Settings2 size={19} />
             </IconButton>
-            {bridgeRunning ? (
-              <IconButton label="停止任务" onClick={() => void onInterruptTurn(selectedSession.sessionId, activeTurn?.commandId)}>
-                <CircleStop size={20} />
+            {canStop ? (
+              <IconButton
+                label={stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
+                disabled={stopping}
+                onClick={() => stopTarget && void stopTask(stopTarget.sessionId)}
+              >
+                {stopping ? <LoaderCircle className="is-spinning" size={20} /> : <CircleStop size={20} />}
               </IconButton>
             ) : (
               <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
@@ -968,6 +1005,12 @@ export function MobileWorkspace({
           <div className="session-channel-warning danger">
             <AlertTriangle size={17} />
             <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；当前指令保留排队，无需重复发送。</span>
+          </div>
+        )}
+        {stopError && (
+          <div className="session-channel-warning danger">
+            <AlertTriangle size={17} />
+            <span><strong>任务停止失败</strong>{stopError}</span>
           </div>
         )}
 

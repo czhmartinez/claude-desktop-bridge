@@ -228,4 +228,64 @@ describe("EvidenceManager", () => {
     expect(preview.data).not.toContain("private-token");
     await manager.close();
   });
+
+  it("fails orphaned collecting evidence after a desktop restart", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-evidence-restart-"));
+    directories.push(directory);
+    const databasePath = join(directory, "evidence.sqlite");
+    const blobsPath = join(directory, "blobs");
+    const previousStore = new EvidenceStore({
+      databasePath,
+      blobsPath,
+      masterSecret: "restart-test-secret",
+    });
+    await previousStore.initialize();
+    previousStore.saveBundle({
+      id: "interrupted-evidence",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      source: "bridge-host",
+      confidence: "exact",
+      state: "collecting",
+      startedAt: 1_000,
+      toolCount: 1,
+      changeCount: 0,
+      artifactCount: 0,
+      tools: [{
+        id: "tool-1",
+        toolName: "Bash",
+        status: "running",
+        summary: "npm test",
+        startedAt: 1_100,
+        truncated: false,
+      }],
+      artifacts: [],
+      warnings: [],
+    });
+    await previousStore.close();
+
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    const manager = new EvidenceManager({
+      store: new EvidenceStore({
+        databasePath,
+        blobsPath,
+        masterSecret: "restart-test-secret",
+      }),
+      eventLog,
+    });
+    await manager.initialize();
+
+    expect(manager.get("interrupted-evidence")).toMatchObject({
+      confidence: "partial",
+      state: "failed",
+      tools: [{ status: "failed" }],
+      warnings: [expect.stringContaining("重新启动")],
+    });
+    expect(eventLog.replay().at(-1)).toMatchObject({
+      type: "evidence.failed",
+      itemId: "interrupted-evidence",
+    });
+    await manager.close();
+    await eventLog.close();
+  });
 });

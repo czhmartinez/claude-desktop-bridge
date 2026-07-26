@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, normalize } from "node:path";
 import type {
   BridgeAttachment,
@@ -80,6 +80,10 @@ export interface QueuedTurn {
   evidenceId?: string;
   sessionAcceptedAt?: number;
   uncertainResolved?: "confirmed";
+  sessionCwd?: string;
+  sessionTitle?: string;
+  desktopSessionId?: string;
+  recoveryBlocked?: boolean;
 }
 
 interface TurnQueueFile {
@@ -251,6 +255,27 @@ function compact(value: string, max = 160): string {
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
 }
 
+async function transcriptCwd(path: string): Promise<string | undefined> {
+  const handle = await open(path, "r").catch(() => undefined);
+  if (!handle) return undefined;
+  try {
+    const buffer = Buffer.alloc(512 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+    for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const value = JSON.parse(line) as { cwd?: unknown };
+        if (typeof value.cwd === "string" && isAbsolute(value.cwd)) return value.cwd;
+      } catch {
+        // A partial final line is expected when the bounded read stops mid-record.
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+  return undefined;
+}
+
 function encodeCursor(item: BridgeHistoryItem): string {
   return Buffer.from(JSON.stringify({ at: item.createdAt, id: item.id }), "utf8").toString("base64url");
 }
@@ -300,6 +325,7 @@ export class SessionBroker extends EventEmitter {
   private eventQueue: Promise<void> = Promise.resolve();
   private pumpQueue: Promise<void> = Promise.resolve();
   private readonly toolNames = new Map<string, string>();
+  private readonly forceStoppedTurnIds = new Set<string>();
   private evidenceFailureReported = false;
   private readonly managedStatusListener = () => {
     const status = this.options.managedDesktop?.status();
@@ -351,10 +377,12 @@ export class SessionBroker extends EventEmitter {
     ]);
     this.catalog = this.options.observer.catalog;
     this.managedTransport?.updateCatalog(this.catalog);
+    this.refreshRecoveryBlocks();
     this.rememberCatalogModels();
     this.options.observer.onCatalog((catalog) => {
       this.catalog = catalog;
       this.managedTransport?.updateCatalog(catalog);
+      this.refreshRecoveryBlocks();
       this.rememberCatalogModels();
       this.refreshObservedOwnership();
       this.emit("changed");
@@ -521,19 +549,34 @@ export class SessionBroker extends EventEmitter {
 
   listSessions(projectId?: string, search?: string): BridgeSessionInfo[] {
     const observed = new Map(this.catalog.sessions.map((session) => [session.sessionId, session]));
-    const ids = new Set([...observed.keys(), ...this.bridgeSessions.keys(), ...this.runtimeStates.keys()]);
+    const queued = new Map<string, QueuedTurn>();
+    for (const turn of this.pending) {
+      if (!queued.has(turn.sessionId)) queued.set(turn.sessionId, turn);
+    }
+    const ids = new Set([
+      ...observed.keys(),
+      ...this.bridgeSessions.keys(),
+      ...this.runtimeStates.keys(),
+      ...queued.keys(),
+    ]);
     const sessions: BridgeSessionInfo[] = [];
     for (const sessionId of ids) {
       const source = observed.get(sessionId);
       const bridge = this.bridgeSessions.get(sessionId);
-      if (!source && !bridge) continue;
-      const cwd = source?.cwd ?? bridge!.cwd;
+      const queuedTurn = queued.get(sessionId);
+      if (!source && !bridge && !queuedTurn) continue;
+      const recoveredQueue = !source && !bridge;
+      const cwd = source?.cwd
+        ?? bridge?.cwd
+        ?? queuedTurn?.sessionCwd
+        ?? this.options.paths.projects;
       const state = this.runtimeStates.get(sessionId);
       const pendingCount = this.pending.filter((turn) => (
         turn.sessionId === sessionId && (turn.state === "queued" || turn.state === "uncertain")
       )).length;
       const desktopSessionId = source?.desktopSessionId
         ?? bridge?.desktopSessionId
+        ?? queuedTurn?.desktopSessionId
         ?? this.managedTransport?.desktopSessionId(sessionId);
       const managed = Boolean(
         this.managedTransport?.ready &&
@@ -542,6 +585,11 @@ export class SessionBroker extends EventEmitter {
       const ownership = this.hasConfirmedOwnershipConflict(sessionId, state)
         ? "OWNERSHIP_CONFLICT"
         : state?.ownership
+          ?? (recoveredQueue
+            ? queuedTurn?.transport === "claude-desktop-managed"
+              ? "DESKTOP_MANAGED_IDLE"
+              : "BRIDGE_IDLE"
+            : undefined)
           ?? (managed
             ? this.options.observer.isDesktopBusy(sessionId)
               ? "DESKTOP_MANAGED_RUNNING"
@@ -556,15 +604,30 @@ export class SessionBroker extends EventEmitter {
         projectId: projectIdForCwd(cwd),
         projectName: basename(cwd) || cwd,
         cwd,
-        title: source?.title ?? bridge?.title ?? (basename(cwd) || cwd),
-        source: bridge ? "bridge" : "desktop",
-        transport: managed ? "claude-desktop-managed" : "bridge-host",
+        title: source?.title
+          ?? bridge?.title
+          ?? queuedTurn?.sessionTitle
+          ?? `未完成任务：${compact(queuedTurn?.text ?? "", 72)}`,
+        source: bridge || recoveredQueue ? "bridge" : "desktop",
+        transport: recoveredQueue
+          ? queuedTurn?.transport ?? "bridge-host"
+          : managed
+            ? "claude-desktop-managed"
+            : "bridge-host",
         ownership,
         turnState: pendingCount > 0 && turnState === "idle" ? "queued" : turnState,
-        lastActivityAt: Math.max(source?.lastActivityAt ?? 0, bridge?.createdAt ?? 0),
+        lastActivityAt: Math.max(
+          source?.lastActivityAt ?? 0,
+          bridge?.createdAt ?? 0,
+          queuedTurn?.requestedAt ?? 0,
+        ),
         pendingCount,
         ...(state?.active?.turnId ? { activeTurnId: state.active.turnId } : {}),
-        ...(state?.active?.text ? { currentSummary: compact(state.active.text) } : {}),
+        ...(state?.active?.text
+          ? { currentSummary: compact(state.active.text) }
+          : recoveredQueue && queuedTurn
+            ? { currentSummary: `恢复的未完成任务 · ${compact(queuedTurn.text)}` }
+            : {}),
         ...(profile.model ? { model: profile.model } : {}),
         ...(profile.effort ? { effort: profile.effort } : {}),
         ...(state?.configurationPending ? { configurationPending: true } : {}),
@@ -788,7 +851,8 @@ export class SessionBroker extends EventEmitter {
     const text = input.text.trim();
     const attachments = input.attachments ?? [];
     if (!text && attachments.length === 0) throw new Error("Message cannot be empty");
-    if (!this.session(input.sessionId)) throw new Error("Session not found");
+    const session = this.session(input.sessionId);
+    if (!session) throw new Error("Session not found");
     const existing = this.pending.find((turn) => turn.idempotencyKey === input.idempotencyKey);
     if (existing) return existing;
     if (this.completedKeys.has(input.idempotencyKey)) {
@@ -814,6 +878,9 @@ export class SessionBroker extends EventEmitter {
       attempts: 0,
       state: "queued",
       mode: input.mode ?? "start",
+      sessionCwd: session.cwd,
+      sessionTitle: session.title,
+      ...(session.desktopSessionId ? { desktopSessionId: session.desktopSessionId } : {}),
     };
     this.pending.push(queued);
     this.sortPending();
@@ -851,34 +918,61 @@ export class SessionBroker extends EventEmitter {
     return turn;
   }
 
-  async interruptTurn(sessionId: string, commandId?: string): Promise<boolean> {
+  async interruptTurn(sessionId: string, commandId?: string, force = false): Promise<boolean> {
     const state = this.runtimeStates.get(sessionId);
-    if (
-      state?.managed &&
-      state.active &&
-      (!commandId || state.active.commandId === commandId) &&
-      this.managedTransport?.ready
-    ) {
+    const active = state?.active;
+    const activeMatches = Boolean(active && (!commandId || active.commandId === commandId));
+    if (state?.managed && active && activeMatches) {
       this.permissionBroker.cancelSession(sessionId);
+      if (force) {
+        if (this.managedTransport?.ready) {
+          void this.managedTransport.interrupt(sessionId).catch(() => undefined);
+        }
+        this.managedTransport?.clearIntent(sessionId);
+        await this.forceCancelActive(sessionId, active);
+        return true;
+      }
+      if (!this.managedTransport?.ready) return false;
       await this.managedTransport.interrupt(sessionId);
       return true;
     }
-    if (state?.active && (!commandId || state.active.commandId === commandId) && state.host) {
+    if (active && activeMatches && state.host) {
       this.permissionBroker.cancelSession(sessionId);
+      if (force) {
+        await this.forceCancelActive(sessionId, active);
+        return true;
+      }
       await state.host.interrupt();
+      return true;
+    }
+    if (force && active && activeMatches) {
+      await this.forceCancelActive(sessionId, active);
       return true;
     }
     const index = this.pending.findIndex((turn) => (
       turn.sessionId === sessionId &&
-      turn.state === "queued" &&
+      (turn.state === "queued" || (force && turn.state === "uncertain")) &&
       (!commandId || turn.commandId === commandId)
     ));
     if (index < 0) return false;
     const [cancelled] = this.pending.splice(index, 1);
     this.rememberTerminal(cancelled!, "cancelled");
+    this.clearTakeoverRetry(sessionId);
+    const remainingForSession = this.pending.some((turn) => (
+      turn.sessionId === sessionId && (turn.state === "queued" || turn.state === "uncertain")
+    ));
+    if (state && !state.active) {
+      state.ownership = "DESKTOP_OBSERVED";
+      state.turnState = remainingForSession
+        ? "queued"
+        : this.options.observer.isDesktopBusy(sessionId)
+          ? "running"
+          : "idle";
+    }
     await this.saveQueue();
     await this.record({
       sessionId,
+      ...(cancelled!.turnId ? { turnId: cancelled!.turnId } : {}),
       itemId: cancelled!.commandId,
       origin: "system",
       type: "turn.interrupted",
@@ -887,10 +981,83 @@ export class SessionBroker extends EventEmitter {
         requestId: cancelled!.requestId,
         idempotencyKey: cancelled!.idempotencyKey,
         delivery: "cancelled",
+        wasQueued: true,
       },
     });
+    if (this.options.evidence) {
+      void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+        sessionId,
+        ...(cancelled!.turnId ? { turnId: cancelled!.turnId } : {}),
+        failed: true,
+        error: "任务已停止",
+      }));
+    }
     this.emit("changed");
+    await this.pump();
     return true;
+  }
+
+  private async forceCancelActive(sessionId: string, turn: QueuedTurn): Promise<void> {
+    const state = this.runtimeStates.get(sessionId);
+    if (!state?.active || state.active.commandId !== turn.commandId) return;
+    this.permissionBroker.cancelSession(sessionId);
+    this.clearTakeoverRetry(sessionId);
+    if (turn.turnId) {
+      this.forceStoppedTurnIds.add(turn.turnId);
+      while (this.forceStoppedTurnIds.size > 2_000) {
+        const oldest = this.forceStoppedTurnIds.values().next().value;
+        if (typeof oldest !== "string") break;
+        this.forceStoppedTurnIds.delete(oldest);
+      }
+    }
+    const host = state.host;
+    delete state.host;
+    delete state.active;
+    if (state.releaseTimer) {
+      clearTimeout(state.releaseTimer);
+      delete state.releaseTimer;
+    }
+    const index = this.pending.findIndex((candidate) => candidate.commandId === turn.commandId);
+    if (index >= 0) this.pending.splice(index, 1);
+    this.activeTurns = Math.max(0, this.activeTurns - 1);
+    this.rememberTerminal(turn, "cancelled");
+    const managedReady = Boolean(state.managed && this.managedTransport?.ready);
+    const desktopBusy = !managedReady && this.options.observer.isDesktopBusy(sessionId);
+    state.turnState = desktopBusy ? "running" : "idle";
+    state.ownership = managedReady
+      ? "DESKTOP_MANAGED_IDLE"
+      : this.catalog.sessions.some((session) => session.sessionId === sessionId)
+        ? "DESKTOP_OBSERVED"
+        : "BRIDGE_IDLE";
+    if (!managedReady) delete state.managed;
+    await host?.close().catch(() => undefined);
+    this.managedTransport?.clearIntent(sessionId);
+    await this.saveQueue();
+    await this.options.eventLog.flushDeltas(sessionId);
+    await this.record({
+      sessionId,
+      ...(turn.turnId ? { turnId: turn.turnId } : {}),
+      itemId: turn.commandId,
+      origin: "system",
+      type: "turn.interrupted",
+      data: {
+        commandId: turn.commandId,
+        requestId: turn.requestId,
+        idempotencyKey: turn.idempotencyKey,
+        delivery: "cancelled",
+        forced: true,
+      },
+    });
+    if (this.options.evidence) {
+      void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+        sessionId,
+        ...(turn.turnId ? { turnId: turn.turnId } : {}),
+        failed: true,
+        error: "任务已强制停止",
+      }));
+    }
+    this.emit("changed");
+    await this.pump();
   }
 
   async confirmFallback(sessionId: string): Promise<BridgeSessionInfo> {
@@ -1594,6 +1761,11 @@ export class SessionBroker extends EventEmitter {
     event: SessionHostEvent,
     eventOrigin: "claude-host" | "claude-desktop" = "claude-host",
   ): Promise<void> {
+    if (
+      "turnId" in event &&
+      typeof event.turnId === "string" &&
+      this.forceStoppedTurnIds.has(event.turnId)
+    ) return;
     const state = this.runtimeStates.get(event.sessionId);
     const active = (
       state?.active && state.active.turnId === ("turnId" in event ? event.turnId : undefined)
@@ -1966,6 +2138,7 @@ export class SessionBroker extends EventEmitter {
     for (const turn of this.pending) {
       if (this.activeTurns >= this.maxParallelTurns) break;
       if (turn.state !== "queued") continue;
+      if (turn.recoveryBlocked) continue;
       const state = this.runtimeStates.get(turn.sessionId);
       // Conflict containment owns the session until the old host is closed and the turn is persisted.
       const conflictSettling = this.conflictTasks.has(turn.sessionId) || (
@@ -2247,7 +2420,18 @@ export class SessionBroker extends EventEmitter {
           priority: turn.priority ?? 0,
           attempts: turn.attempts ?? 0,
           mode: turn.mode ?? "start",
+          sessionTitle: turn.sessionTitle ?? `未完成任务：${compact(turn.text, 72)}`,
         };
+        if (!restored.sessionCwd) {
+          const transcriptPath = await findClaudeTranscriptFile(
+            this.options.paths.projects,
+            restored.sessionId,
+          );
+          if (transcriptPath) {
+            const recoveredCwd = await transcriptCwd(transcriptPath);
+            if (recoveredCwd) restored.sessionCwd = recoveredCwd;
+          }
+        }
         this.pending.push(restored);
         if (state === "uncertain" && restored.mode !== "steer") {
           this.runtimeStates.set(restored.sessionId, {
@@ -2278,6 +2462,19 @@ export class SessionBroker extends EventEmitter {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       await rename(this.options.queuePath, `${this.options.queuePath}.archive-${Date.now()}`).catch(() => undefined);
+    }
+  }
+
+  private refreshRecoveryBlocks(): void {
+    const observedIds = new Set(this.catalog.sessions.map((session) => session.sessionId));
+    for (const turn of this.pending) {
+      if (turn.state !== "queued" && turn.state !== "uncertain") continue;
+      const blocked = !observedIds.has(turn.sessionId) && !this.bridgeSessions.has(turn.sessionId);
+      turn.recoveryBlocked = blocked;
+      if (!blocked || turn.state !== "uncertain") continue;
+      if (turn.mode !== "steer") this.activeTurns = Math.max(0, this.activeTurns - 1);
+      turn.state = "queued";
+      this.runtimeStates.delete(turn.sessionId);
     }
   }
 

@@ -13,6 +13,10 @@ npm run test:html-preview
 npm run build:android:debug
 ```
 
+凡是影响 `apps/client`、协议或跨端工作流的改动，本机验收包必须在同一轮同时更新
+DMG 与 Android APK。先递增 Android `versionCode`，再运行
+`npm run make:local:desktop-android`；只有明确限定为桌面原生层的改动才可跳过 APK。
+
 M0 必须证明手机/测试客户端消息与 Claude 回复落入同一 `sessionId` 和同一 JSONL，
 且测试前后的活动应用和剪贴板不变。SDK 不通过时停止发布，不能退回单次任务。
 

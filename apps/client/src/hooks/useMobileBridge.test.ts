@@ -193,4 +193,66 @@ describe("mergeBridgeEvents", () => {
       turnState: "idle",
     });
   });
+
+  it("removes a cancelled queued turn from the cached session count", () => {
+    const snapshot: BridgeHostSnapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.4.0",
+        capabilities: [],
+      },
+      projects: [],
+      sessions: [{
+        sessionId: "session-1",
+        projectId: "project-1",
+        projectName: "project",
+        cwd: "/tmp/project",
+        title: "Session",
+        source: "bridge",
+        transport: "bridge-host",
+        ownership: "DESKTOP_OBSERVED",
+        turnState: "queued",
+        lastActivityAt: 1,
+        pendingCount: 1,
+      }],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 1,
+    };
+    const interrupted: BridgeEvent = {
+      eventId: "interrupted",
+      seq: 2,
+      timestamp: 2,
+      origin: "system",
+      type: "turn.interrupted",
+      sessionId: "session-1",
+      data: {
+        commandId: "queued-command",
+        delivery: "cancelled",
+        wasQueued: true,
+      },
+    };
+
+    expect(applyEventToSnapshot(snapshot, interrupted, [])?.sessions[0]).toMatchObject({
+      turnState: "idle",
+      pendingCount: 0,
+    });
+  });
 });
