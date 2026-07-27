@@ -31,6 +31,10 @@ import {
 import { ClaudeDesktopManager } from "./claude-desktop-manager.js";
 import { ClaudeSessionHost, type ClaudeSessionHostOptions, type SessionHostEvent } from "./claude-session-host.js";
 import {
+  claudeDesktopProfileForPath,
+  type ClaudeDesktopProfile,
+} from "./claude-desktop-sessions.js";
+import {
   findClaudeTranscriptFile,
   readClaudeSessionContextEstimate,
   readClaudeSessionHistory,
@@ -248,6 +252,7 @@ export interface ConfigureSessionInput {
 interface EffectiveSessionProfile {
   model?: string;
   effort?: BridgeEffort;
+  ultracode?: boolean;
   inheritedModel?: string;
   inheritedEffort?: BridgeEffort;
   modelSource: BridgeConfigurationSource;
@@ -1408,6 +1413,18 @@ export class SessionBroker extends EventEmitter {
       this.emit("changed");
       return;
     }
+    try {
+      await this.assertBridgeHostCompatible(session, state.host);
+    } catch (error) {
+      const incompatibleHost = state.host;
+      delete state.host;
+      await incompatibleHost?.close().catch(() => undefined);
+      state.ownership = observed ? "DESKTOP_OBSERVED" : "BRIDGE_IDLE";
+      state.turnState = "idle";
+      await this.failQueuedTurn(turn, error instanceof Error ? error.message : String(error));
+      await this.recordOwnership(turn.sessionId, state.ownership);
+      return;
+    }
     let accepted: ReturnType<SessionHostRuntime["send"]>;
     let evidenceId: string | undefined;
     try {
@@ -1506,6 +1523,7 @@ export class SessionBroker extends EventEmitter {
     try {
       const transcript = await findClaudeTranscriptFile(this.options.paths.projects, sessionId, session.cwd);
       const profile = this.effectiveProfile(sessionId, session.cwd);
+      const hostModel = this.modelForHost(profile);
       const host = this.hostFactory({
         sessionId,
         cwd: session.cwd,
@@ -1513,7 +1531,7 @@ export class SessionBroker extends EventEmitter {
         environment: this.runtime.environment,
         permissionBroker: this.permissionBroker,
         resume: Boolean(transcript),
-        ...(profile.model ? { model: profile.model } : {}),
+        ...(hostModel ? { model: hostModel } : {}),
         ...(profile.effort ? { effort: profile.effort } : {}),
       });
       host.onEvent((event) => {
@@ -1553,6 +1571,7 @@ export class SessionBroker extends EventEmitter {
     ));
     const inheritedModel = observed?.hostModel ?? projectModel?.hostModel;
     const inheritedEffort = observed?.hostEffort ?? projectEffort?.hostEffort;
+    const ultracode = !configuration?.model && observed?.hostUltracode === true;
     const inheritedModelSource: BridgeConfigurationSource = observed?.hostModel
       ? "claude-desktop"
       : projectModel?.hostModel
@@ -1566,6 +1585,7 @@ export class SessionBroker extends EventEmitter {
     return {
       ...(configuration?.model ? { model: configuration.model } : inheritedModel ? { model: inheritedModel } : {}),
       ...(configuration?.effort ? { effort: configuration.effort } : inheritedEffort ? { effort: inheritedEffort } : {}),
+      ...(ultracode ? { ultracode: true } : {}),
       ...(inheritedModel ? { inheritedModel } : {}),
       ...(inheritedEffort ? { inheritedEffort } : {}),
       modelSource: configuration?.model ? "bridge" : inheritedModelSource,
@@ -1575,10 +1595,17 @@ export class SessionBroker extends EventEmitter {
 
   private async applyHostConfiguration(
     host: SessionHostRuntime,
-    profile: Pick<EffectiveSessionProfile, "model" | "effort">,
+    profile: Pick<EffectiveSessionProfile, "model" | "effort" | "ultracode">,
   ): Promise<void> {
-    await host.setModel(profile.model);
+    await host.setModel(this.modelForHost(profile));
     await host.setEffort(profile.effort);
+  }
+
+  private modelForHost(
+    profile: Pick<EffectiveSessionProfile, "model" | "ultracode">,
+  ): string | undefined {
+    if (!profile.model || !profile.ultracode || /\[1m\]/iu.test(profile.model)) return profile.model;
+    return `${profile.model}[1m]`;
   }
 
   private rememberCatalogModels(): void {
@@ -1693,8 +1720,8 @@ export class SessionBroker extends EventEmitter {
     return `${normalized || value}${longContext ? " · 1M" : ""}`;
   }
 
-  private modelContextLimit(model: string): number {
-    return /\[1m\]|(?:^|[-_])1m(?:$|[-_])/iu.test(model)
+  private modelContextLimit(model: string | undefined, ultracode = false): number {
+    return ultracode || (model !== undefined && /\[1m\]|(?:^|[-_])1m(?:$|[-_])/iu.test(model))
       ? LONG_CONTEXT_TOKENS
       : DEFAULT_CONTEXT_TOKENS;
   }
@@ -1707,7 +1734,7 @@ export class SessionBroker extends EventEmitter {
     );
     if (!estimate) return undefined;
     const profile = this.effectiveProfile(session.sessionId, session.cwd);
-    const maxTokens = profile.model ? this.modelContextLimit(profile.model) : DEFAULT_CONTEXT_TOKENS;
+    const maxTokens = this.modelContextLimit(profile.model, profile.ultracode);
     return {
       totalTokens: estimate.totalTokens,
       maxTokens,
@@ -1729,6 +1756,68 @@ export class SessionBroker extends EventEmitter {
     throw new Error(
       `当前会话约 ${estimate.totalTokens.toLocaleString("zh-CN")} tokens，所选模型仅提供约 `
       + `${maxTokens.toLocaleString("zh-CN")} tokens 上下文。请先压缩或新建会话，或选择 1M 模型。`,
+    );
+  }
+
+  private sessionSourceProfile(sessionId: string): ClaudeDesktopProfile {
+    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (observed?.sourceProfile) return observed.sourceProfile;
+    const registrationRoot = this.bridgeSessions.get(sessionId)?.desktopRegistration?.profileSessionsRoot;
+    return registrationRoot ? claudeDesktopProfileForPath(registrationRoot) : "unknown";
+  }
+
+  private runtimeProfile(): ClaudeDesktopProfile {
+    return this.runtime?.credentialPath
+      ? claudeDesktopProfileForPath(this.runtime.credentialPath)
+      : "unknown";
+  }
+
+  private profileLabel(profile: ClaudeDesktopProfile): string {
+    return profile === "claude" ? "Claude 官方" : profile === "claude-3p" ? "Claude-3p" : "未知";
+  }
+
+  private async assertBridgeHostCompatible(
+    session: BridgeSessionInfo,
+    host?: SessionHostRuntime,
+  ): Promise<void> {
+    const transcript = await findClaudeTranscriptFile(
+      this.options.paths.projects,
+      session.sessionId,
+      session.cwd,
+    );
+    if (!transcript) return;
+
+    const sourceProfile = this.sessionSourceProfile(session.sessionId);
+    const targetProfile = this.runtimeProfile();
+    if (
+      sourceProfile !== "unknown" &&
+      targetProfile !== "unknown" &&
+      sourceProfile !== targetProfile
+    ) {
+      throw new Error(
+        `为保护原会话，Bridge 已在发送前阻止本次操作：该会话来自${this.profileLabel(sourceProfile)}，`
+        + `当前 Bridge Host 使用${this.profileLabel(targetProfile)}，V0.4.2 不允许跨 profile 直接续接。`
+        + "原会话未写入新消息；请在原 Claude Desktop 会话继续，或新建 Bridge 会话。",
+      );
+    }
+
+    const profile = this.effectiveProfile(session.sessionId, session.cwd);
+    const estimate = await readClaudeSessionContextEstimate(
+      this.options.paths.projects,
+      session.sessionId,
+      session.cwd,
+    );
+    const liveUsage = host
+      ? await host.contextUsage().catch(() => undefined)
+      : undefined;
+    const totalTokens = Math.max(estimate?.totalTokens ?? 0, liveUsage?.totalTokens ?? 0);
+    const maxTokens = liveUsage?.maxTokens ?? this.modelContextLimit(profile.model, profile.ultracode);
+    if (totalTokens <= maxTokens) return;
+    throw new Error(
+      `为保护原会话，Bridge 已在发送前阻止本次操作：当前会话约 `
+      + `${totalTokens.toLocaleString("zh-CN")} tokens，目标模型仅提供约 `
+      + `${maxTokens.toLocaleString("zh-CN")} tokens 上下文。原会话未写入新消息；`
+      + "请新建 Bridge 会话，或选择兼容的 1M 模型。",
     );
   }
 

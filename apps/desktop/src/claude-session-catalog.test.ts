@@ -72,4 +72,36 @@ describe("Claude session process catalog", () => {
     ]));
     expect(catalog.sessions[0]?.activeProcesses).toHaveLength(2);
   });
+
+  it("carries only sanitized Desktop profile provenance and ultracode into the internal catalog", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-session-profile-catalog-"));
+    directories.push(root);
+    const desktopSessions = join(root, "Application Support", "Claude", "claude-code-sessions");
+    const project = join(root, "project");
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    await Promise.all([mkdir(desktopSessions, { recursive: true }), mkdir(project)]);
+    await writeFile(join(desktopSessions, "local_profile.json"), JSON.stringify({
+      sessionId: "local-profile",
+      cliSessionId: sessionId,
+      cwd: project,
+      lastFocusedAt: 10,
+      model: "claude-opus-5",
+      sessionSettings: { ultracode: true },
+    }));
+    process.env.BRIDGE_DISABLE_PROCESS_SCAN = "1";
+
+    const catalog = await scanClaudeCatalog({
+      sessions: join(root, "sessions"),
+      tasks: join(root, "tasks"),
+      projects: join(root, "projects"),
+      desktopSessions: [desktopSessions],
+    });
+    expect(catalog.sessions[0]).toMatchObject({
+      sessionId,
+      sourceProfile: "claude",
+      hostUltracode: true,
+      hostModel: "claude-opus-5",
+    });
+    expect(JSON.stringify(catalog.sessions[0])).not.toContain(desktopSessions);
+  });
 });

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
 import {
   listClaudeDesktopSessions,
+  type ClaudeDesktopProfile,
   type ClaudeSessionEffort,
 } from "./claude-desktop-sessions.js";
 import { findClaudeTranscriptFile } from "./claude-history.js";
@@ -41,6 +42,8 @@ export interface ObservedClaudeSession extends BridgeSessionInfo {
   activeTask: boolean;
   hostModel?: string;
   hostEffort?: ClaudeSessionEffort;
+  sourceProfile?: ClaudeDesktopProfile;
+  hostUltracode?: boolean;
 }
 
 export interface ClaudeCatalogSnapshot {
@@ -252,6 +255,8 @@ export async function scanClaudeCatalog(paths: ClaudeRuntimePaths): Promise<Clau
       activeTask,
       ...(desktopSession.model ? { hostModel: desktopSession.model } : {}),
       ...(desktopSession.effort ? { hostEffort: desktopSession.effort } : {}),
+      ...(desktopSession.profile !== "unknown" ? { sourceProfile: desktopSession.profile } : {}),
+      ...(desktopSession.ultracode !== undefined ? { hostUltracode: desktopSession.ultracode } : {}),
       ...(transcriptPath ? { transcriptPath } : {}),
     });
   }

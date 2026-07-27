@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2
+
+- Refuse a native resume before writing any user message when the source session belongs to a
+  different Claude or Claude-3p profile than the active Bridge Host credentials.
+- Preserve Claude Desktop's `sessionSettings.ultracode` signal and treat that route as a 1M-context
+  model for capacity checks and Agent SDK resume configuration.
+- Suppress duplicate synthetic `Prompt is too long` and related SDK failure messages in both
+  recovered history and the live streaming path.
+- Keep protocol V3 and pairing schema V4 unchanged. This desktop-native hotfix remains compatible
+  with the existing 0.4.1 Android APK and does not require pairing again.
+
 ## 0.4.1
 
 - Register Bridge-created Agent SDK sessions in the active Claude Desktop sidebar after their

@@ -304,6 +304,101 @@ describe("ClaudeSessionHost", () => {
     await host.close();
   });
 
+  it("emits one visible failure for a synthetic SDK error and keeps normal assistant text", async () => {
+    const fake = new FakeQuery();
+    const sessionId = randomUUID();
+    const host = new ClaudeSessionHost({
+      sessionId,
+      cwd: "/tmp/bridge-project",
+      executablePath: "/tmp/claude",
+      environment: { PATH: "/usr/bin" },
+      permissionBroker: new PermissionBroker(),
+      resume: true,
+      queryFactory: (() => fake as unknown as Query) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent((event) => events.push(event));
+
+    host.send("continue", "mobile");
+    fake.push({
+      type: "assistant",
+      uuid: randomUUID(),
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      message: {
+        id: randomUUID(),
+        type: "message",
+        role: "assistant",
+        model: "<synthetic>",
+        content: [{ type: "text", text: "Prompt is too long", citations: [] }],
+        stop_reason: "model_context_window_exceeded",
+        stop_sequence: null,
+        usage: {} as never,
+      } as never,
+    });
+    fake.push({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: true,
+      num_turns: 1,
+      result: "Prompt is too long",
+      stop_reason: "model_context_window_exceeded",
+      total_cost_usd: 0,
+      usage: {} as never,
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: sessionId,
+    });
+    await waitForEvent(events, "turn.failed");
+    expect(events.filter((event) => event.type === "turn.failed")).toHaveLength(1);
+    expect(events.some((event) => event.type === "assistant.completed")).toBe(false);
+
+    host.send("retry in a new context", "mobile");
+    const normalAssistantId = randomUUID();
+    fake.push({
+      type: "assistant",
+      uuid: normalAssistantId,
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      message: {
+        id: randomUUID(),
+        type: "message",
+        role: "assistant",
+        model: "claude-opus-5",
+        content: [{ type: "text", text: "正常回复", citations: [] }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: {} as never,
+      } as never,
+    });
+    fake.push({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: false,
+      num_turns: 1,
+      result: "正常回复",
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      usage: {} as never,
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: sessionId,
+    });
+    await waitForEvent(events, "turn.completed");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "assistant.completed",
+      itemId: normalAssistantId,
+      text: "正常回复",
+    }));
+    await host.close();
+  });
+
   it("drains an interrupted result before settling an immediate retry", async () => {
     const fake = new FakeQuery();
     const sessionId = randomUUID();

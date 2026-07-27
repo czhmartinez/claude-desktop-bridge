@@ -20,12 +20,20 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前稳定版：0.4.1
+## 当前稳定版：0.4.2
 
-Bridge 0.4.1 在 0.4.0“成果证据层”之上补齐 Bridge 新建会话的 Claude Desktop
-侧边栏登记。手机不只远程控制 Claude 会话，还能验证这一轮
+Bridge 0.4.2 是桌面原生安全热修，在 0.4.1 的 Claude Desktop 侧边栏登记与
+0.4.0“成果证据层”之上修复跨 profile 恢复、1M 上下文识别和重复错误展示。
+手机不只远程控制 Claude 会话，还能验证这一轮
 调用了什么工具、命令是否成功、哪些文件发生变化，以及有哪些成果可以预览或下载。
 
+- Bridge 在启动 Host 和写入用户消息前同时校验会话来源 profile。来自 Claude 官方
+  与 Claude-3p 的原生会话不能跨 profile 直接恢复；不兼容时原会话保持未写入，
+  Bridge 明确提示回到原 profile 继续或新建会话。
+- Claude Desktop 的 `sessionSettings.ultracode` 会被识别为 1M 上下文能力，并传给
+  Agent SDK 的恢复模型配置；发送前容量检查不再把这类会话误判为 200K。
+- SDK 生成的 synthetic `Prompt is too long`、上下文超限和同类失败消息会在历史与
+  流式路径统一过滤，不再与真实运行错误重复展示。
 - Bridge 新建的会话在首轮 JSONL 落盘后，会登记到当前正在运行的 Claude Desktop
   本地会话清单；按提示重启 Claude Desktop 后，即可从其侧边栏打开同一份完整历史。
   后续从 Bridge 或 Claude Desktop 继续，使用的仍是同一个 Claude `sessionId` 和
@@ -53,7 +61,7 @@ Bridge 0.4.1 在 0.4.0“成果证据层”之上补齐 Bridge 新建会话的 C
 - 不展示或推断隐藏 CoT，不依赖 Claude Desktop 私有 CDP，也不提供项目目录树、
   远程编辑器、动态站点托管或自动启动服务。
 
-0.4.1 继续使用协议 V3 和配对 schema V4；已配对的 0.4 设备无需重配。它仍不兼容
+0.4.2 继续使用协议 V3 和配对 schema V4；已配对的 0.4 设备无需重配。它仍不兼容
 0.3 配对：从 0.3 升级后会保留稳定主机 ID、
 设置、会话历史与本地事件，但会轮换房间和端到端密钥并清空旧设备授权；手机会将
 旧主机标记为“需要重新配对”，扫描新二维码后按同一主机接回本地缓存。
@@ -62,7 +70,7 @@ Relay 始终保留一个低流量控制连接，用于信令、设备撤销、�
 直连失败回退。界面显示“直连”时业务数据不经过 Relay；显示“安全中继”或
 “局域网连接”时业务数据使用相应 Relay 路径。
 
-Bridge 0.4.1 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
+Bridge 0.4.2 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
 共享同一个 Claude `sessionId`、同一个持久执行进程和同一条有序事件流。
 
 它面向已经通过第三方 Host 或 Gateway 登录 Claude Desktop、但不能使用官方
@@ -72,8 +80,9 @@ Bridge。
 ## 使用方式
 
 1. 在电脑安装并打开 Bridge，保持第三方登录的 Claude Desktop 可用。
-2. 将电脑端和手机端都升级到 0.4.1。从 0.3 首次升级时，在 Bridge 的“设备”页扫描
-   新二维码完成强制重配；0.4.x 之间升级不需要重新配对。
+2. 将电脑端升级到 0.4.2；现有 0.4.1 Android APK 继续兼容，无需为本次桌面原生
+   热修重装手机端。从 0.3 首次升级时，在 Bridge 的“设备”页扫描新二维码完成强制
+   重配；0.4.x 之间升级不需要重新配对。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
    回答 Claude 提问、调整或停止任务。
 
@@ -107,7 +116,7 @@ macOS 构建冒充正式安装包，也不会自动上传未签名附件。
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
 发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
-## 0.4.1 当前能力
+## 0.4.2 当前能力
 
 - `BridgeEvidenceBundle`、工具证据、产物清单、预览与分块传输的协议 V3 契约。
 - SQLite 证据清单、Electron `safeStorage` 主密钥、AES-256-GCM 内容寻址快照，以及
@@ -123,7 +132,7 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
 - 0.3 已有的持久 Agent SDK 会话、单写入者保护、可靠 WSS、WebRTC 直连、事件恢复、
   审批、提问、停止、推送唤醒、主机/项目/会话导航和稳定签名发布门继续保留。
 
-0.4.1 不包含隐藏 CoT、Claude Desktop 实时工具镜像、私有 CDP、完整项目浏览、
+0.4.2 不包含隐藏 CoT、Claude Desktop 实时工具镜像、私有 CDP、完整项目浏览、
 远程编辑、动态站点直播、自动启动服务、PDF 内嵌渲染或超过 20 MiB 的产物传输。
 
 ## 本地运行
@@ -180,7 +189,7 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.4.1 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
+Bridge 0.4.2 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
 必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
 签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。

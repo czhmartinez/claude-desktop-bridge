@@ -157,7 +157,7 @@ export function buildClaudeRuntimeEnvironment(
   const runtimeEnvironment: NodeJS.ProcessEnv = {
     ...environment,
     CLAUDE_CODE_ENTRYPOINT: "claude-bridge",
-    CLAUDE_AGENT_SDK_CLIENT_APP: "claude-bridge/0.4.1",
+    CLAUDE_AGENT_SDK_CLIENT_APP: "claude-bridge/0.4.2",
     BRIDGE_SESSION_RUNTIME: "1",
   };
   delete runtimeEnvironment.CLAUDECODE;

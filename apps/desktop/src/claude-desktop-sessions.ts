@@ -13,9 +13,11 @@ interface DesktopSessionFile {
   title?: unknown;
   model?: unknown;
   effort?: unknown;
+  sessionSettings?: unknown;
 }
 
 export type ClaudeSessionEffort = BridgeEffort;
+export type ClaudeDesktopProfile = "claude" | "claude-3p" | "unknown";
 
 export interface ClaudeDesktopSession {
   sessionId: string;
@@ -27,6 +29,8 @@ export interface ClaudeDesktopSession {
   title?: string;
   model?: string;
   effort?: ClaudeSessionEffort;
+  profile: ClaudeDesktopProfile;
+  ultracode?: boolean;
 }
 
 function parseEffort(value: unknown): ClaudeSessionEffort | undefined {
@@ -37,6 +41,19 @@ function parseEffort(value: unknown): ClaudeSessionEffort | undefined {
     value === "max"
     ? value
     : undefined;
+}
+
+export function claudeDesktopProfileForPath(path: string): ClaudeDesktopProfile {
+  const normalized = path.replaceAll("\\", "/");
+  if (/(?:^|\/)Claude-3p(?:\/|$)/iu.test(normalized)) return "claude-3p";
+  if (/(?:^|\/)Claude(?:\/|$)/iu.test(normalized)) return "claude";
+  return "unknown";
+}
+
+function parseUltracode(value: unknown): boolean | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const ultracode = (value as Record<string, unknown>).ultracode;
+  return typeof ultracode === "boolean" ? ultracode : undefined;
 }
 
 async function collectJsonFiles(root: string, depth = 3): Promise<string[]> {
@@ -61,9 +78,11 @@ async function collectJsonFiles(root: string, depth = 3): Promise<string[]> {
 }
 
 export async function listClaudeDesktopSessions(roots: string[]): Promise<ClaudeDesktopSession[]> {
-  const files = (await Promise.all(roots.map((root) => collectJsonFiles(root)))).flat();
+  const files = (await Promise.all(roots.map(async (root) => (
+    (await collectJsonFiles(root)).map((file) => ({ file, root }))
+  )))).flat();
   const sessions: ClaudeDesktopSession[] = [];
-  for (const file of files) {
+  for (const { file, root } of files) {
     let value: DesktopSessionFile;
     try {
       value = JSON.parse(await readFile(file, "utf8")) as DesktopSessionFile;
@@ -80,6 +99,7 @@ export async function listClaudeDesktopSessions(roots: string[]): Promise<Claude
     const createdAt = typeof value.createdAt === "number" ? value.createdAt : lastFocusedAt;
     const lastActivityAt = typeof value.lastActivityAt === "number" ? value.lastActivityAt : lastFocusedAt;
     const effort = parseEffort(value.effort);
+    const ultracode = parseUltracode(value.sessionSettings);
     sessions.push({
       sessionId: value.sessionId,
       cliSessionId: value.cliSessionId,
@@ -87,9 +107,11 @@ export async function listClaudeDesktopSessions(roots: string[]): Promise<Claude
       lastFocusedAt,
       createdAt,
       lastActivityAt,
+      profile: claudeDesktopProfileForPath(root),
       ...(typeof value.title === "string" && value.title.trim() ? { title: value.title.trim() } : {}),
       ...(typeof value.model === "string" && value.model.trim() ? { model: value.model.trim() } : {}),
       ...(effort ? { effort } : {}),
+      ...(ultracode !== undefined ? { ultracode } : {}),
     });
   }
   return sessions.sort((left, right) => (

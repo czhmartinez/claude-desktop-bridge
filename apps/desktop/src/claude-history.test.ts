@@ -154,6 +154,51 @@ describe("Claude transcript history", () => {
     });
   });
 
+  it("hides a synthetic SDK failure while preserving normal assistant text", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-sdk-error-"));
+    directories.push(root);
+    const transcript = join(root, "sdk-error.jsonl");
+    await writeFile(transcript, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "继续" } }),
+      line({
+        type: "assistant",
+        uuid: "synthetic-error",
+        parentUuid: "user-1",
+        message: {
+          role: "assistant",
+          model: "<synthetic>",
+          content: [{ type: "text", text: "Prompt is too long" }],
+          stop_reason: "model_context_window_exceeded",
+        },
+      }),
+      line({
+        type: "user",
+        uuid: "user-2",
+        parentUuid: "synthetic-error",
+        message: { role: "user", content: "新会话继续" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "assistant-2",
+        parentUuid: "user-2",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5",
+          content: [{ type: "text", text: "正常回复" }],
+          stop_reason: "end_turn",
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    await expect(parseClaudeTranscript(transcript)).resolves.toMatchObject({
+      messages: [
+        { id: "user-1", role: "user", text: "继续" },
+        { id: "user-2", role: "user", text: "新会话继续" },
+        { id: "assistant-2", role: "assistant", text: "正常回复" },
+      ],
+    });
+  });
+
   it("only marks a completed assistant branch as a safe ownership boundary", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-claude-boundary-"));
     directories.push(root);

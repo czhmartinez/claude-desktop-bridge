@@ -1,4 +1,4 @@
-# Bridge 0.4.1 安全模型
+# Bridge 0.4.2 安全模型
 
 ## 已保护
 
@@ -63,6 +63,10 @@ Bridge 直接新建的会话在首轮可信 JSONL 落盘后，可以向当前 Cl
 `cwd`、目标文件名和最终父目录逐项校验。目标已存在、目录歧义、符号链接或格式未知
 时一律停止；不会覆盖原生会话，不写 LevelDB，也不会把本机路径和哈希发送到手机或
 Relay。
+
+恢复原生会话时，Bridge 会在启动 Host 和写入用户消息前核对会话元数据来源与当前
+Host 凭据目录。Claude 官方与 Claude-3p profile 不一致时保持原会话未写入并失败
+关闭；不会尝试复制凭据、跨 profile 原始 resume 或自动改走其他执行通道。
 
 Bridge 不附加或注入 Claude Desktop 进程，也不会为了接管自动退出 Claude Desktop
 或向其 Claude Code 会话子进程发送终止信号。仅打开、聚焦和只读查看会话不会形成

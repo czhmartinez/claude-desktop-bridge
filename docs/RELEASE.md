@@ -16,6 +16,8 @@ npm run build:android:debug
 凡是影响 `apps/client`、协议或跨端工作流的改动，本机验收包必须在同一轮同时更新
 DMG 与 Android APK。先递增 Android `versionCode`，再运行
 `npm run make:local:desktop-android`；只有明确限定为桌面原生层的改动才可跳过 APK。
+V0.4.2 属于这一例外：只更新 Desktop，现有 0.4.1 Android APK 继续兼容，协议 V3、
+配对 schema V4、Application Support 数据和已配对设备都不迁移或清空。
 
 M0 必须证明手机/测试客户端消息与 Claude 回复落入同一 `sessionId` 和同一 JSONL，
 且测试前后的活动应用和剪贴板不变。SDK 不通过时停止发布，不能退回单次任务。
@@ -210,6 +212,7 @@ npm run test:webrtc:native
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
 WSS 全部通过的平台才能标记“可分发”。
 
-V0.4.1 的正式发布范围是 macOS Desktop 与 Android。真实验收任务至少包含一条
-成功命令、一条失败命令、一次文本修改，以及图片、HTML、PDF 各一份，并在 Android
-完成预览或下载。iOS/Web 必须保持共享代码可构建，但不阻塞本次发布。
+V0.4.2 的发布范围仅为 macOS Desktop 原生热修；Android 继续使用兼容的 0.4.1 APK。
+热修验收必须覆盖跨 Claude/Claude-3p profile 的写入前阻止、ultracode 1M 容量识别，
+以及历史与流式路径不再重复展示 synthetic `Prompt is too long`。iOS/Web 必须保持
+共享代码可构建，但不阻塞本次发布。

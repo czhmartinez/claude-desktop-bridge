@@ -84,6 +84,13 @@ function toolBlocks(content: unknown): Array<{ id: string; name: string; input: 
   });
 }
 
+function isSyntheticAssistantFailure(message: SDKMessage & { type: "assistant" }, text: string): boolean {
+  const payload = message.message as unknown;
+  if (!isRecord(payload) || payload.model !== "<synthetic>") return false;
+  return payload.stop_reason === "model_context_window_exceeded" ||
+    /^(?:Prompt is too long|API Error:|Error:)/iu.test(text);
+}
+
 function partialText(message: SDKMessage): { itemId: string; text: string } | undefined {
   if (message.type !== "stream_event") return undefined;
   const event = message.event as unknown;
@@ -356,7 +363,11 @@ export class ClaudeSessionHost extends EventEmitter {
     if (message.type === "assistant") {
       if (!turnId || drainingInterruptedTurn) return;
       const text = textBlocks(message.message.content).join("\n\n").trim();
-      if (text && !isClaudeTranscriptControlMessage("assistant", text)) {
+      if (
+        text &&
+        !isClaudeTranscriptControlMessage("assistant", text) &&
+        !isSyntheticAssistantFailure(message, text)
+      ) {
         this.emitEvent({
           type: "assistant.completed",
           sessionId: this.sessionIdValue,

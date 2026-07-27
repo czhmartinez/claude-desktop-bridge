@@ -42,4 +42,44 @@ describe("Claude Desktop session catalog", () => {
       effort: "high",
     });
   });
+
+  it("preserves profile provenance and ultracode without exposing a profile path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-desktop-profiles-"));
+    directories.push(root);
+    const official = join(root, "Application Support", "Claude", "claude-code-sessions");
+    const thirdParty = join(root, "Application Support", "Claude-3p", "claude-code-sessions");
+    await Promise.all([mkdir(official, { recursive: true }), mkdir(thirdParty, { recursive: true })]);
+    await Promise.all([
+      writeFile(join(official, "local_official.json"), JSON.stringify({
+        sessionId: "local_official",
+        cliSessionId: "official-session",
+        cwd: "/work/official",
+        lastFocusedAt: 200,
+        model: "claude-opus-5",
+        sessionSettings: { ultracode: true },
+      })),
+      writeFile(join(thirdParty, "local_3p.json"), JSON.stringify({
+        sessionId: "local_3p",
+        cliSessionId: "third-party-session",
+        cwd: "/work/third-party",
+        lastFocusedAt: 100,
+        sessionSettings: { ultracode: false },
+      })),
+    ]);
+
+    const sessions = await listClaudeDesktopSessions([official, thirdParty]);
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        sessionId: "local_official",
+        profile: "claude",
+        ultracode: true,
+      }),
+      expect.objectContaining({
+        sessionId: "local_3p",
+        profile: "claude-3p",
+        ultracode: false,
+      }),
+    ]);
+    expect(JSON.stringify(sessions)).not.toContain(root);
+  });
 });

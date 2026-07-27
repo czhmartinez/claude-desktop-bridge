@@ -63,6 +63,8 @@ class FakeHost implements SessionHostRuntime {
   effort: BridgeEffort | undefined;
   closed = false;
   interrupts = 0;
+  contextTotalTokens = 120_000;
+  contextMaxTokens: number | undefined;
 
   constructor(readonly options: ClaudeSessionHostOptions) {
     this.model = options.model;
@@ -99,12 +101,14 @@ class FakeHost implements SessionHostRuntime {
   }
 
   async contextUsage(): Promise<SDKControlGetContextUsageResponse> {
+    const maxTokens = this.contextMaxTokens
+      ?? (this.model?.includes("[1m]") ? 1_000_000 : 262_144);
     return {
       categories: [],
-      totalTokens: 120_000,
-      maxTokens: 1_000_000,
-      rawMaxTokens: 1_000_000,
-      percentage: 12,
+      totalTokens: this.contextTotalTokens,
+      maxTokens,
+      rawMaxTokens: maxTokens,
+      percentage: (this.contextTotalTokens / maxTokens) * 100,
       gridRows: [],
       model: this.model ?? "claude-fable-5[1m]",
       memoryFiles: [],
@@ -273,7 +277,11 @@ class FakeManagedTransport extends EventEmitter implements ManagedDesktopTranspo
   }
 }
 
-function observed(sessionId: string, cwd: string): ObservedClaudeSession {
+function observed(
+  sessionId: string,
+  cwd: string,
+  overrides: Partial<ObservedClaudeSession> = {},
+): ObservedClaudeSession {
   return {
     sessionId,
     desktopSessionId: `desktop-${sessionId}`,
@@ -296,6 +304,7 @@ function observed(sessionId: string, cwd: string): ObservedClaudeSession {
     activeTask: false,
     hostModel: "claude-fable-5[1m]",
     hostEffort: "high",
+    ...overrides,
   };
 }
 
@@ -305,6 +314,33 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
     if (Date.now() - started > timeoutMs) throw new Error("Timed out waiting for broker state");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+async function writeContextTranscript(
+  projects: string,
+  cwd: string,
+  sessionId: string,
+  totalTokens: number,
+): Promise<string> {
+  const transcriptDirectory = join(projects, cwd.replace(/[:\\/]/gu, "-"));
+  await Promise.all([mkdir(cwd, { recursive: true }), mkdir(transcriptDirectory, { recursive: true })]);
+  const transcript = join(transcriptDirectory, `${sessionId}.jsonl`);
+  await writeFile(transcript, JSON.stringify({
+    type: "assistant",
+    uuid: randomUUID(),
+    timestamp: new Date().toISOString(),
+    message: {
+      role: "assistant",
+      model: "claude-opus-5",
+      content: "done",
+      usage: {
+        input_tokens: totalTokens,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    },
+  }));
+  return transcript;
 }
 
 describe("SessionBroker", () => {
@@ -622,6 +658,260 @@ describe("SessionBroker", () => {
     expect(reopenedHosts).toHaveLength(0);
     await reopened.close();
     await reopenedLog.close();
+  });
+
+  it("blocks a cross-profile raw resume before starting a host or writing the transcript", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-cross-profile-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    const sessionId = randomUUID();
+    const transcript = await writeContextTranscript(projects, cwd, sessionId, 10_000);
+    const before = await readFile(transcript, "utf8");
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd, {
+        sourceProfile: "claude",
+        hostModel: "claude-opus-5",
+        hostUltracode: true,
+      })],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: join(root, "Application Support", "Claude-3p", "host-creds-test.json"),
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "cross-profile-request",
+      idempotencyKey: "cross-profile-command",
+      sessionId,
+      text: "继续处理",
+      origin: "mobile",
+    });
+
+    await waitFor(() => eventLog.replay().some((event) => event.type === "turn.failed"));
+    const failures = eventLog.replay().filter((event) => (
+      event.type === "turn.failed" || event.type === "runtime.error"
+    ));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.data.error).toMatch(/Claude 官方.*Claude-3p.*不允许跨 profile/u);
+    expect(eventLog.replay().some((event) => event.type === "user.message.accepted")).toBe(false);
+    expect(hosts).toHaveLength(0);
+    await expect(readFile(transcript, "utf8")).resolves.toBe(before);
+    expect(broker.session(sessionId)).toMatchObject({ turnState: "idle", pendingCount: 0 });
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("treats ultracode metadata as 1M and resumes the same profile with a 1M model", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-ultracode-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    const sessionId = randomUUID();
+    await writeContextTranscript(projects, cwd, sessionId, 300_000);
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd, {
+        sourceProfile: "claude-3p",
+        hostModel: "claude-opus-5",
+        hostUltracode: true,
+      })],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: join(root, "Application Support", "Claude-3p", "host-creds-test.json"),
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "ultracode-request",
+      idempotencyKey: "ultracode-command",
+      sessionId,
+      text: "继续长上下文",
+      origin: "mobile",
+    });
+
+    await waitFor(() => hosts[0]?.sends === 1);
+    expect(hosts[0]?.options).toMatchObject({
+      resume: true,
+      model: "claude-opus-5[1m]",
+    });
+    hosts[0]!.complete();
+    await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("blocks an over-limit same-profile resume before creating the host", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-context-preflight-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    const sessionId = randomUUID();
+    await writeContextTranscript(projects, cwd, sessionId, 300_000);
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd, {
+        sourceProfile: "claude-3p",
+        hostModel: "claude-opus-5",
+        hostUltracode: false,
+      })],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: join(root, "Application Support", "Claude-3p", "host-creds-test.json"),
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "over-limit-request",
+      idempotencyKey: "over-limit-command",
+      sessionId,
+      text: "继续普通上下文",
+      origin: "mobile",
+    });
+
+    await waitFor(() => eventLog.replay().some((event) => event.type === "turn.failed"));
+    expect(eventLog.replay().find((event) => event.type === "turn.failed")?.data.error)
+      .toMatch(/300,000 tokens.*262,144 tokens/u);
+    expect(hosts).toHaveLength(0);
+    expect(eventLog.replay().some((event) => event.type === "user.message.accepted")).toBe(false);
+    await broker.close();
+    await eventLog.close();
+  });
+
+  it("keeps a short same-profile session working and rechecks live context before the next send", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-context-recheck-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    const sessionId = randomUUID();
+    await writeContextTranscript(projects, cwd, sessionId, 100_000);
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd, {
+        sourceProfile: "claude-3p",
+        hostModel: "claude-opus-5",
+        hostUltracode: false,
+      })],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: join(root, "Application Support", "Claude-3p", "host-creds-test.json"),
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "short-request",
+      idempotencyKey: "short-command",
+      sessionId,
+      text: "短会话继续",
+      origin: "mobile",
+    });
+    await waitFor(() => hosts[0]?.sends === 1);
+    expect(hosts[0]?.options.model).toBe("claude-opus-5");
+    hosts[0]!.complete();
+    await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+
+    hosts[0]!.contextTotalTokens = 300_000;
+    await broker.startTurn({
+      requestId: "recheck-request",
+      idempotencyKey: "recheck-command",
+      sessionId,
+      text: "再次继续",
+      origin: "mobile",
+    });
+    await waitFor(() => eventLog.replay().some((event) => (
+      event.type === "turn.failed" && event.data.requestId === "recheck-request"
+    )));
+    expect(hosts[0]?.sends).toBe(1);
+    expect(eventLog.replay().find((event) => (
+      event.type === "turn.failed" && event.data.requestId === "recheck-request"
+    ))?.data.error).toMatch(/300,000 tokens.*262,144 tokens/u);
+    await broker.close();
+    await eventLog.close();
   });
 
   it("rechecks live writers before spawning when the observer cache is stale", async () => {

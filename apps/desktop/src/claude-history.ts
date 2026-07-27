@@ -417,6 +417,13 @@ function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "r
   if (!text) return undefined;
   const role = value.type;
   const cleaned = role === "user" ? cleanUserText(text) : text.trim();
+  const syntheticFailure = role === "assistant" &&
+    value.message.model === "<synthetic>" &&
+    (
+      value.message.stop_reason === "model_context_window_exceeded" ||
+      /^(?:Prompt is too long|API Error:|Error:)/iu.test(cleaned)
+    );
+  if (syntheticFailure) return undefined;
   if (!cleaned || isClaudeTranscriptControlMessage(role, cleaned)) return undefined;
   return { role, text: cleaned };
 }
