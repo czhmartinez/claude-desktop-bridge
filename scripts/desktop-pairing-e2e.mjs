@@ -131,7 +131,9 @@ try {
   const transportPath = mobile.path;
   const acceptedPaths = relayOverride
     ? [relayPathForUrl(relayOverride)]
-    : ["direct", "public-relay"];
+    : forceRelay
+      ? [relayPathForUrl(crypto.identity.relayUrl)]
+      : ["direct", "public-relay"];
   assert.ok(
     acceptedPaths.includes(transportPath),
     `Unexpected transport path: ${transportPath}`,

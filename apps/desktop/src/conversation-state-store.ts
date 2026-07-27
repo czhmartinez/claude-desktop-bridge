@@ -247,6 +247,11 @@ async function readJsonFile(path: string): Promise<unknown | undefined> {
   }
 }
 
+function sqliteTimestamp(value: number): number {
+  if (!Number.isFinite(value)) throw new Error("Timestamp must be finite");
+  return Math.trunc(value);
+}
+
 export class ConversationStateStore {
   private database: DatabaseSync | undefined;
   private readonly key: Buffer;
@@ -437,14 +442,14 @@ export class ConversationStateStore {
       profile.readOnly ? 1 : 0,
       JSON.stringify(profile.models),
       profile.defaultModel ?? null,
-      profile.refreshedAt ?? null,
+      profile.refreshedAt !== undefined ? sqliteTimestamp(profile.refreshedAt) : null,
     );
   }
 
   ensureConversation(input: EnsureConversationInput): BridgeConversationRoute {
     const existing = this.route(input.conversationId);
     if (existing) return existing;
-    const createdAt = input.createdAt ?? Date.now();
+    const createdAt = sqliteTimestamp(input.createdAt ?? Date.now());
     const providerProfileId = input.providerProfileId ?? CLAUDE_3P_PROFILE_ID;
     const providerKind = input.providerKind ?? "claude-3p";
     const laneId = input.providerKind === "claude-3p" && providerProfileId === CLAUDE_3P_PROFILE_ID
@@ -564,7 +569,7 @@ export class ConversationStateStore {
   createLane(input: CreateLaneInput): BridgeExecutionLane {
     if (!this.route(input.conversationId)) throw new Error("Conversation not found");
     if (!this.providerProfile(input.providerProfileId)) throw new Error("Provider profile not found");
-    const now = input.createdAt ?? Date.now();
+    const now = sqliteTimestamp(input.createdAt ?? Date.now());
     const laneId = input.laneId ?? `lane:${randomBytes(16).toString("hex")}`;
     this.db.prepare(`
       INSERT INTO lanes(
@@ -609,7 +614,7 @@ export class ConversationStateStore {
       next.status,
       next.model ?? null,
       next.updatedAt,
-      next.lastUsedAt ?? null,
+      next.lastUsedAt !== undefined ? sqliteTimestamp(next.lastUsedAt) : null,
       laneId,
     );
     return this.lane(laneId)!;
@@ -625,8 +630,8 @@ export class ConversationStateStore {
 
   saveHandoff(input: SaveHandoffInput): BridgeHandoff {
     const now = Date.now();
-    const createdAt = input.createdAt ?? now;
-    const updatedAt = input.updatedAt ?? now;
+    const createdAt = sqliteTimestamp(input.createdAt ?? now);
+    const updatedAt = sqliteTimestamp(input.updatedAt ?? now);
     const encrypted = input.package !== undefined || input.executablePrompt !== undefined
       ? this.encryptPackage({
           ...(input.package !== undefined ? { package: input.package } : {}),
@@ -664,7 +669,7 @@ export class ConversationStateStore {
       input.error ?? null,
       createdAt,
       updatedAt,
-      input.expiresAt ?? null,
+      input.expiresAt !== undefined ? sqliteTimestamp(input.expiresAt) : null,
     );
     return this.handoff(input.handoffId)!;
   }
@@ -1040,6 +1045,7 @@ export class ConversationStateStore {
 
   private insertLegacyConversation(session: PersistedBridgeSession): void {
     const laneId = legacyClaudeLaneId(session.sessionId);
+    const createdAt = sqliteTimestamp(session.createdAt);
     this.db.prepare(`
       INSERT OR IGNORE INTO conversations(
         id, cwd, title, source, active_lane_id, active_provider_profile_id,
@@ -1051,8 +1057,8 @@ export class ConversationStateStore {
       session.title,
       laneId,
       CLAUDE_3P_PROFILE_ID,
-      session.createdAt,
-      session.createdAt,
+      createdAt,
+      createdAt,
     );
     this.db.prepare(`
       INSERT OR IGNORE INTO lanes(
@@ -1064,9 +1070,9 @@ export class ConversationStateStore {
       session.sessionId,
       CLAUDE_3P_PROFILE_ID,
       session.sessionId,
-      session.createdAt,
-      session.createdAt,
-      session.createdAt,
+      createdAt,
+      createdAt,
+      createdAt,
     );
   }
 

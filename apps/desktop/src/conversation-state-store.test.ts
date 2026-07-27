@@ -108,6 +108,55 @@ describe("ConversationStateStore", () => {
     reopened.close();
   });
 
+  it("normalizes fractional observed timestamps for strict SQLite columns", async () => {
+    const fixture = await createStore();
+    await fixture.store.initialize();
+    const route = fixture.store.ensureConversation({
+      conversationId: "fractional-time",
+      cwd: "/tmp/project",
+      title: "Observed conversation",
+      source: "desktop",
+      createdAt: 1_000.75,
+    });
+    expect(route.lanes[0]).toMatchObject({
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      lastUsedAt: 1_000,
+    });
+
+    const lane = fixture.store.createLane({
+      conversationId: "fractional-time",
+      providerProfileId: ANTHROPIC_API_PROFILE_ID,
+      providerKind: "anthropic-api",
+      nativeSessionId: "fractional-native",
+      access: "read-write",
+      createdAt: 2_000.9,
+    });
+    expect(lane).toMatchObject({ createdAt: 2_000, updatedAt: 2_000 });
+    expect(fixture.store.updateLane(lane.laneId, {
+      lastUsedAt: 2_001.9,
+    }).lastUsedAt).toBe(2_001);
+
+    expect(fixture.store.saveHandoff({
+      handoffId: "fractional-handoff",
+      conversationId: "fractional-time",
+      sourceLaneId: route.activeLaneId,
+      targetProviderProfileId: ANTHROPIC_API_PROFILE_ID,
+      targetLaneId: lane.laneId,
+      state: "previewed",
+      summary: "Continue",
+      requiresUserConfirmation: false,
+      createdAt: 3_000.8,
+      updatedAt: 3_001.8,
+      expiresAt: 3_002.8,
+    })).toMatchObject({
+      createdAt: 3_000,
+      updatedAt: 3_001,
+      expiresAt: 3_002,
+    });
+    fixture.store.close();
+  });
+
   it("keys native sessions by provider profile instead of native ID alone", async () => {
     const fixture = await createStore();
     await fixture.store.initialize();

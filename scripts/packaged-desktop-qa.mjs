@@ -37,18 +37,61 @@ try {
   assert.ok(Number.isInteger(snapshot.host.pairingEpoch) && snapshot.host.pairingEpoch >= 1);
   assert.deepEqual(
     [...snapshot.host.capabilities].sort(),
-    ["artifact.preview.v1", "artifact.transfer.v1", "evidence.v1"],
+    [
+      "artifact.preview.v1",
+      "artifact.transfer.v1",
+      "conversation.handoff.v1",
+      "conversation.lanes.v1",
+      "evidence.v1",
+      "provider.profile.v1",
+    ],
   );
   assert.ok(Array.isArray(snapshot.projects));
   assert.ok(Array.isArray(snapshot.sessions));
   assert.ok(Array.isArray(snapshot.devices));
+  assert.ok(Array.isArray(snapshot.providers));
   assert.equal(snapshot.connection, "connected");
   assert.ok(["ready", "working", "auth-required", "unavailable"].includes(snapshot.runtime.state));
 
+  const providerResponse = await page.evaluate(() => window.bridgeDesktop.request({
+    method: "provider.list",
+    params: {},
+  }));
+  assert.equal(providerResponse.ok, true, providerResponse.error?.message);
+  const providers = providerResponse.result.providers;
+  assert.deepEqual(
+    providers.map((provider) => provider.kind).sort(),
+    ["anthropic-api", "claude-3p", "claude-official"],
+  );
+  for (const provider of providers) {
+    assert.equal("apiKey" in provider, false);
+    assert.equal("authorization" in provider, false);
+    assert.equal("headers" in provider, false);
+  }
+
   let configurationProof;
   let evidenceProof;
+  let routeProof;
   const selectedSession = snapshot.sessions[0];
   if (selectedSession) {
+    const routeResponse = await page.evaluate(async (sessionId) => (
+      window.bridgeDesktop.request({
+        method: "conversation.route.get",
+        params: { sessionId },
+      })
+    ), selectedSession.sessionId);
+    assert.equal(routeResponse.ok, true, routeResponse.error?.message);
+    const route = routeResponse.result.route;
+    assert.equal(route.conversationId, selectedSession.sessionId);
+    assert.ok(route.lanes.some((lane) => lane.laneId === route.activeLaneId));
+    assert.ok(providers.some((provider) => provider.id === route.activeProviderProfileId));
+    routeProof = {
+      sessionId: selectedSession.sessionId,
+      laneCount: route.lanes.length,
+      activeProviderProfileId: route.activeProviderProfileId,
+      state: route.state,
+    };
+
     const evidenceResponse = await page.evaluate(async (sessionId) => (
       window.bridgeDesktop.request({
         method: "evidence.list",
@@ -122,6 +165,14 @@ try {
     sessions: snapshot.sessions.length,
     devices: snapshot.devices.length,
     runtime: snapshot.runtime.state,
+    providers: providers.map(({ id, kind, status, configured, readOnly }) => ({
+      id,
+      kind,
+      status,
+      configured,
+      readOnly,
+    })),
+    route: routeProof,
     configuration: configurationProof,
     evidence: evidenceProof,
     screenshot: resolve(artifacts, "desktop-evidence.png"),
