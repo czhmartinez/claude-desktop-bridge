@@ -186,7 +186,7 @@ async function createFixture() {
   const eventLog = new SessionEventLog(join(root, "events.jsonl"), 0);
   const observer = new Observer({ projects: [], sessions: [], observedAt: Date.now() });
   const opened: string[] = [];
-  const service = new HandoffService({
+  const createService = () => new HandoffService({
     state,
     broker,
     eventLog,
@@ -204,6 +204,7 @@ async function createFixture() {
       opened.push(url);
     },
   });
+  const service = createService();
   await service.initialize();
   return {
     root,
@@ -212,11 +213,57 @@ async function createFixture() {
     state,
     sessionId,
     service,
+    createService,
     eventLog,
     observer,
     commands,
     opened,
   };
+}
+
+async function addOfficialCandidate(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  nativeSessionId: string,
+  prompt: string,
+  activityOffset: number,
+): Promise<void> {
+  const transcriptPath = join(fixture.projects, `${nativeSessionId}.jsonl`);
+  await writeFile(transcriptPath, `${JSON.stringify({
+    type: "user",
+    uuid: randomCandidateMessageId(nativeSessionId),
+    parentUuid: null,
+    timestamp: new Date().toISOString(),
+    message: {
+      role: "user",
+      content: [{ type: "text", text: prompt }],
+    },
+  })}\n`, "utf8");
+  fixture.observer.catalog.sessions.push({
+    sessionId: nativeSessionId,
+    projectId: "project",
+    projectName: "project",
+    cwd: fixture.cwd,
+    title: "Official handoff",
+    source: "desktop",
+    transport: "bridge-host",
+    ownership: "DESKTOP_OBSERVED",
+    turnState: "idle",
+    lastActivityAt: Date.now() + activityOffset,
+    pendingCount: 0,
+    transcriptPath,
+    transcriptMtimeMs: Date.now(),
+    processAlive: true,
+    desktopProcessAlive: true,
+    bridgeProcessAlive: false,
+    processOverlap: false,
+    activeProcesses: [],
+    activeTask: false,
+    sourceProfile: "claude",
+  });
+}
+
+function randomCandidateMessageId(nativeSessionId: string): string {
+  return nativeSessionId.replace(/^./u, "3");
 }
 
 describe("HandoffService", () => {
@@ -277,6 +324,30 @@ describe("HandoffService", () => {
     fixture.state.close();
   });
 
+  it("does not replay an activating handoff after a Bridge restart", async () => {
+    const fixture = await createFixture();
+    const sourceLaneId = fixture.state.route(fixture.sessionId)!.activeLaneId;
+    const preview = await fixture.service.preview({
+      sessionId: fixture.sessionId,
+      targetProviderProfileId: ANTHROPIC_API_PROFILE_ID,
+    });
+    await fixture.service.commit({ handoffId: preview.handoff.handoffId });
+    expect(fixture.commands).toHaveLength(1);
+    fixture.service.close();
+
+    const restarted = fixture.createService();
+    await restarted.initialize();
+
+    expect(fixture.commands).toHaveLength(1);
+    expect(fixture.state.handoff(preview.handoff.handoffId)).toMatchObject({
+      state: "failed",
+      error: expect.stringContaining("避免重复发送"),
+    });
+    expect(fixture.state.route(fixture.sessionId)?.activeLaneId).toBe(sourceLaneId);
+    restarted.close();
+    fixture.state.close();
+  });
+
   it("opens the public Claude deep link and activates only after exact transcript association", async () => {
     const fixture = await createFixture();
     const preview = await fixture.service.preview({
@@ -333,6 +404,43 @@ describe("HandoffService", () => {
       },
     });
     expect(fixture.observer.aliases.get(officialSessionId)).toBe(fixture.sessionId);
+    fixture.service.close();
+    fixture.state.close();
+  });
+
+  it("requires an explicit choice when more than one official session matches", async () => {
+    const fixture = await createFixture();
+    const sourceLaneId = fixture.state.route(fixture.sessionId)!.activeLaneId;
+    const preview = await fixture.service.preview({
+      sessionId: fixture.sessionId,
+      targetProviderProfileId: CLAUDE_OFFICIAL_PROFILE_ID,
+    });
+    await fixture.service.commit({ handoffId: preview.handoff.handoffId });
+    const prompt = new URL(fixture.opened[0]!).searchParams.get("q")!;
+    const first = "44444444-4444-4444-8444-444444444444";
+    const second = "55555555-5555-4555-8555-555555555555";
+    await addOfficialCandidate(fixture, first, prompt, 100);
+    await addOfficialCandidate(fixture, second, prompt, 200);
+    fixture.observer.publish();
+
+    await waitFor(() => fixture.state.handoff(preview.handoff.handoffId)?.state === "awaiting_target");
+    expect(fixture.state.route(fixture.sessionId)).toMatchObject({
+      activeLaneId: sourceLaneId,
+      state: "awaiting-target-selection",
+      pendingHandoff: {
+        candidateNativeSessionIds: [first, second],
+      },
+    });
+
+    await fixture.service.commit({
+      handoffId: preview.handoff.handoffId,
+      targetNativeSessionId: second,
+    });
+    expect(fixture.state.route(fixture.sessionId)).toMatchObject({
+      activeProviderProfileId: CLAUDE_OFFICIAL_PROFILE_ID,
+      state: "ready",
+    });
+    expect(fixture.state.activeLane(fixture.sessionId)?.nativeSessionId).toBe(second);
     fixture.service.close();
     fixture.state.close();
   });

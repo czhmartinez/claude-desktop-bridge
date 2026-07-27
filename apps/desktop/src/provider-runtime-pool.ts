@@ -60,12 +60,20 @@ export class AnthropicApiProviderAdapter implements ProviderAdapter {
   ): Promise<ProviderHostPlan> {
     const environment = { ...runtime.environment };
     for (const key of [
+      "ANTHROPIC_API_KEY",
       "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_CUSTOM_HEADERS",
+      "ANTHROPIC_OAUTH_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN",
       "CLAUDE_CODE_HOST_CREDS_FILE",
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "CLAUDE_CODE_HOST_AUTH_ENV_VAR",
       "CLAUDE_CODE_HOST_SESSION_ID",
       "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_FOUNDRY",
+      "CLAUDE_CODE_USE_VERTEX",
     ]) delete environment[key];
     environment.ANTHROPIC_API_KEY = await this.registry.anthropicApiKey();
     environment.CLAUDE_AGENT_SDK_CLIENT_APP = "claude-bridge/0.5.0";

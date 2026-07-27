@@ -3,7 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ConversationStateStore } from "./conversation-state-store.js";
+import {
+  CLAUDE_OFFICIAL_PROFILE_ID,
+  ConversationStateStore,
+} from "./conversation-state-store.js";
 import type { ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
 import { SessionBroker, type TranscriptObserverRuntime } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
@@ -101,6 +104,38 @@ describe("SessionBroker conversation state", () => {
 
     expect("laneId" in turn && turn.laneId).toBe(`lane:claude-3p:${sessionId}`);
     expect(state.loadBrokerState().pending[0]?.laneId).toBe(`lane:claude-3p:${sessionId}`);
+    if (!("attempts" in turn)) throw new Error("Expected a queued turn");
+    await broker.interruptTurn(sessionId, turn.commandId, true);
+
+    const sourceRoute = state.route(sessionId)!;
+    const officialLane = state.createLane({
+      conversationId: sessionId,
+      providerProfileId: CLAUDE_OFFICIAL_PROFILE_ID,
+      providerKind: "claude-official",
+      nativeSessionId: "22222222-2222-4222-8222-222222222222",
+      access: "read-only",
+      status: "preparing",
+    });
+    state.saveHandoff({
+      handoffId: "official-handoff",
+      conversationId: sessionId,
+      sourceLaneId: sourceRoute.activeLaneId,
+      targetProviderProfileId: CLAUDE_OFFICIAL_PROFILE_ID,
+      targetLaneId: officialLane.laneId,
+      state: "activating",
+      summary: "Continue in Claude official",
+      requiresUserConfirmation: true,
+    });
+    state.applyHandoff("official-handoff", officialLane.laneId);
+
+    await expect(broker.startTurn({
+      requestId: "legacy-client-request",
+      idempotencyKey: "legacy-client-key",
+      sessionId,
+      text: "A V0.4 client attempts to write",
+      origin: "mobile",
+    })).rejects.toThrow(/不能写入.*升级 Bridge/u);
+    expect(state.loadBrokerState().pending).toEqual([]);
     await broker.close();
     state.close();
   });

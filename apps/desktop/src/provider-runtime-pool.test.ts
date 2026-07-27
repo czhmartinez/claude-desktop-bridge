@@ -28,9 +28,17 @@ describe("ProviderRuntimePool", () => {
       executablePath: "/usr/local/bin/claude",
       credentialPath: "/private/host-creds.json",
       environment: {
+        ANTHROPIC_API_KEY: "stale-api-key",
         ANTHROPIC_AUTH_TOKEN: "host-token",
+        ANTHROPIC_BASE_URL: "https://gateway.example.test",
+        ANTHROPIC_CUSTOM_HEADERS: "Authorization: Bearer stale",
+        ANTHROPIC_OAUTH_TOKEN: "oauth-token",
+        CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth-token",
         CLAUDE_CODE_HOST_CREDS_FILE: "/private/host-creds.json",
         CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        CLAUDE_CODE_USE_FOUNDRY: "1",
+        CLAUDE_CODE_USE_VERTEX: "1",
         PATH: "/usr/bin",
       },
     });
@@ -38,8 +46,15 @@ describe("ProviderRuntimePool", () => {
     expect(plan.nativeSessionId).toBe(apiLane.nativeSessionId);
     expect(plan.environment.ANTHROPIC_API_KEY).toBe("sk-ant-local-only");
     expect(plan.environment.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(plan.environment.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(plan.environment.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    expect(plan.environment.ANTHROPIC_OAUTH_TOKEN).toBeUndefined();
+    expect(plan.environment.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(plan.environment.CLAUDE_CODE_HOST_CREDS_FILE).toBeUndefined();
     expect(plan.environment.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined();
+    expect(plan.environment.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    expect(plan.environment.CLAUDE_CODE_USE_FOUNDRY).toBeUndefined();
+    expect(plan.environment.CLAUDE_CODE_USE_VERTEX).toBeUndefined();
   });
 
   it("builds only the public Claude Deep Link and enforces its prompt bound", () => {

@@ -225,7 +225,9 @@ function allowedActions(
     canContinueOfficial: readOnly,
     canConfigure: !readOnly && !switching,
     ...(readOnly
-      ? { reason: "当前对话在 Claude 官方只读通道，请在 Claude 官方继续或切换提供方。" }
+      ? {
+          reason: "当前对话在 Claude 官方只读通道，不能写入、排队或回退；请在 Claude 官方继续，或升级 Bridge 后切换提供方。",
+        }
       : switching
         ? { reason: "提供方接力尚未完成，原通道保持活动。" }
         : {}),
