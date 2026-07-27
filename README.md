@@ -20,11 +20,20 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前稳定版：0.4.0
+## 当前稳定版：0.4.1
 
-Bridge 0.4.0 新增“成果证据层”：手机不只远程控制 Claude 会话，还能验证这一轮
+Bridge 0.4.1 在 0.4.0“成果证据层”之上补齐 Bridge 新建会话的 Claude Desktop
+侧边栏登记。手机不只远程控制 Claude 会话，还能验证这一轮
 调用了什么工具、命令是否成功、哪些文件发生变化，以及有哪些成果可以预览或下载。
 
+- Bridge 新建的会话在首轮 JSONL 落盘后，会登记到当前正在运行的 Claude Desktop
+  本地会话清单；按提示重启 Claude Desktop 后，即可从其侧边栏打开同一份完整历史。
+  后续从 Bridge 或 Claude Desktop 继续，使用的仍是同一个 Claude `sessionId` 和
+  同一份 transcript，不复制对话、不创建第二条会话。
+- 登记过程不附加 Claude Desktop 进程，不使用私有 CDP，也不修改 LevelDB。Bridge
+  从实际运行进程动态识别 profile，只在唯一账号目录与已知元数据格式都可验证时，
+  原子写入一份权限为 `0600` 的 `local_<sessionId>.json` 映射；多 profile、多账号、
+  格式不兼容或目标冲突时保持“仅在 Bridge”，不会猜测或覆盖已有会话。
 - Bridge 发起的任务保留 Agent SDK 工具输入、状态、脱敏输出和退出码，并以任务
   开始时的真实工作区为基线归因新增、修改、删除和重命名。
 - 原生 Claude Desktop 会话从 JSONL 事后恢复工具、命令和路径线索，固定标记为
@@ -44,7 +53,8 @@ Bridge 0.4.0 新增“成果证据层”：手机不只远程控制 Claude 会�
 - 不展示或推断隐藏 CoT，不依赖 Claude Desktop 私有 CDP，也不提供项目目录树、
   远程编辑器、动态站点托管或自动启动服务。
 
-0.4.0 使用协议 V3 和配对 schema V4，不兼容 0.3 配对。升级后保留稳定主机 ID、
+0.4.1 继续使用协议 V3 和配对 schema V4；已配对的 0.4 设备无需重配。它仍不兼容
+0.3 配对：从 0.3 升级后会保留稳定主机 ID、
 设置、会话历史与本地事件，但会轮换房间和端到端密钥并清空旧设备授权；手机会将
 旧主机标记为“需要重新配对”，扫描新二维码后按同一主机接回本地缓存。
 
@@ -52,7 +62,7 @@ Relay 始终保留一个低流量控制连接，用于信令、设备撤销、�
 直连失败回退。界面显示“直连”时业务数据不经过 Relay；显示“安全中继”或
 “局域网连接”时业务数据使用相应 Relay 路径。
 
-Bridge 0.4.0 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
+Bridge 0.4.1 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
 共享同一个 Claude `sessionId`、同一个持久执行进程和同一条有序事件流。
 
 它面向已经通过第三方 Host 或 Gateway 登录 Claude Desktop、但不能使用官方
@@ -62,14 +72,20 @@ Bridge。
 ## 使用方式
 
 1. 在电脑安装并打开 Bridge，保持第三方登录的 Claude Desktop 可用。
-2. 将电脑端和手机端都升级到 0.4.0，在 Bridge 的“设备”页扫描新二维码完成强制重配。
+2. 将电脑端和手机端都升级到 0.4.1。从 0.3 首次升级时，在 Bridge 的“设备”页扫描
+   新二维码完成强制重配；0.4.x 之间升级不需要重新配对。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
    回答 Claude 提问、调整或停止任务。
 
 Bridge 不点击输入框，不粘贴内容，不申请辅助功能权限，也不读写系统剪贴板。
-Bridge 接管后，电脑端 Bridge 是主要桌面界面，手机是远程界面；原 Claude
-Desktop 窗口不承诺即时刷新，但可以随时打开并只读查看同一份会话历史，单纯点击
-不会中断 Bridge。只有在 Claude Desktop 中实际发送新消息时才会触发写入冲突保护。
+Bridge 接管 Claude Desktop 已有会话后，电脑端 Bridge 是主要桌面界面，手机是远程
+界面；原 Claude Desktop 窗口不承诺即时刷新，但可以随时打开并只读查看同一份会话
+历史，单纯点击不会中断 Bridge。只有在 Claude Desktop 中实际发送新消息时才会触发
+写入冲突保护。直接在 Bridge 新建的会话仍由独立 Agent SDK session 执行；首轮
+transcript 可验证后，Bridge 只登记它与 Claude Desktop `local_*` 会话 ID 的映射。
+电脑端出现“等待 Claude Desktop 重启”时，点击“重启并登记”即可让它出现在侧边栏。
+登记只改变可发现性，不改变执行归属，所以 Bridge 中仍如实显示“Bridge 运行中 /
+Bridge 待机”，不会把它伪装成 Desktop 原生任务。
 手机向空闲的 Claude Desktop 会话发送指令时，Bridge 会确认目标 transcript 已到达
 安全完成边界后直接接续，无需退出 Claude Desktop；电脑端仍有任务执行时保持排队。
 Claude Desktop 正在回复、调用工具或等待工具结果时统一显示“桌面运行中”；只有
@@ -91,7 +107,7 @@ macOS 构建冒充正式安装包，也不会自动上传未签名附件。
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
 发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
-## 0.4.0 已实现
+## 0.4.1 当前能力
 
 - `BridgeEvidenceBundle`、工具证据、产物清单、预览与分块传输的协议 V3 契约。
 - SQLite 证据清单、Electron `safeStorage` 主密钥、AES-256-GCM 内容寻址快照，以及
@@ -107,7 +123,7 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
 - 0.3 已有的持久 Agent SDK 会话、单写入者保护、可靠 WSS、WebRTC 直连、事件恢复、
   审批、提问、停止、推送唤醒、主机/项目/会话导航和稳定签名发布门继续保留。
 
-0.4.0 不包含隐藏 CoT、Claude Desktop 实时工具镜像、私有 CDP、完整项目浏览、
+0.4.1 不包含隐藏 CoT、Claude Desktop 实时工具镜像、私有 CDP、完整项目浏览、
 远程编辑、动态站点直播、自动启动服务、PDF 内嵌渲染或超过 20 MiB 的产物传输。
 
 ## 本地运行
@@ -164,7 +180,7 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.4.0 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
+Bridge 0.4.1 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
 必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
 签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。

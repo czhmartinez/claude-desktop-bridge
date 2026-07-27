@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, normalize } from "node:path";
 import type {
   BridgeAttachment,
   BridgeConfigurationSource,
+  BridgeDesktopRegistrationInfo,
   BridgeEffort,
   BridgeHistoryItem,
   BridgeHistoryPage,
@@ -17,6 +18,11 @@ import type {
   BridgeSessionInfo,
   BridgeTurnState,
 } from "@bridge/protocol";
+import type {
+  ClaudeDesktopSessionRegistrar,
+  DesktopSessionRegistrationInput,
+  StoredDesktopRegistration,
+} from "./claude-desktop-session-registrar.js";
 import {
   ClaudeDesktopManagedTransport,
   ManagedDeliveryUncertainError,
@@ -45,6 +51,7 @@ interface StoredBridgeSession {
   title: string;
   createdAt: number;
   desktopSessionId?: string;
+  desktopRegistration?: StoredDesktopRegistration;
   fallbackConfirmedAt?: number;
 }
 
@@ -183,6 +190,10 @@ export interface SessionBrokerOptions {
   runtimeRetryDelayMs?: number;
   managedDesktop?: ManagedDesktopRuntime;
   managedTransport?: ManagedDesktopTransportRuntime;
+  desktopRegistrar?: Pick<
+    ClaudeDesktopSessionRegistrar,
+    "register" | "publicInfo" | "changed"
+  >;
   evidence?: {
     startBridgeTurn(input: {
       sessionId: string;
@@ -308,6 +319,7 @@ export class SessionBroker extends EventEmitter {
   private readonly modelCache = new Map<string, BridgeModelInfo>();
   private readonly hostStarts = new Map<string, Promise<SessionHostRuntime>>();
   private readonly conflictTasks = new Map<string, Promise<void>>();
+  private readonly registrationTasks = new Map<string, Promise<void>>();
   private readonly pending: QueuedTurn[] = [];
   private readonly completedKeys = new Set<string>();
   private readonly terminalTurns = new Map<string, TerminalTurnReceipt>();
@@ -386,6 +398,7 @@ export class SessionBroker extends EventEmitter {
       this.rememberCatalogModels();
       this.refreshObservedOwnership();
       this.emit("changed");
+      this.reconcileDesktopRegistrations();
       void this.pump();
     });
     this.managedTransport?.onEvent((event) => {
@@ -449,6 +462,7 @@ export class SessionBroker extends EventEmitter {
       this.emit("changed");
     });
     await this.refreshRuntime();
+    this.reconcileDesktopRegistrations();
     await this.pump();
   }
 
@@ -514,7 +528,7 @@ export class SessionBroker extends EventEmitter {
         ? `${this.activeTurns} 个会话正在处理。`
         : this.managedTransport?.ready
           ? "Claude Desktop 同步通道已就绪。"
-          : "第三方 Claude Host 同会话接管已就绪。",
+          : "Bridge Agent SDK 会话通道已就绪。",
       ...(this.runtime.version ? { version: this.runtime.version } : {}),
       credentialSource: "third-party-host",
       activeTurns: this.activeTurns,
@@ -594,7 +608,9 @@ export class SessionBroker extends EventEmitter {
             ? this.options.observer.isDesktopBusy(sessionId)
               ? "DESKTOP_MANAGED_RUNNING"
               : "DESKTOP_MANAGED_IDLE"
-            : "DESKTOP_OBSERVED");
+            : source
+              ? "DESKTOP_OBSERVED"
+              : "BRIDGE_IDLE");
       const turnState = state?.turnState
         ?? (source && this.options.observer.isDesktopBusy(sessionId) ? "running" : "idle");
       const profile = this.effectiveProfile(sessionId, cwd);
@@ -632,6 +648,9 @@ export class SessionBroker extends EventEmitter {
         ...(profile.effort ? { effort: profile.effort } : {}),
         ...(state?.configurationPending ? { configurationPending: true } : {}),
         ...(bridge?.fallbackConfirmedAt ? { fallbackConfirmed: true } : {}),
+        ...(bridge?.desktopRegistration && this.options.desktopRegistrar
+          ? { desktopRegistration: this.options.desktopRegistrar.publicInfo(bridge.desktopRegistration) }
+          : {}),
       };
       if (projectId && item.projectId !== projectId) continue;
       if (search) {
@@ -842,8 +861,18 @@ export class SessionBroker extends EventEmitter {
       type: "session.created",
       data: { cwd: session.cwd, title: session.title },
     });
+    await this.reconcileDesktopRegistration(session.sessionId, true);
     this.emit("changed");
     return this.session(session.sessionId)!;
+  }
+
+  async registerDesktopSession(sessionId: string): Promise<BridgeSessionInfo> {
+    await this.initialize();
+    if (!this.bridgeSessions.has(sessionId)) {
+      throw new Error("Only Bridge-created sessions can be registered in Claude Desktop");
+    }
+    await this.reconcileDesktopRegistration(sessionId, true);
+    return this.session(sessionId)!;
   }
 
   async startTurn(input: StartTurnInput): Promise<QueuedTurn | TurnReceipt> {
@@ -1255,6 +1284,7 @@ export class SessionBroker extends EventEmitter {
     this.options.managedDesktop?.off("status", this.managedStatusListener);
     this.managedTransport?.close();
     await this.eventQueue.catch(() => undefined);
+    await Promise.allSettled(this.registrationTasks.values());
     await this.pumpQueue.catch(() => undefined);
     await this.saveQueue();
   }
@@ -2046,7 +2076,83 @@ export class SessionBroker extends EventEmitter {
       }, SESSION_RELEASE_DELAY_MS);
     }
     this.emit("changed");
+    void this.reconcileDesktopRegistration(sessionId);
     await this.pump();
+  }
+
+  private reconcileDesktopRegistrations(): void {
+    if (!this.options.desktopRegistrar || this.closed) return;
+    for (const sessionId of this.bridgeSessions.keys()) {
+      void this.reconcileDesktopRegistration(sessionId);
+    }
+  }
+
+  private async reconcileDesktopRegistration(
+    sessionId: string,
+    force = false,
+  ): Promise<void> {
+    const registrar = this.options.desktopRegistrar;
+    const bridge = this.bridgeSessions.get(sessionId);
+    if (!registrar || !bridge || this.closed) return;
+    if (!force && bridge.desktopRegistration?.state === "failed") return;
+    const active = this.registrationTasks.get(sessionId);
+    if (active) return active;
+    const task = (async () => {
+      const profile = this.effectiveProfile(sessionId, bridge.cwd);
+      const observed = this.catalog.sessions.find((session) => session.sessionId === sessionId);
+      const input: DesktopSessionRegistrationInput = {
+        sessionId,
+        cwd: bridge.cwd,
+        title: bridge.title,
+        createdAt: bridge.createdAt,
+        lastActivityAt: Math.max(bridge.createdAt, observed?.lastActivityAt ?? 0),
+        ...(profile.model ? { model: profile.model } : {}),
+        ...(profile.effort ? { effort: profile.effort } : {}),
+      };
+      let next: StoredDesktopRegistration;
+      try {
+        next = await registrar.register(input, bridge.desktopRegistration);
+      } catch {
+        const previous = bridge.desktopRegistration;
+        next = {
+          ...(previous?.metadataPath ? { metadataPath: previous.metadataPath } : {}),
+          ...(previous?.metadataSha256 ? { metadataSha256: previous.metadataSha256 } : {}),
+          ...(previous?.profileSessionsRoot
+            ? { profileSessionsRoot: previous.profileSessionsRoot }
+            : {}),
+          ...(previous?.desktopSessionId
+            ? { desktopSessionId: previous.desktopSessionId }
+            : {}),
+          ...(previous?.registeredAt ? { registeredAt: previous.registeredAt } : {}),
+          ...(previous?.claudePidAtRegistration
+            ? { claudePidAtRegistration: previous.claudePidAtRegistration }
+            : {}),
+          state: "failed",
+          detail: "Claude Desktop 会话登记失败，Bridge 会话仍可正常使用。",
+          updatedAt: Date.now(),
+        };
+      }
+      if (!registrar.changed(bridge.desktopRegistration, next)) return;
+      bridge.desktopRegistration = next;
+      if (next.state === "registered" && next.desktopSessionId) {
+        bridge.desktopSessionId = next.desktopSessionId;
+      }
+      await this.saveSessions();
+      const info: BridgeDesktopRegistrationInfo = registrar.publicInfo(next);
+      await this.record({
+        sessionId,
+        origin: "system",
+        type: "session.desktop-registration",
+        data: { ...info },
+      });
+      this.emit("changed");
+    })().finally(() => {
+      if (this.registrationTasks.get(sessionId) === task) {
+        this.registrationTasks.delete(sessionId);
+      }
+    });
+    this.registrationTasks.set(sessionId, task);
+    return task;
   }
 
   private transientRuntimeError(error: string): boolean {

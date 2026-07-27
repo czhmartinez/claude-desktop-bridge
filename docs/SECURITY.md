@@ -1,4 +1,4 @@
-# Bridge 0.4.0 安全模型
+# Bridge 0.4.1 安全模型
 
 ## 已保护
 
@@ -56,6 +56,13 @@ STUN 能看到发起 Binding 的公网 IP 和端口，但不接收 Claude 指令
 `ClaudeSessionHost` 才以该项目为 `cwd` 启动；macOS 因而只会在真实项目首次执行时
 请求相应的 Files & Folders 授权。后续版本必须维持相同的正式签名身份与 Bundle ID，
 系统才能在升级后继续识别这次授权。
+
+Bridge 直接新建的会话在首轮可信 JSONL 落盘后，可以向当前 Claude Desktop profile
+写入一份最小会话映射。该能力只接受 Bridge 自身 UUID，动态识别唯一 active profile
+与账号目录，要求现有原生元数据格式可验证，并对 transcript 根目录、`sessionId`、
+`cwd`、目标文件名和最终父目录逐项校验。目标已存在、目录歧义、符号链接或格式未知
+时一律停止；不会覆盖原生会话，不写 LevelDB，也不会把本机路径和哈希发送到手机或
+Relay。
 
 Bridge 不附加或注入 Claude Desktop 进程，也不会为了接管自动退出 Claude Desktop
 或向其 Claude Code 会话子进程发送终止信号。仅打开、聚焦和只读查看会话不会形成

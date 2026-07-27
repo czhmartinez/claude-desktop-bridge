@@ -26,6 +26,7 @@ import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
+import { ClaudeDesktopSessionRegistrar } from "./claude-desktop-session-registrar.js";
 import { ElectronEvidencePreviewRenderer } from "./artifact-preview.js";
 import { EvidenceManager } from "./evidence-manager.js";
 import { EvidenceStore } from "./evidence-store.js";
@@ -124,6 +125,7 @@ async function desktopMain(): Promise<void> {
   const runtimePaths = claudeRuntimePaths();
   const observer = new TranscriptObserver({ paths: runtimePaths, eventLog, evidence });
   await observer.start();
+  const desktopRegistrar = new ClaudeDesktopSessionRegistrar({ paths: runtimePaths });
   const broker = new SessionBroker({
     paths: runtimePaths,
     eventLog,
@@ -131,6 +133,7 @@ async function desktopMain(): Promise<void> {
     sessionsPath: join(userDataPath, "sessions-v2.json"),
     queuePath: join(userDataPath, "turn-queue-v2.json"),
     evidence,
+    desktopRegistrar,
   });
   const claudeDesktop = new ClaudeDesktopLifecycle();
   let RTCPeerConnectionImpl: typeof RTCPeerConnection | undefined;

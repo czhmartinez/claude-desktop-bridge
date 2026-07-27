@@ -4,9 +4,10 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { BridgeEffort } from "@bridge/protocol";
+import type { BridgeDesktopRegistrationInfo, BridgeEffort } from "@bridge/protocol";
 import type { ModelInfo, SDKControlGetContextUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-session-host.js";
+import type { StoredDesktopRegistration } from "./claude-desktop-session-registrar.js";
 import type { ClaudeCatalogSnapshot, ObservedClaudeSession } from "./claude-session-catalog.js";
 import {
   SessionBroker,
@@ -318,7 +319,7 @@ describe("SessionBroker", () => {
       sessions: [observed(sessionId, cwd)],
       observedAt: Date.now(),
     });
-    const broker = new SessionBroker({
+    const options = {
       paths: {
         sessions: join(root, "runtime-sessions"),
         tasks: join(root, "tasks"),
@@ -334,16 +335,122 @@ describe("SessionBroker", () => {
         credentialPath: "/fake/host-creds.json",
         environment: {},
       }),
-    });
+    };
+    const broker = new SessionBroker(options);
     await broker.initialize();
 
     await expect(access(cwd)).rejects.toThrow();
-    await expect(broker.createSession(cwd, "Explicit project")).resolves.toMatchObject({
+    const created = await broker.createSession(cwd, "Explicit project");
+    expect(created).toMatchObject({
       cwd,
       title: "Explicit project",
+      source: "bridge",
+      ownership: "BRIDGE_IDLE",
     });
     await expect(broker.createSession(join(root, "Documents", "unknown")))
       .rejects.toThrow(/selected from a discovered Claude project/u);
+
+    await broker.close();
+    const restarted = new SessionBroker(options);
+    await restarted.initialize();
+    expect(restarted.session(created.sessionId)).toMatchObject({
+      source: "bridge",
+      ownership: "BRIDGE_IDLE",
+      turnState: "idle",
+    });
+    await restarted.close();
+    await eventLog.close();
+  });
+
+  it("persists and exposes Claude Desktop registration without leaking local metadata paths", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-registration-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const observedId = randomUUID();
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(observedId, cwd)],
+      observedAt: Date.now(),
+    });
+    let result: StoredDesktopRegistration = {
+      state: "waiting-transcript",
+      detail: "Waiting",
+      updatedAt: 1,
+    };
+    const desktopRegistrar = {
+      async register(): Promise<StoredDesktopRegistration> {
+        return result;
+      },
+      publicInfo(value: StoredDesktopRegistration): BridgeDesktopRegistrationInfo {
+        return {
+          state: value.state,
+          detail: value.detail,
+          updatedAt: value.updatedAt,
+          ...(value.desktopSessionId ? { desktopSessionId: value.desktopSessionId } : {}),
+          ...(value.registeredAt ? { registeredAt: value.registeredAt } : {}),
+        };
+      },
+      changed(
+        previous: StoredDesktopRegistration | undefined,
+        next: StoredDesktopRegistration,
+      ): boolean {
+        return JSON.stringify(previous) !== JSON.stringify(next);
+      },
+    };
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      desktopRegistrar,
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    const created = await broker.createSession(cwd, "Register me");
+    expect(created.desktopRegistration).toEqual({
+      state: "waiting-transcript",
+      detail: "Waiting",
+      updatedAt: 1,
+    });
+
+    result = {
+      state: "registered",
+      detail: "Registered",
+      updatedAt: 2,
+      registeredAt: 2,
+      desktopSessionId: `local_${created.sessionId}`,
+      metadataPath: join(root, "private", "metadata.json"),
+      metadataSha256: "secret-hash",
+      profileSessionsRoot: join(root, "private"),
+    };
+    const registered = await broker.registerDesktopSession(created.sessionId);
+    expect(registered).toMatchObject({
+      desktopSessionId: `local_${created.sessionId}`,
+      desktopRegistration: {
+        state: "registered",
+        detail: "Registered",
+        updatedAt: 2,
+      },
+    });
+    expect(registered.desktopRegistration).not.toHaveProperty("metadataPath");
+    expect(eventLog.replay().at(-1)).toMatchObject({
+      type: "session.desktop-registration",
+      data: {
+        state: "registered",
+        desktopSessionId: `local_${created.sessionId}`,
+      },
+    });
 
     await broker.close();
     await eventLog.close();

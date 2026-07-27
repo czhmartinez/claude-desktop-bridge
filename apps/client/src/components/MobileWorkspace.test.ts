@@ -57,6 +57,39 @@ describe("ownershipLabel", () => {
 
     expect(ownershipLabel(session)).toBe("桌面运行中");
   });
+
+  it("identifies a Bridge-created session without implying Desktop visibility", () => {
+    const session: BridgeSessionInfo = {
+      sessionId: "bridge-session-1",
+      projectId: "project-1",
+      projectName: "Project",
+      cwd: "/tmp/project",
+      title: "Task",
+      source: "bridge",
+      ownership: "BRIDGE_IDLE",
+      transport: "bridge-host",
+      turnState: "idle",
+      lastActivityAt: 1,
+      pendingCount: 0,
+    };
+
+    expect(ownershipLabel(session)).toBe("Bridge 待机");
+    expect(ownershipLabel({
+      ...session,
+      ownership: "BRIDGE_RUNNING",
+      turnState: "running",
+    })).toBe("Bridge 运行中");
+    expect(ownershipLabel({
+      ...session,
+      transport: "claude-desktop-managed",
+      desktopSessionId: "local_bridge-session-1",
+      desktopRegistration: {
+        state: "registered",
+        detail: "Registered",
+        updatedAt: 2,
+      },
+    })).toBe("Bridge 待机");
+  });
 });
 
 describe("canStopBridgeTask", () => {

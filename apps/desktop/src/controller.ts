@@ -651,6 +651,13 @@ export class DesktopController extends EventEmitter {
       const configuration = await this.broker.configureSession(input);
       return { configuration, session: this.broker.session(sessionId) };
     }
+    if (request.method === "session.desktop.register") {
+      return {
+        session: await this.broker.registerDesktopSession(
+          stringParam(params, "sessionId")!,
+        ),
+      };
+    }
     if (request.method === "session.fallback.confirm") {
       return {
         session: await this.broker.confirmFallback(stringParam(params, "sessionId")!),

@@ -88,6 +88,12 @@ export type BridgeOwnershipState =
   | "RELEASING";
 export type BridgeTurnState = "idle" | "queued" | "running" | "waiting" | "completed" | "failed" | "interrupted";
 export type BridgeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type BridgeDesktopRegistrationState =
+  | "waiting-transcript"
+  | "unavailable"
+  | "restart-required"
+  | "registered"
+  | "failed";
 export type BridgePermissionDecision = "allow-once" | "allow-always" | "deny";
 export type BridgeConfigurationSource = "bridge" | "claude-desktop" | "project" | "default";
 export type BridgeDeliveryState =
@@ -236,6 +242,14 @@ export interface BridgeProjectInfo {
   lastActivityAt: number;
 }
 
+export interface BridgeDesktopRegistrationInfo {
+  state: BridgeDesktopRegistrationState;
+  detail: string;
+  updatedAt: number;
+  desktopSessionId?: string;
+  registeredAt?: number;
+}
+
 export interface BridgeSessionInfo {
   sessionId: string;
   desktopSessionId?: string;
@@ -255,6 +269,7 @@ export interface BridgeSessionInfo {
   effort?: BridgeEffort;
   configurationPending?: boolean;
   fallbackConfirmed?: boolean;
+  desktopRegistration?: BridgeDesktopRegistrationInfo;
 }
 
 export interface BridgeModelInfo {
@@ -422,6 +437,7 @@ export type BridgeMethod =
   | "session.history"
   | "session.configuration"
   | "session.configure"
+  | "session.desktop.register"
   | "session.fallback.confirm"
   | "message.delivery.resolve"
   | "claude.desktop.status"
@@ -467,6 +483,7 @@ export type BridgeEventType =
   | "session.observed"
   | "session.ownership"
   | "session.configuration"
+  | "session.desktop-registration"
   | "session.transport"
   | "session.ownership-conflict"
   | "user.message.accepted"

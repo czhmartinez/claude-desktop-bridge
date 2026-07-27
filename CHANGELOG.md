@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1
+
+- Register Bridge-created Agent SDK sessions in the active Claude Desktop sidebar after their
+  first trusted transcript record, while preserving the same CLI session ID and JSONL history.
+- Discover the active Claude profile and account directory from the running process, validate the
+  existing metadata schema, write one deterministic mode-0600 metadata file atomically, and fail
+  closed on ambiguous profiles, accounts, formats or conflicts.
+- Add explicit waiting, retry, restart-required and registered states. The desktop can safely quit
+  and relaunch Claude on demand, while Bridge execution labels remain truthful after registration.
+- Distinguish Bridge-created sessions from Claude Desktop-native sessions across desktop and mobile
+  labels, creation dialogs and composer copy.
+- Recover orphaned Bridge tasks after desktop replacement without replaying them, expose an
+  independent force-stop action, and archive interrupted evidence instead of leaving it collecting.
+
 ## 0.4.0
 
 - Add the evidence layer with per-turn tool records, command outcomes, file changes, artifact

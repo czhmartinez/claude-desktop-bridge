@@ -41,7 +41,7 @@ const sessions = [
     projectId: project.projectId,
     projectName: project.name,
     cwd: project.cwd,
-    title: "Bridge 0.4.0 成果证据联调",
+    title: "Bridge 0.4.1 侧边栏登记联调",
     source: "desktop",
     ownership: "BRIDGE_RUNNING",
     turnState: "running",
@@ -199,8 +199,8 @@ const evidence = {
         {
           id: "artifact-pdf",
           evidenceId: "evidence-exact",
-          relativePath: "artifacts/release/V0.4.0-acceptance.pdf",
-          name: "V0.4.0-acceptance.pdf",
+          relativePath: "artifacts/release/V0.4.1-acceptance.pdf",
+          name: "V0.4.1-acceptance.pdf",
           kind: "pdf",
           changeKind: "created",
           mimeType: "application/pdf",
@@ -354,7 +354,7 @@ const hostSnapshot = {
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.4.0",
+    version: "0.4.1",
     pairingEpoch: 1,
     capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1"],
   },
@@ -569,7 +569,7 @@ try {
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
-  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.4.0 成果证据联调" });
+  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.4.1 侧边栏登记联调" });
   await waitingSessionRow.waitFor();
   if (await mobile.locator(".session-row-v2").count() !== 3) {
     errors.push("mobile catalog: expected three expanded session rows");
@@ -686,6 +686,13 @@ try {
         activeTurnId: undefined,
         currentSummary: "恢复的未完成任务 · 覆盖安装前的任务",
         lastActivityAt: now - 10_000,
+        desktopRegistration: {
+          state: "restart-required",
+          detail: "已写入 Claude Desktop 会话清单，重启后可见。",
+          updatedAt: now - 5_000,
+          desktopSessionId: "local_session-recovered-blocker",
+          registeredAt: now - 5_000,
+        },
       },
       ...hostSnapshot.sessions.slice(1),
     ],
@@ -718,6 +725,7 @@ try {
       result,
     });
     window.__bridgeQaRequests = [];
+    window.__bridgeQaClaudeActions = [];
     window.bridgeDesktop = {
       getSnapshot: async () => current,
       createPairing: async () => {
@@ -743,6 +751,7 @@ try {
         return current;
       },
       launchClaudeDesktop: async () => {
+        window.__bridgeQaClaudeActions.push("launch");
         current = {
           ...current,
           claudeDesktop: {
@@ -756,6 +765,7 @@ try {
         return current;
       },
       quitClaudeDesktop: async () => {
+        window.__bridgeQaClaudeActions.push("quit");
         current = {
           ...current,
           claudeDesktop: {
@@ -831,6 +841,19 @@ try {
   if (!forceStopSent) errors.push("desktop blocker stop: recovered queue was not force interrupted");
   if (await desktop.locator(".evidence-inline-summary").count() !== 1) {
     errors.push("desktop conversation: evidence summaries were not anchored to completed turns");
+  }
+  await desktop.getByText("未完成任务：覆盖安装前的任务", { exact: true }).click();
+  await desktop.locator(".desktop-conversation-heading").getByText(/等待 Desktop 重启/).waitFor();
+  await desktop.getByRole("button", { name: "重启并登记" }).click();
+  const registrationRestarted = await desktop.evaluate(() => (
+    window.__bridgeQaClaudeActions.join(",") === "quit,launch"
+    && window.__bridgeQaRequests.some((request) => (
+      request.method === "session.desktop.register"
+      && request.params.sessionId === "session-recovered-blocker"
+    ))
+  ));
+  if (!registrationRestarted) {
+    errors.push("desktop registration: restart and registration request were not completed");
   }
   if (await desktop.locator(".desktop-session-row").count() !== 4) {
     errors.push("desktop sessions: expected four expanded session rows");

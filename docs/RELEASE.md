@@ -210,6 +210,6 @@ npm run test:webrtc:native
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
 WSS 全部通过的平台才能标记“可分发”。
 
-V0.4.0 的正式发布范围是 macOS Desktop 与 Android。真实验收任务至少包含一条
+V0.4.1 的正式发布范围是 macOS Desktop 与 Android。真实验收任务至少包含一条
 成功命令、一条失败命令、一次文本修改，以及图片、HTML、PDF 各一份，并在 Android
 完成预览或下载。iOS/Web 必须保持共享代码可构建，但不阻塞本次发布。

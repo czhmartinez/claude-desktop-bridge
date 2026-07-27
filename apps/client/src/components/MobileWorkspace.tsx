@@ -100,14 +100,20 @@ function mobileConnectionLabel(
 }
 
 export function ownershipLabel(session: BridgeSessionInfo): string {
+  const bridgeCreated = session.source === "bridge";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
   if (session.ownership === "DESKTOP_OBSERVED" && session.turnState === "running") {
     return "桌面运行中";
   }
-  if (session.turnState === "running") return "运行中";
-  if (session.turnState === "queued") return `${session.pendingCount} 条排队`;
+  if (session.turnState === "running") return bridgeCreated ? "Bridge 运行中" : "运行中";
+  if (session.turnState === "queued") {
+    return bridgeCreated
+      ? `Bridge · ${session.pendingCount} 条排队`
+      : `${session.pendingCount} 条排队`;
+  }
   if (session.turnState === "waiting") return "需处理";
+  if (bridgeCreated) return "Bridge 待机";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
   if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
   return "待机";
@@ -1158,7 +1164,11 @@ export function MobileWorkspace({
             <textarea
               value={text}
               onChange={(event) => setText(event.target.value)}
-              placeholder={desktopOnline ? "给这个 Claude 会话发指令" : "电脑离线，消息会保存在手机并自动送达"}
+              placeholder={desktopOnline
+                ? selectedSession.source === "bridge"
+                  ? "给这个 Bridge 会话发指令"
+                  : "给这个 Claude Desktop 会话发指令"
+                : "电脑离线，消息会保存在手机并自动送达"}
               rows={1}
               aria-label="给 Claude 发指令"
             />
@@ -1378,7 +1388,7 @@ export function MobileWorkspace({
         }}>
           <section className="create-session-dialog" role="dialog" aria-modal="true" aria-labelledby="create-session-title">
             <header>
-              <h2 id="create-session-title">新建 Claude 会话</h2>
+              <h2 id="create-session-title">新建 Bridge 会话</h2>
               <IconButton label="关闭" onClick={() => setCreateOpen(false)}><X size={19} /></IconButton>
             </header>
             <label>
@@ -1394,7 +1404,7 @@ export function MobileWorkspace({
             <div className="dialog-actions">
               <button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>取消</button>
               <button type="button" className="primary-button" disabled={!createProjectId || createBusy} onClick={() => void createSession()}>
-                {createBusy && <LoaderCircle className="is-spinning" size={16} />}创建会话
+                {createBusy && <LoaderCircle className="is-spinning" size={16} />}创建 Bridge 会话
               </button>
             </div>
           </section>

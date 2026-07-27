@@ -28,6 +28,7 @@ import {
   Plus,
   Power,
   QrCode,
+  RefreshCw,
   Send,
   Settings2,
   Smartphone,
@@ -90,22 +91,28 @@ function connectionLabel(snapshot: DesktopControlSnapshot): string {
 }
 
 function sessionState(session: BridgeSessionInfo): string {
+  const bridgeCreated = session.source === "bridge";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
   if (session.ownership === "DESKTOP_OBSERVED" && session.turnState === "running") {
     return "桌面运行中";
   }
-  if (session.turnState === "running") return "运行中";
-  if (session.turnState === "queued") return "排队中";
+  if (session.turnState === "running") return bridgeCreated ? "Bridge 运行中" : "运行中";
+  if (session.turnState === "queued") return bridgeCreated ? "Bridge 排队中" : "排队中";
+  if (bridgeCreated) return "Bridge 待机";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
   if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
   return "待机";
 }
 
 function transportLabel(session: BridgeSessionInfo): string {
-  return session.transport === "claude-desktop-managed"
-    ? "Claude Desktop 同步"
-    : "同会话接管";
+  if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
+  if (session.source === "bridge") {
+    if (session.desktopRegistration?.state === "registered") return "Claude Desktop 已登记";
+    if (session.desktopRegistration?.state === "restart-required") return "等待 Desktop 重启";
+    return "仅在 Bridge";
+  }
+  return "桌面会话接管";
 }
 
 function sessionProfile(session: BridgeSessionInfo): string {
@@ -120,10 +127,14 @@ function DesktopSessions({
   snapshot,
   events,
   apiRequest,
+  onClaudeDesktopLaunch,
+  onClaudeDesktopQuit,
 }: {
   snapshot: DesktopControlSnapshot;
   events: BridgeEvent[];
   apiRequest(request: LocalBridgeRequest): Promise<BridgeResponse>;
+  onClaudeDesktopLaunch(): Promise<DesktopControlSnapshot>;
+  onClaudeDesktopQuit(): Promise<DesktopControlSnapshot>;
 }) {
   const [selectedId, setSelectedId] = useState(snapshot.sessions[0]?.sessionId);
   const [history, setHistory] = useState<Record<string, SessionHistoryState>>({});
@@ -137,6 +148,8 @@ function DesktopSessions({
   const [sending, setSending] = useState(false);
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
+  const [registrationBusy, setRegistrationBusy] = useState(false);
+  const [registrationError, setRegistrationError] = useState<string>();
   const [createOpen, setCreateOpen] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
@@ -199,6 +212,7 @@ function DesktopSessions({
     setSessionView("conversation");
     setConfigurationOpen(false);
     setStopError(undefined);
+    setRegistrationError(undefined);
     void openSession(selectedId);
   }, [selectedId]);
 
@@ -420,6 +434,43 @@ function DesktopSessions({
     }
   }
 
+  async function refreshDesktopRegistration(): Promise<void> {
+    if (!selected || registrationBusy) return;
+    setRegistrationBusy(true);
+    setRegistrationError(undefined);
+    try {
+      unwrap(await apiRequest({
+        method: "session.desktop.register",
+        params: { sessionId: selected.sessionId },
+      }));
+    } catch (error) {
+      setRegistrationError(error instanceof Error ? error.message : "Claude Desktop 会话登记失败");
+    } finally {
+      setRegistrationBusy(false);
+    }
+  }
+
+  async function restartClaudeForRegistration(): Promise<void> {
+    if (!selected || registrationBusy) return;
+    setRegistrationBusy(true);
+    setRegistrationError(undefined);
+    try {
+      const stopped = await onClaudeDesktopQuit();
+      if (stopped.claudeDesktop.state !== "stopped") {
+        throw new Error("已取消重启，登记文件仍会保留。");
+      }
+      await onClaudeDesktopLaunch();
+      unwrap(await apiRequest({
+        method: "session.desktop.register",
+        params: { sessionId: selected.sessionId },
+      }));
+    } catch (error) {
+      setRegistrationError(error instanceof Error ? error.message : "Claude Desktop 重启失败");
+    } finally {
+      setRegistrationBusy(false);
+    }
+  }
+
   async function createSession(): Promise<void> {
     const project = snapshot.projects.find((candidate) => candidate.projectId === projectId);
     if (!project) return;
@@ -493,7 +544,7 @@ function DesktopSessions({
             >
               <ChevronsDown size={17} />
             </IconButton>
-            <IconButton label="新建会话" onClick={() => setCreateOpen(true)} disabled={!snapshot.projects.length}><Plus size={18} /></IconButton>
+            <IconButton label="新建 Bridge 会话" onClick={() => setCreateOpen(true)} disabled={!snapshot.projects.length}><Plus size={18} /></IconButton>
           </div>
         </div>
         <div className="desktop-project-list">
@@ -583,6 +634,48 @@ function DesktopSessions({
                 <span><strong>任务停止失败</strong>{stopError}</span>
               </div>
             )}
+            {selected.source === "bridge" &&
+              selected.desktopRegistration &&
+              selected.desktopRegistration.state !== "registered" && (
+                <div className={`desktop-channel-banner ${
+                  selected.desktopRegistration.state === "failed" ? "danger" : ""
+                }`}>
+                  {registrationBusy
+                    ? <LoaderCircle className="is-spinning" size={18} />
+                    : <AlertTriangle size={18} />}
+                  <span>
+                    <strong>
+                      {selected.desktopRegistration.state === "restart-required"
+                        ? "等待 Claude Desktop 重启"
+                        : selected.desktopRegistration.state === "waiting-transcript"
+                          ? "等待首轮会话记录"
+                          : "尚未登记到 Claude Desktop"}
+                    </strong>
+                    {registrationError ?? selected.desktopRegistration.detail}
+                  </span>
+                  {selected.desktopRegistration.state === "restart-required" ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={registrationBusy}
+                      onClick={() => void restartClaudeForRegistration()}
+                    >
+                      <RefreshCw size={15} />
+                      {registrationBusy ? "重启中" : "重启并登记"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={registrationBusy}
+                      onClick={() => void refreshDesktopRegistration()}
+                    >
+                      <RefreshCw size={15} />
+                      {registrationBusy ? "检查中" : "重新检查"}
+                    </button>
+                  )}
+                </div>
+              )}
             <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
               <button
                 type="button"
@@ -666,7 +759,14 @@ function DesktopSessions({
               <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
                 <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp" onChange={(event) => void addImages(event.target.files)} />
                 <IconButton label="添加图片" onClick={() => fileRef.current?.click()}><ImagePlus size={19} /></IconButton>
-                <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="在这个 Claude 会话中继续" rows={1} />
+                <textarea
+                  value={text}
+                  onChange={(event) => setText(event.target.value)}
+                  placeholder={selected.source === "bridge"
+                    ? "在这个 Bridge 会话中继续"
+                    : "在这个 Claude Desktop 会话中继续"}
+                  rows={1}
+                />
                 <button type="submit" className="send-button" aria-label="发送" disabled={sending || (!text.trim() && attachments.length === 0)}><Send size={18} /></button>
               </form>
             </div>
@@ -680,7 +780,7 @@ function DesktopSessions({
       {createOpen && (
         <div className="modal-backdrop">
           <section className="create-session-dialog" role="dialog" aria-modal="true">
-            <header><h2>新建 Claude 会话</h2><IconButton label="关闭" onClick={() => setCreateOpen(false)}><X size={18} /></IconButton></header>
+            <header><h2>新建 Bridge 会话</h2><IconButton label="关闭" onClick={() => setCreateOpen(false)}><X size={18} /></IconButton></header>
             <label><span>项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}>{snapshot.projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}</select></label>
             <label><span>会话名称</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可留空" /></label>
             <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>取消</button><button type="button" className="primary-button" onClick={() => void createSession()}>创建</button></div>
@@ -928,7 +1028,23 @@ export function DesktopDashboard({ theme, onToggleTheme }: { theme: Theme; onTog
         </IconButton>
       </aside>
       <section className="desktop-content-v2">
-        {tab === "sessions" && <DesktopSessions snapshot={snapshot} events={events} apiRequest={request} />}
+        {tab === "sessions" && (
+          <DesktopSessions
+            snapshot={snapshot}
+            events={events}
+            apiRequest={request}
+            onClaudeDesktopLaunch={async () => {
+              const next = await api.launchClaudeDesktop();
+              setSnapshot(next);
+              return next;
+            }}
+            onClaudeDesktopQuit={async () => {
+              const next = await api.quitClaudeDesktop();
+              setSnapshot(next);
+              return next;
+            }}
+          />
+        )}
         {tab === "devices" && (
           <DesktopDevices
             snapshot={snapshot}

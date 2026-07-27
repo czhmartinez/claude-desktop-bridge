@@ -1,4 +1,4 @@
-# Bridge 0.4 架构
+# Bridge 0.4.1 架构
 
 ## 产品边界
 
@@ -17,6 +17,8 @@ flowchart LR
   B --> H["ClaudeSessionHost"]
   H <-->|"Agent SDK Streaming Input"| C["Claude Host"]
   O["TranscriptObserver"] -->|"只读 JSONL 与元数据"| B
+  B --> DR["ClaudeDesktopSessionRegistrar"]
+  DR -->|"单文件会话 ID 映射"| DM["Claude Desktop 本地会话清单"]
   B --> EM["EvidenceManager"]
   O -->|"事后工具记录"| EM
   EM --> ES[("Evidence SQLite + AES-GCM blobs")]
@@ -25,8 +27,12 @@ flowchart LR
   R -. "仅见路由元数据与密文" .-> Q[("SQLite WAL 按设备离线队列")]
 ```
 
-Bridge 接管后，电脑端 Bridge 和手机共享同一会话、同一执行进程和同一事件流。
-Claude Desktop 当前窗口不承诺即时刷新；释放后仍可从相同 `sessionId` 打开历史。
+Bridge 接管 Claude Desktop 已有会话后，电脑端 Bridge 和手机共享同一会话、同一
+执行进程和同一事件流。Claude Desktop 当前窗口不承诺即时刷新；释放后仍可从相同
+`sessionId` 打开历史。Bridge 直接新建的会话仍由 Agent SDK 独立执行；首轮 JSONL
+落盘后，`ClaudeDesktopSessionRegistrar` 可将同一个 CLI `sessionId` 登记到当前
+Claude Desktop 的本地会话清单。重启 Claude Desktop 后，侧边栏从该映射打开原始
+transcript，不复制历史，也不改变 Bridge 的执行归属。
 
 ## 组件
 
@@ -35,6 +41,7 @@ Claude Desktop 当前窗口不承诺即时刷新；释放后仍可从相同 `ses
 | `ClaudeSessionHost` | Agent SDK 持久输入、准确 resume、流式事件、工具审批和中断 |
 | `SessionBroker` | 单写入者、所有权状态、两路并发、持久队列和幂等 |
 | `TranscriptObserver` | 只读观察 Claude Desktop 会话，并增量恢复事后工具记录 |
+| `ClaudeDesktopSessionRegistrar` | 动态识别 active profile，校验并登记 Bridge 会话 ID 映射 |
 | `SessionEventLog` | 追加式 JSONL、单调 `seq`、delta 合并、history/cursor |
 | `PermissionBroker` | `canUseTool` 与 `AskUserQuestion` 的首次有效答复 |
 | `EvidenceManager` | 每轮证据生命周期、工具脱敏、变更归因、预览和传输租约 |
@@ -80,6 +87,23 @@ Bridge 自身事件写入 `events-v2.jsonl`，最终消息、工具结果、审�
 
 客户端保存最后 `seq`，重连后调用 `events.resume`。Relay ACK 只表示密文已保存或
 目标设备已收到；`session-received`、`running` 和最终状态只能由 Host 事件产生。
+
+## Claude Desktop 侧边栏登记
+
+Bridge 只为自身创建、且已经有可信 JSONL 的会话登记侧边栏。登记器从 Claude 主进程
+及其 Helper 的 `--user-data-dir` 动态识别当前 profile，不硬编码 `Claude-3p`；
+随后要求本机仅有一个可识别的账号会话目录，并用现有 `local_*.json` 验证格式。
+
+目标 Desktop ID 固定为 `local_<Bridge sessionId>`。写入前同时校验 transcript 位于
+`~/.claude/projects`、记录中的 `sessionId` 与 `cwd` 一致、目标路径位于已知
+`claude-code-sessions` 根目录，并拒绝符号链接、路径逃逸和同名冲突。新文件通过
+临时文件加硬链接原子创建，权限为 `0600`，从不覆盖已有元数据。
+
+登记事件只向客户端暴露状态、说明、Desktop ID 与时间，不暴露 profile、账号目录、
+文件路径或哈希。状态为 `waiting-transcript / unavailable / restart-required /
+registered / failed`；多 profile、多账号、未知格式与异常都 fail closed。Bridge
+不写 Claude 的 LevelDB，不注入进程，不使用私有 CDP。当前进程必须重启一次才能
+重新加载清单，重启由用户在 Bridge 中显式触发。
 
 ## 成果证据
 

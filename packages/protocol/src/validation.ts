@@ -21,6 +21,7 @@ const METHODS = new Set([
   "session.history",
   "session.configuration",
   "session.configure",
+  "session.desktop.register",
   "session.fallback.confirm",
   "message.delivery.resolve",
   "claude.desktop.status",
