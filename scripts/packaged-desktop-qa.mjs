@@ -28,6 +28,9 @@ try {
   await page.waitForFunction(() => Boolean(window.bridgeDesktop));
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => Boolean(window.bridgeDesktop));
+  await page.waitForFunction(async () => (
+    (await window.bridgeDesktop.getSnapshot()).connection === "connected"
+  ));
   await page.getByRole("button", { name: "会话", exact: true }).waitFor();
   await page.waitForFunction(async () => (
     (await window.bridgeDesktop.getSnapshot()).connection === "connected"
