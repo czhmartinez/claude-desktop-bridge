@@ -1,4 +1,4 @@
-# Bridge 0.4.2 安全模型
+# Bridge 0.5.0 安全模型
 
 ## 已保护
 
@@ -18,6 +18,11 @@
   并限制导航和 IPC 来源。
 - Bridge 不申请辅助功能权限，不发送键鼠事件，不激活 Claude/Codex，不读写剪贴板。
 - 第三方 Claude Host 凭据不写入 Bridge 配置，不经 Relay，不出现在诊断或日志中。
+- Anthropic Console API Key 只接受 Desktop 本地 IPC；保存前必须由 Electron
+  `safeStorage` 加密，磁盘格式固定带 `os:` 标记，系统安全存储不可用时拒绝保存，
+  不允许明文、base64 或手机/Relay 降级。
+- `conversation-state-v1.sqlite` 与证据库分离；完整接力包使用独立派生密钥
+  AES-256-GCM 加密，协议事件和手机快照只携带状态、摘要与路由。
 - 0.2 首次启动只备份并移除 Bridge 自己写入的 `claude-bridge` MCP 与 HTTP Hooks；
   其他 Claude 配置保持不变。
 - 诊断导出只包含版本、平台、连接状态和数量统计，不包含正文、密钥或凭据路径。
@@ -78,6 +83,27 @@ Bridge 为每个 Host 保存外部写入版本基线。只有 transcript 出现�
 发生后只关闭 Bridge writer，手机原指令保持持久排队。Desktop 任务仍在执行、目标
 transcript 未完成或状态无法验证时，Bridge 不启动 Host。
 
+## 提供方与接力边界
+
+Claude-3p lane 可以使用第三方 Host Credentials，但不会把凭据复制到 provider
+profile、接力包或移动端。Anthropic API lane 每次建立 Host 计划时都先删除继承的
+`ANTHROPIC_AUTH_TOKEN`、OAuth token、Host 凭据变量、第三方 Base URL、Custom
+Headers 以及 Bedrock/Vertex/Foundry 路由，再仅注入本机解密出的显式 API Key。
+Key 验证调用 Anthropic `GET /v1/models`，模型清单可以进入 profile；Key 和认证头
+不会进入数据库、日志、事件、接力包或 Relay。
+
+Claude 官方 lane 禁止抽取、复制或代理 Pro/Max OAuth。Bridge 只构造公开
+`claude://code/new` Deep Link，并要求用户在 Mac 上确认目录和发送第一条消息。
+关联前同时校验官方 profile、`realpath` 后的 cwd、不透明 handoff ID、完整首条消息
+SHA-256 与十分钟创建窗口。零匹配不激活；多匹配只返回候选 ID 并等待用户选择。
+激活后 route 为只读，`turn.start/steer/configure` 在入队前失败；旧客户端也不能
+回退到其他 lane。
+
+接力包只包含有界、用户可见且可验证的信息。凭据模式、Bearer/Authorization、
+项目外绝对路径和敏感文件正文会被删除或脱敏；只保留工具摘要和相对产物清单，不
+保留无界输出。失败、取消、超时、崩溃或首条消息投递不确定时，原 lane 继续活动，
+目标 lane 不激活且首条消息禁止自动确认或重发。
+
 ## 成果边界
 
 Bridge 任务只快照本轮归因到的变化，不镜像整个项目。Claude Desktop 的事后记录
@@ -86,7 +112,7 @@ Bridge 任务只快照本轮归因到的变化，不镜像整个项目。Claude 
 
 所有远程文件请求只接受服务端生成的 `artifactId`。实际读取前必须通过 `realpath`
 确认目标仍位于该会话项目根目录；路径穿越、项目外绝对路径和符号链接逃逸一律
-拒绝。默认阻止 `.env*`、私钥、凭据文件、认证配置和 `.git` 内部数据，V0.4 没有
+拒绝。默认阻止 `.env*`、私钥、凭据文件、认证配置和 `.git` 内部数据，V0.5 没有
 远程绕过开关。工具输出中的令牌、密钥和认证头在持久化前脱敏。
 
 单文件硬上限为 20 MiB。文本 diff 每文件最多 1 MiB、每轮最多 5 MiB；工具输出
@@ -97,7 +123,7 @@ Bridge 任务只快照本轮归因到的变化，不镜像整个项目。Claude 
 证据清单长期保留；加密快照和预览在 30 天或总量超过 1 GiB 时按 LRU 清理。缓存
 失效后，只有源文件仍在项目根内且 SHA-256 与清单一致时才允许重建。
 
-V0.4 不展示、存储或推断隐藏 CoT，不附加 Claude Desktop 私有 CDP，不提供远程
+V0.5 不展示、存储或推断隐藏 CoT，不附加 Claude Desktop 私有 CDP，不提供远程
 项目浏览、编辑、动态服务启动或大文件绕过。
 
 ## 生产要求

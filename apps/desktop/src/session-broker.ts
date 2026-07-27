@@ -2047,7 +2047,7 @@ export class SessionBroker extends EventEmitter {
     ) {
       throw new Error(
         `为保护原会话，Bridge 已在发送前阻止本次操作：该会话来自${this.profileLabel(sourceProfile)}，`
-        + `当前 Bridge Host 使用${this.profileLabel(targetProfile)}，V0.4.2 不允许跨 profile 直接续接。`
+        + `当前 Bridge Host 使用${this.profileLabel(targetProfile)}，Bridge 不允许跨 profile 直接续接。`
         + "原会话未写入新消息；请在原 Claude Desktop 会话继续，或新建 Bridge 会话。",
       );
     }

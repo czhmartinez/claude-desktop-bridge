@@ -20,48 +20,40 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前稳定版：0.4.2
+## 当前稳定版：0.5.0
 
-Bridge 0.4.2 是桌面原生安全热修，在 0.4.1 的 Claude Desktop 侧边栏登记与
-0.4.0“成果证据层”之上修复跨 profile 恢复、1M 上下文识别和重复错误展示。
-手机不只远程控制 Claude 会话，还能验证这一轮
-调用了什么工具、命令是否成功、哪些文件发生变化，以及有哪些成果可以预览或下载。
+Bridge 0.5.0 增加“多提供方会话接力层”。Bridge `sessionId` 现在是稳定逻辑对话
+ID；Claude-3p、Anthropic API 与 Claude 官方订阅分别作为同一逻辑对话下的执行
+lane。切换只迁移用户可见、可验证且有界的上下文，不声称迁移隐藏 CoT、服务端缓存
+或原生运行态。
 
-- Bridge 在启动 Host 和写入用户消息前同时校验会话来源 profile。来自 Claude 官方
-  与 Claude-3p 的原生会话不能跨 profile 直接恢复；不兼容时原会话保持未写入，
-  Bridge 明确提示回到原 profile 继续或新建会话。
-- Claude Desktop 的 `sessionSettings.ultracode` 会被识别为 1M 上下文能力，并传给
-  Agent SDK 的恢复模型配置；发送前容量检查不再把这类会话误判为 200K。
-- SDK 生成的 synthetic `Prompt is too long`、上下文超限和同类失败消息会在历史与
-  流式路径统一过滤，不再与真实运行错误重复展示。
-- Bridge 新建的会话在首轮 JSONL 落盘后，会登记到当前正在运行的 Claude Desktop
-  本地会话清单；按提示重启 Claude Desktop 后，即可从其侧边栏打开同一份完整历史。
-  后续从 Bridge 或 Claude Desktop 继续，使用的仍是同一个 Claude `sessionId` 和
-  同一份 transcript，不复制对话、不创建第二条会话。
-- 登记过程不附加 Claude Desktop 进程，不使用私有 CDP，也不修改 LevelDB。Bridge
-  从实际运行进程动态识别 profile，只在唯一账号目录与已知元数据格式都可验证时，
-  原子写入一份权限为 `0600` 的 `local_<sessionId>.json` 映射；多 profile、多账号、
-  格式不兼容或目标冲突时保持“仅在 Bridge”，不会猜测或覆盖已有会话。
-- Bridge 发起的任务保留 Agent SDK 工具输入、状态、脱敏输出和退出码，并以任务
-  开始时的真实工作区为基线归因新增、修改、删除和重命名。
-- 原生 Claude Desktop 会话从 JSONL 事后恢复工具、命令和路径线索，固定标记为
-  “事后恢复”，不冒充实时或完整记录。
-- 每轮显示“精确 / 事后恢复 / 部分”可信度；并发修改、扫描超限、权限不足和延迟
-  写入都会明确降级。
-- 对话增加成果摘要与“对话 / 成果”分段页。归档完成的证据只跟随对应轮次显示；
-  正在采集的证据和无法匹配轮次的历史证据只进入“成果”页，不常驻堆在运行任务下方。
-  文本、代码和 diff 可只读查看，图片直接预览，HTML 在禁网沙箱中渲染为静态截图。
-- 覆盖安装或电脑重启打断任务时，未完成证据会自动收口为“失败 / 部分”，不再永久
-  显示“正在归档”。即使 Claude Desktop 续接后更换了底层会话 ID，遗留任务也会作为
-  可见但不会自动重发的恢复队列保留；独立停止按钮可直接释放它及其并发占用。
-- PDF 和普通二进制只显示元数据并按需下载。单文件上限 20 MiB，传输按 256 KiB
-  分块、支持缺块重试，并在落地前校验 SHA-256。
-- 文件正文不随证据事件自动发送；只有用户打开预览或下载时才端到端传输。已缓存
-  预览可离线查看，Relay 不保存可解密成果。
-- 不展示或推断隐藏 CoT，不依赖 Claude Desktop 私有 CDP，也不提供项目目录树、
-  远程编辑器、动态站点托管或自动启动服务。
+- **Claude-3p**：继续使用 Agent SDK 与当前 Host Credentials，支持执行、审批、
+  工具、成果和精确证据。
+- **Anthropic API**：API Key 只能在 Mac 端显式输入，并只由 Electron
+  `safeStorage` 保存；不存在明文或 base64 降级。Bridge 使用 `GET /v1/models`
+  验证 Key 与模型清单，调用费用由 Anthropic API 单独计费，不继承 Host/OAuth
+  凭据、第三方 Base URL 或云提供方路由。
+- **Claude 官方订阅**：只通过公开
+  `claude://code/new?q=...&folder=...` Deep Link 新建官方会话。用户在 Mac 上确认
+  目录并发送第一条接力消息后，Bridge 才会按官方 profile、`realpath` cwd、不透明
+  handoff ID、首条消息哈希与十分钟窗口完成关联。激活后 Bridge 只读观察，输入区
+  替换为“在 Claude 官方继续”；不提取或代理 Pro/Max OAuth，不使用私有 CDP，也不
+  修改 Claude 私有侧边栏元数据。
+- 切换只能手动触发。有运行中或待发送任务时会被阻止；失败、取消、超时、崩溃或
+  首条消息投递不确定时，原 lane 保持活动且不会自动重发。零匹配或多匹配不会猜测。
+- 完整接力包在 Host 本机加密保存，包含目标、近期可见对话、约束、未完成事项、
+  工具和成果摘要、文件/哈希、cwd、Git 状态、源事件序号与完整性哈希。可执行通道
+  最多 48,000 字符，官方 Deep Link 最多 12,000 字符；凭据、认证头、敏感正文、
+  项目外内容与无界工具输出不会进入接力包。
+- 新的 `conversation-state-v1.sqlite` 持久化逻辑对话、lane、接力、队列、终态回执
+  和迁移标记。旧 `sessions-v2.json` 与 `turn-queue-v2.json` 幂等迁移；连续两次
+  成功启动后只改名为 `.migrated`，不删除。
+- V0.4.2 的跨 Claude/Claude-3p profile 原始恢复阻止、ultracode 1M 上下文识别和
+  synthetic `Prompt is too long` 去重继续生效。
 
-0.4.2 继续使用协议 V3 和配对 schema V4；已配对的 0.4 设备无需重配。它仍不兼容
+0.5.0 继续使用协议 V3 和配对 schema V4；已配对的 0.4 设备无需重配。V0.5 客户端
+连接 V0.4 Host 时会按能力缺失隐藏提供方入口；V0.4 客户端连接 V0.5 Host 时仍可在
+可写 lane 正常执行，但对官方只读 lane 的写入会失败关闭并提示升级。它仍不兼容
 0.3 配对：从 0.3 升级后会保留稳定主机 ID、
 设置、会话历史与本地事件，但会轮换房间和端到端密钥并清空旧设备授权；手机会将
 旧主机标记为“需要重新配对”，扫描新二维码后按同一主机接回本地缓存。
@@ -70,21 +62,22 @@ Relay 始终保留一个低流量控制连接，用于信令、设备撤销、�
 直连失败回退。界面显示“直连”时业务数据不经过 Relay；显示“安全中继”或
 “局域网连接”时业务数据使用相应 Relay 路径。
 
-Bridge 0.4.2 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
-共享同一个 Claude `sessionId`、同一个持久执行进程和同一条有序事件流。
+Bridge 0.5.0 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
+共享同一个逻辑 `sessionId`、活动 lane 和同一条有序事件流。
 
 它面向已经通过第三方 Host 或 Gateway 登录 Claude Desktop、但不能使用官方
-Remote Control 的用户。官方 Claude 账号已经具备 Remote Control 时，无需使用
-Bridge。
+Remote Control 的用户；也可以把一段 Bridge 工作手动接力到 Claude 官方本机应用，
+但官方 lane 不提供 Bridge 远程写入。
 
 ## 使用方式
 
-1. 在电脑安装并打开 Bridge，保持第三方登录的 Claude Desktop 可用。
-2. 将电脑端升级到 0.4.2；现有 0.4.1 Android APK 继续兼容，无需为本次桌面原生
-   热修重装手机端。从 0.3 首次升级时，在 Bridge 的“设备”页扫描新二维码完成强制
-   重配；0.4.x 之间升级不需要重新配对。
+1. 在电脑安装并打开 Bridge，保持 Claude-3p Host 可用；需要 Anthropic API 时只在
+   Mac 端提供方面板配置 Console API Key。
+2. 将电脑端与 Android 端一起升级到 0.5.0。已有 0.4 配对无需重配；从 0.3 首次
+   升级时，仍需在 Bridge“设备”页扫描新二维码完成 schema V4 强制重配。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
-   回答 Claude 提问、调整或停止任务。
+   回答 Claude 提问、调整或停止任务，也可从会话顶栏手动发起提供方接力。接力到
+   Claude 官方时，手机会显示“等待 Mac 确认”，直到官方首条消息通过关联校验。
 
 Bridge 不点击输入框，不粘贴内容，不申请辅助功能权限，也不读写系统剪贴板。
 Bridge 接管 Claude Desktop 已有会话后，电脑端 Bridge 是主要桌面界面，手机是远程
@@ -99,10 +92,13 @@ Bridge 待机”，不会把它伪装成 Desktop 原生任务。
 安全完成边界后直接接续，无需退出 Claude Desktop；电脑端仍有任务执行时保持排队。
 Claude Desktop 正在回复、调用工具或等待工具结果时统一显示“桌面运行中”；只有
 观察到明确的回合完成边界后才显示“桌面待机”。
+提供方接力不会复制原生会话。切回 Claude-3p 或 Anthropic API 时，Bridge 只复用
+同一 provider 下仍安全可用的历史 lane；否则创建新 lane 并注入新的结构化接力。
 
 ## 发布下载
 
-最新桌面安装包见 [GitHub Releases](https://github.com/czhmartinez/claude-desktop-bridge/releases/latest)。
+最新桌面安装包与 Android APK 见
+[GitHub Releases](https://github.com/czhmartinez/claude-desktop-bridge/releases/latest)。
 当前桌面发布工作流只构建 macOS（`macos-15`）；Windows / Linux 桌面安装包暂不随 CI 发布。
 Actions 中标注 `adhoc-ci` 的安装包只用于构建验证；Release 附件使用本机稳定签名，
 用于保留 macOS Files & Folders 授权。
@@ -116,8 +112,13 @@ macOS 构建冒充正式安装包，也不会自动上传未签名附件。
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
 发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
-## 0.4.2 当前能力
+## 0.5.0 当前能力
 
+- 稳定逻辑对话 ID、每对话多 lane 单活动路由、手动接力状态机，以及 Desktop /
+  Android 一致的提供方入口和等待状态。
+- Provider profile、lane、handoff、路由允许动作和证据归属的协议 V3 向后兼容扩展。
+- Anthropic API 模型发现、本机安全 Key 管理、独立计费提示与凭据环境隔离。
+- Claude 官方公开 Deep Link、一次本机确认、严格 transcript 关联和只读观察。
 - `BridgeEvidenceBundle`、工具证据、产物清单、预览与分块传输的协议 V3 契约。
 - SQLite 证据清单、Electron `safeStorage` 主密钥、AES-256-GCM 内容寻址快照，以及
   30 天或 1 GiB 的 LRU 正文清理；清单在正文过期后继续保留。
@@ -132,8 +133,9 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
 - 0.3 已有的持久 Agent SDK 会话、单写入者保护、可靠 WSS、WebRTC 直连、事件恢复、
   审批、提问、停止、推送唤醒、主机/项目/会话导航和稳定签名发布门继续保留。
 
-0.4.2 不包含隐藏 CoT、Claude Desktop 实时工具镜像、私有 CDP、完整项目浏览、
-远程编辑、动态站点直播、自动启动服务、PDF 内嵌渲染或超过 20 MiB 的产物传输。
+0.5.0 不包含隐藏 CoT、官方 OAuth 代理、自动故障转移、Claude Desktop 实时工具
+镜像、私有 CDP、完整项目浏览、远程编辑、动态站点直播、自动启动服务、PDF 内嵌
+渲染或超过 20 MiB 的产物传输。
 
 ## 本地运行
 
@@ -173,7 +175,7 @@ M0 真实闸门使用一次性项目和可丢弃会话验证同一 transcript �
 ad-hoc 包覆盖升级会导致 macOS 再次请求“文稿 / 桌面”等 Files & Folders 授权。
 个人 Mac 可按发布手册显式执行一次 `signing:setup-local`，之后用
 `make:local-signed` 生成身份稳定的本机测试包；对外发布仍必须使用 Developer ID。
-V0.4 的本机验收默认同时交付 DMG 与 Android APK；除非改动明确仅限桌面原生层，
+V0.5 的本机验收必须同时交付 DMG 与 Android APK；除非改动明确仅限桌面原生层，
 不得只更新其中一个安装包。两端本机包统一使用
 `npm run make:local:desktop-android` 生成。
 
@@ -189,7 +191,7 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.4.2 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
+Bridge 0.5.0 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
 必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
 签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。

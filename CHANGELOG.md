@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.0
+
+- Promote Bridge `sessionId` to a stable logical conversation ID with durable provider profiles,
+  historical execution lanes, one active lane, route-level allowed actions and lane-scoped evidence.
+- Add an isolated `conversation-state-v1.sqlite` store for conversations, providers, lanes,
+  handoffs, queued turns, terminal receipts and idempotent legacy JSON migration. Rename legacy
+  files to `.migrated` only after two successful startups.
+- Keep Claude-3p on the existing Agent SDK and Host Credentials path. Add a separate Anthropic API
+  runtime that accepts a Console API Key only through local Desktop IPC, persists it only through
+  Electron `safeStorage`, validates it with `GET /v1/models`, strips inherited Host/OAuth/gateway
+  routing, and makes the separate API billing boundary explicit.
+- Add Claude official handoff through the public `claude://code/new` Deep Link only. Require one
+  local Mac confirmation and exact profile, realpath cwd, opaque handoff ID, first-message hash and
+  ten-minute-window association before activating a read-only observed lane.
+- Add encrypted, bounded structured handoff packages with visible goals, recent conversation,
+  constraints, incomplete work, tool and artifact summaries, hashes, workspace/Git state, source
+  event sequence and integrity hash. Exclude hidden thinking, credentials, sensitive bodies,
+  unbounded output and content outside the project.
+- Fail closed while work is active and preserve the source lane on cancellation, timeout, crash,
+  ambiguous official matches or uncertain first-message delivery. Never auto-failover or replay an
+  uncertain handoff message.
+- Add capability-gated provider switching to Desktop and Android. Official lanes replace the
+  composer with “在 Claude 官方继续”; API Key configuration remains unavailable over Mobile or Relay.
+- Preserve protocol V3 and pairing schema V4. V0.5 clients hide provider UI against V0.4 Hosts;
+  V0.4 clients keep normal writable-lane execution against V0.5 Hosts, while official read-only
+  lanes reject legacy writes before queueing and tell the client to upgrade.
+- Ship the shared-client release as paired macOS DMG and Android APK artifacts.
+
 ## 0.4.2
 
 - Refuse a native resume before writing any user message when the source session belongs to a

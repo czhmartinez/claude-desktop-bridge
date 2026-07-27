@@ -1,4 +1,4 @@
-# Bridge 0.4 发布手册
+# Bridge 0.5 发布手册
 
 ## 1. 发布闸门
 
@@ -10,21 +10,34 @@ BRIDGE_M0_REAL=1 npm test -w @bridge/desktop -- \
   --run src/claude-session-host.real.test.ts
 npm run test:visual
 npm run test:html-preview
-npm run build:android:debug
+npm run make:local:desktop-android
 ```
 
 凡是影响 `apps/client`、协议或跨端工作流的改动，本机验收包必须在同一轮同时更新
 DMG 与 Android APK。先递增 Android `versionCode`，再运行
 `npm run make:local:desktop-android`；只有明确限定为桌面原生层的改动才可跳过 APK。
-V0.4.2 属于这一例外：只更新 Desktop，现有 0.4.1 Android APK 继续兼容，协议 V3、
-配对 schema V4、Application Support 数据和已配对设备都不迁移或清空。
+V0.5 涉及共享协议与客户端，不属于例外：DMG 和 APK 必须来自同一提交。协议 V3、
+配对 schema V4、Application Support、证据、Key、事件和已配对设备不得清空。
 
 M0 必须证明手机/测试客户端消息与 Claude 回复落入同一 `sessionId` 和同一 JSONL，
 且测试前后的活动应用和剪贴板不变。SDK 不通过时停止发布，不能退回单次任务。
 
-V0.4 还必须检查根包、全部 workspace、Android `versionName` 和 iOS
+V0.5 还必须检查根包、全部 workspace、Android `versionName` 和 iOS
 `MARKETING_VERSION` 一致，并确认协议常量为 V3、配对 schema 为 V4。V0.3 客户端
 必须收到升级拒绝；重配后稳定 `hostId`、会话历史、本地事件和手机缓存仍可接回。
+
+Provider 发布闸门还必须覆盖：
+
+- Anthropic API Key 只能由 Desktop 本地 IPC 设置/删除，磁盘只允许 `safeStorage`
+  格式；手机与 Relay 方法集中不存在 Key 写接口。
+- API lane 模型来自真实 `GET /v1/models`，且 Host/OAuth、第三方 Base URL 和云路由
+  环境已经清除。没有用户 Key 时只报告“需配置”，不得用其他凭据替代。
+- 官方接力只使用公开 Deep Link；必须验证 profile、`realpath` cwd、handoff ID、
+  首条消息哈希和十分钟窗口。零/多匹配、超时、崩溃和不确定投递均保持原 lane。
+- V0.4 Host 能隐藏新 UI；V0.4 客户端可在 V0.5 可写 lane 正常执行；官方只读 lane
+  对旧客户端写入必须在入队前失败并提示升级。
+- `sessions-v2.json` 和 `turn-queue-v2.json` 的幂等 SQLite 迁移、两次成功启动以及
+  `.migrated` 改名必须在保留副本上验证。
 
 ## 2. 部署 Relay 与 Web
 
@@ -201,6 +214,10 @@ Notifications 和 provisioning profile。没有 Apple Developer 条件时只能�
 - Host 离线时清单可见、已缓存预览可打开、未缓存正文提示重新连接电脑。
 - App 前后台、锁屏唤醒、扫码过期、单次二维码和设备撤销。
 - 桌面 `file://` 资源、托盘、开机启动、睡眠恢复和升级覆盖。
+- Claude-3p 创建并修改文件 -> Anthropic API 继续并生成精确证据 -> Claude 官方
+  经 Mac 确认出现在官方侧边栏并完成一轮 -> 安全复用 Claude-3p lane 继续。
+- Android 能发起 preview/commit/cancel，显示“等待 Mac 确认”，并在
+  `conversation.route.changed` 后呈现最终活动 provider；手机端绝不出现 Key 输入。
 
 桌面原生 WebRTC 运行时使用真实 DataChannel 门禁测试：
 
@@ -212,7 +229,9 @@ npm run test:webrtc:native
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
 WSS 全部通过的平台才能标记“可分发”。
 
-V0.4.2 的发布范围仅为 macOS Desktop 原生热修；Android 继续使用兼容的 0.4.1 APK。
-热修验收必须覆盖跨 Claude/Claude-3p profile 的写入前阻止、ultracode 1M 容量识别，
-以及历史与流式路径不再重复展示 synthetic `Prompt is too long`。iOS/Web 必须保持
-共享代码可构建，但不阻塞本次发布。
+V0.5.0 必须同时生成本机稳定签名 DMG 与 Android APK，并记录版本、SHA-256、签名
+校验、打包态 CDP/配对结果和真机状态。没有 Anthropic API Key、用户未在 Mac 确认
+官方首条消息、没有已授权 Android 真机或缺少外部分发签名时，必须逐项标记为
+“外部条件未满足”，不得把自动测试、APK 构建或 HTTP `/health` 冒充真实验收。
+V0.4.2 的跨 profile 阻止、ultracode 1M 识别和 synthetic `Prompt is too long`
+去重仍需回归；iOS/Web 共享代码必须保持可构建。
