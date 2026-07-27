@@ -529,6 +529,15 @@ export class ConversationStateStore {
     `).all(conversationId) as SqlRow[]).map(laneFromRow);
   }
 
+  listAllLanes(providerKind?: BridgeProviderKind): BridgeExecutionLane[] {
+    const rows = providerKind
+      ? this.db.prepare(`
+          SELECT * FROM lanes WHERE provider_kind = ? ORDER BY created_at ASC, id ASC
+        `).all(providerKind)
+      : this.db.prepare("SELECT * FROM lanes ORDER BY created_at ASC, id ASC").all();
+    return (rows as SqlRow[]).map(laneFromRow);
+  }
+
   lane(laneId: string): BridgeExecutionLane | undefined {
     const row = this.db.prepare(
       "SELECT * FROM lanes WHERE id = ?",
@@ -542,6 +551,12 @@ export class ConversationStateStore {
       WHERE provider_profile_id = ? AND native_session_id = ?
     `).get(providerProfileId, nativeSessionId) as SqlRow | undefined;
     return row ? laneFromRow(row) : undefined;
+  }
+
+  findLanesByNativeSessionId(nativeSessionId: string): BridgeExecutionLane[] {
+    return (this.db.prepare(`
+      SELECT * FROM lanes WHERE native_session_id = ? ORDER BY created_at ASC, id ASC
+    `).all(nativeSessionId) as SqlRow[]).map(laneFromRow);
   }
 
   createLane(input: CreateLaneInput): BridgeExecutionLane {
@@ -659,6 +674,14 @@ export class ConversationStateStore {
     return row ? handoffFromRow(row) : undefined;
   }
 
+  listPendingHandoffs(): BridgeHandoff[] {
+    return (this.db.prepare(`
+      SELECT * FROM handoffs
+      WHERE state NOT IN ('applied', 'failed', 'cancelled', 'expired')
+      ORDER BY created_at ASC, id ASC
+    `).all() as SqlRow[]).map(handoffFromRow);
+  }
+
   handoffPackage(handoffId: string): StoredHandoffPackage | undefined {
     const row = this.db.prepare(
       "SELECT package_encrypted FROM handoffs WHERE id = ?",
@@ -706,12 +729,38 @@ export class ConversationStateStore {
     return this.handoff(handoffId)!;
   }
 
+  expireHandoff(handoffId: string): BridgeHandoff {
+    const handoff = this.handoff(handoffId);
+    if (!handoff) throw new Error("Handoff not found");
+    if (handoff.state === "applied") throw new Error("Applied handoff cannot expire");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`
+        UPDATE handoffs SET state = 'expired', error = ?, updated_at = ? WHERE id = ?
+      `).run("接力确认已超过十分钟有效期", Date.now(), handoffId);
+      this.db.prepare(`
+        UPDATE conversations SET route_state = 'ready', updated_at = ? WHERE id = ?
+      `).run(Date.now(), handoff.conversationId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return this.handoff(handoffId)!;
+  }
+
   applyHandoff(handoffId: string, targetLaneId: string): BridgeConversationRoute {
     const handoff = this.handoff(handoffId);
     const target = this.lane(targetLaneId);
-    if (!handoff || !target || target.conversationId !== handoff.conversationId) {
+    if (
+      !handoff ||
+      !target ||
+      target.conversationId !== handoff.conversationId ||
+      target.providerProfileId !== handoff.targetProviderProfileId
+    ) {
       throw new Error("Handoff target lane is invalid");
     }
+    if (handoff.state !== "activating") throw new Error("Handoff is not ready to activate");
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(`

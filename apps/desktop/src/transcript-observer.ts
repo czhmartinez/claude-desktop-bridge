@@ -42,6 +42,7 @@ export class TranscriptObserver extends EventEmitter {
   private readonly transcriptTurnBoundaries = new Map<string, boolean>();
   private readonly externalWriteVersions = new Map<string, number>();
   private readonly knownEvidence = new Map<string, string>();
+  private readonly sessionAliases = new Map<string, string>();
   private evidenceFailureReported = false;
   private readonly evidenceCursors = new Map<string, {
     path: string;
@@ -98,6 +99,10 @@ export class TranscriptObserver extends EventEmitter {
 
   session(sessionId: string): ObservedClaudeSession | undefined {
     return this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
+  }
+
+  setSessionAlias(nativeSessionId: string, logicalSessionId: string): void {
+    this.sessionAliases.set(nativeSessionId, logicalSessionId);
   }
 
   async close(): Promise<void> {
@@ -262,7 +267,7 @@ export class TranscriptObserver extends EventEmitter {
         .slice(0, 32)}`;
       const input: ObservedDesktopEvidence = {
         id: evidenceId,
-        sessionId: session.sessionId,
+        sessionId: this.sessionAliases.get(session.sessionId) ?? session.sessionId,
         cwd: session.cwd,
         turnId: turn.id,
         startedAt: turn.startedAt,
@@ -299,12 +304,13 @@ export class TranscriptObserver extends EventEmitter {
 
   private async appendObserved(session: ObservedClaudeSession, message: ClaudeHistoryMessage): Promise<void> {
     const type = "session.observed" as const;
+    const sessionId = this.sessionAliases.get(session.sessionId) ?? session.sessionId;
     if (
-      this.options.eventLog.hasItem(session.sessionId, "user.message.accepted", message.id) ||
-      this.options.eventLog.hasItem(session.sessionId, "assistant.completed", message.id)
+      this.options.eventLog.hasItem(sessionId, "user.message.accepted", message.id) ||
+      this.options.eventLog.hasItem(sessionId, "assistant.completed", message.id)
     ) return;
     await this.options.eventLog.append({
-      sessionId: session.sessionId,
+      sessionId,
       itemId: message.id,
       timestamp: message.createdAt || Date.now(),
       origin: "claude-desktop",

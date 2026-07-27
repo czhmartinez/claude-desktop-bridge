@@ -56,6 +56,7 @@ import {
   legacyClaudeLaneId,
 } from "./conversation-state-store.js";
 import type { BridgeConversationRoute, BridgeExecutionLane } from "@bridge/protocol";
+import type { ProviderRuntimePool } from "./provider-runtime-pool.js";
 
 interface StoredBridgeSession {
   sessionId: string;
@@ -88,13 +89,13 @@ export interface QueuedTurn {
   laneId: string;
   text: string;
   attachments: BridgeAttachment[];
-  origin: "desktop" | "mobile";
+  origin: "desktop" | "mobile" | "system";
   sourceDeviceId?: string;
   requestedAt: number;
   priority: number;
   attempts: number;
   state: "queued" | "running" | "uncertain";
-  mode?: "start" | "steer";
+  mode?: "start" | "steer" | "handoff";
   transport?: "claude-desktop-managed" | "bridge-host";
   turnId?: string;
   evidenceId?: string;
@@ -135,6 +136,7 @@ interface SessionRuntimeState {
   ownership: BridgeOwnershipState;
   turnState: BridgeTurnState;
   host?: SessionHostRuntime;
+  hostLaneId?: string;
   active?: QueuedTurn;
   externalWriteVersion?: number;
   configurationPending?: boolean;
@@ -197,6 +199,7 @@ export interface SessionBrokerOptions {
   sessionsPath: string;
   queuePath: string;
   conversationState?: ConversationStateStore;
+  runtimePool?: ProviderRuntimePool;
   maxParallelTurns?: number;
   hostFactory?: (options: ClaudeSessionHostOptions) => SessionHostRuntime;
   prepareRuntime?: typeof prepareClaudeRuntime;
@@ -213,6 +216,8 @@ export interface SessionBrokerOptions {
       sessionId: string;
       cwd: string;
       commandId: string;
+      laneId?: string;
+      providerProfileId?: string;
       startedAt?: number;
     }): Promise<string>;
     attachTurn(evidenceId: string, turnId: string): Promise<void>;
@@ -599,6 +604,14 @@ export class SessionBroker extends EventEmitter {
     const sessions: BridgeSessionInfo[] = [];
     for (const sessionId of ids) {
       const source = observed.get(sessionId);
+      const associatedLane = source && this.options.conversationState
+        ? this.options.conversationState.findLanesByNativeSessionId(sessionId).find((lane) => (
+            (source.sourceProfile === "claude" && lane.providerKind === "claude-official") ||
+            (source.sourceProfile === "claude-3p" && lane.providerKind === "claude-3p") ||
+            source.sourceProfile === "unknown"
+          ))
+        : undefined;
+      if (associatedLane && associatedLane.conversationId !== sessionId) continue;
       const bridge = this.bridgeSessions.get(sessionId);
       const queuedTurn = queued.get(sessionId);
       if (!source && !bridge && !queuedTurn) continue;
@@ -818,6 +831,10 @@ export class SessionBroker extends EventEmitter {
     await this.initialize();
     const session = this.session(input.sessionId);
     if (!session) throw new Error("Session not found");
+    const route = this.options.conversationState?.route(input.sessionId);
+    if (route && !route.allowedActions.canConfigure) {
+      throw new Error(route.allowedActions.reason ?? "当前通道不能修改执行配置");
+    }
     const changesModel = Object.prototype.hasOwnProperty.call(input, "model");
     const changesEffort = Object.prototype.hasOwnProperty.call(input, "effort");
     if (!changesModel && !changesEffort) throw new Error("No configuration changes were provided");
@@ -1016,6 +1033,71 @@ export class SessionBroker extends EventEmitter {
     return queued;
   }
 
+  async startHandoffTurn(input: {
+    handoffId: string;
+    sessionId: string;
+    laneId: string;
+    text: string;
+  }): Promise<QueuedTurn | TurnReceipt> {
+    await this.initialize();
+    if (this.hasActiveOrPending(input.sessionId)) {
+      throw new Error("当前对话仍有运行中或待发送任务，请先完成或停止");
+    }
+    const session = this.session(input.sessionId);
+    if (!session) throw new Error("Session not found");
+    const lane = this.options.conversationState?.lane(input.laneId);
+    if (!lane || lane.conversationId !== input.sessionId || lane.access !== "read-write") {
+      throw new Error("Handoff target lane is invalid");
+    }
+    const idempotencyKey = `handoff:${input.handoffId}`;
+    const existing = this.pending.find((turn) => turn.idempotencyKey === idempotencyKey);
+    if (existing) return existing;
+    if (this.completedKeys.has(idempotencyKey)) {
+      return this.terminalTurns.get(idempotencyKey) ?? {
+        commandId: `completed:${idempotencyKey}`,
+        requestId: input.handoffId,
+        idempotencyKey,
+        sessionId: input.sessionId,
+        state: "completed",
+      };
+    }
+    const queued: QueuedTurn = {
+      commandId: randomUUID(),
+      requestId: input.handoffId,
+      idempotencyKey,
+      sessionId: input.sessionId,
+      laneId: input.laneId,
+      text: input.text.trim(),
+      attachments: [],
+      origin: "system",
+      requestedAt: Date.now(),
+      priority: 200,
+      attempts: 0,
+      state: "queued",
+      mode: "handoff",
+      sessionCwd: session.cwd,
+      sessionTitle: session.title,
+    };
+    this.pending.push(queued);
+    this.sortPending();
+    await this.saveQueue();
+    await this.record({
+      sessionId: queued.sessionId,
+      itemId: queued.commandId,
+      origin: "system",
+      type: "turn.queued",
+      data: {
+        commandId: queued.commandId,
+        requestId: queued.requestId,
+        delivery: "host-received",
+        handoffId: input.handoffId,
+      },
+    });
+    this.emit("changed");
+    void this.pump();
+    return queued;
+  }
+
   async steerTurn(input: StartTurnInput): Promise<QueuedTurn | TurnReceipt> {
     const state = this.runtimeStates.get(input.sessionId);
     if (state?.active && state.host) await state.host.interrupt();
@@ -1126,6 +1208,7 @@ export class SessionBroker extends EventEmitter {
     }
     const host = state.host;
     delete state.host;
+    delete state.hostLaneId;
     delete state.active;
     if (state.releaseTimer) {
       clearTimeout(state.releaseTimer);
@@ -1239,6 +1322,9 @@ export class SessionBroker extends EventEmitter {
   async resolveUncertainDelivery(commandId: string, action: "confirm" | "retry"): Promise<TurnReceipt> {
     const turn = this.pending.find((candidate) => candidate.commandId === commandId);
     if (!turn || turn.state !== "uncertain") throw new Error("Uncertain delivery was not found");
+    if (turn.mode === "handoff") {
+      throw new Error("接力首条消息结果不确定时禁止确认或重发；请取消后重新预览接力");
+    }
     const state = this.runtimeStates.get(turn.sessionId);
     if (action === "confirm") {
       turn.uncertainResolved = "confirmed";
@@ -1314,24 +1400,52 @@ export class SessionBroker extends EventEmitter {
     if (!session) throw new Error("Session not found");
     const before = decodeCursor(cursor);
     const pageSize = Math.max(1, Math.min(limit, 100));
-    const transcript = await readClaudeSessionHistory(
-      this.options.paths.projects,
+    const route = this.options.conversationState?.route(sessionId);
+    const transcriptSources = route
+      ? route.lanes.flatMap((lane) => lane.nativeSessionId ? [lane] : [])
+      : [{
+          laneId: legacyClaudeLaneId(sessionId),
+          conversationId: sessionId,
+          providerProfileId: CLAUDE_3P_PROFILE_ID,
+          providerKind: "claude-3p" as const,
+          status: "active" as const,
+          access: "read-write" as const,
+          nativeSessionId: sessionId,
+          createdAt: session.lastActivityAt,
+          updatedAt: session.lastActivityAt,
+        }];
+    const transcripts = await Promise.all(transcriptSources.map(async (lane) => ({
+      lane,
+      transcript: await readClaudeSessionHistory(
+        this.options.paths.projects,
+        lane.nativeSessionId!,
+        session.cwd,
+        {
+          limit: Math.min(10_000, pageSize * 3),
+          ...(before ? { before: { createdAt: before.at, id: before.id } } : {}),
+        },
+      ),
+    })));
+    const transcriptItems: BridgeHistoryItem[] = transcripts.flatMap(({ lane, transcript }) => (
+      transcript.messages.map((message) => ({
+        id: message.id,
+        sessionId,
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        origin: lane.providerKind === "claude-official"
+          ? "claude-desktop" as const
+          : "claude-host" as const,
+      }))
+    ));
+    const eventSessionIds = new Set([
       sessionId,
-      session.cwd,
-      {
-        limit: Math.min(10_000, pageSize * 3),
-        ...(before ? { before: { createdAt: before.at, id: before.id } } : {}),
-      },
-    );
-    const transcriptItems: BridgeHistoryItem[] = transcript.messages.map((message) => ({
-      id: message.id,
-      sessionId,
-      role: message.role,
-      text: message.text,
-      createdAt: message.createdAt,
-      origin: "claude-desktop",
-    }));
-    const eventItems = this.options.eventLog.history(sessionId, undefined, 10_000).items
+      ...transcriptSources.map((lane) => lane.nativeSessionId!).filter(Boolean),
+    ]);
+    const eventItems = [...eventSessionIds].flatMap((eventSessionId) => (
+      this.options.eventLog.history(eventSessionId, undefined, 10_000).items
+        .map((item) => ({ ...item, sessionId }))
+    ))
       .filter((item) => (
         !before ||
         item.createdAt < before.at ||
@@ -1347,7 +1461,7 @@ export class SessionBroker extends EventEmitter {
       .sort(historyOrder)
       .filter((item) => !before || item.createdAt < before.at || (item.createdAt === before.at && item.id < before.id));
     const items = all.slice(-pageSize);
-    const hasMore = transcript.truncated || all.length > items.length;
+    const hasMore = transcripts.some(({ transcript }) => transcript.truncated) || all.length > items.length;
     return {
       sessionId,
       items,
@@ -1450,32 +1564,44 @@ export class SessionBroker extends EventEmitter {
 
   private async acquire(turn: QueuedTurn): Promise<void> {
     const session = this.session(turn.sessionId);
-    if (!session || !this.runtime?.executablePath || !this.runtime.credentialPath) return;
+    if (!session || !this.runtime?.executablePath) return;
+    const lane = this.options.conversationState?.lane(turn.laneId);
+    const providerKind = lane?.providerKind ?? "claude-3p";
+    if (providerKind === "claude-official") {
+      await this.failQueuedTurn(turn, "Claude 官方通道为只读，请升级 Bridge 并在 Claude 官方继续");
+      return;
+    }
+    if (providerKind === "claude-3p" && !this.runtime.credentialPath) return;
     const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
     const state = this.runtimeStates.get(turn.sessionId) ?? {
       ownership: "DESKTOP_OBSERVED" as const,
       turnState: "idle" as const,
     };
     this.runtimeStates.set(turn.sessionId, state);
-    if (this.hasConfirmedOwnershipConflict(turn.sessionId, state)) {
+    if (providerKind === "claude-3p" && this.hasConfirmedOwnershipConflict(turn.sessionId, state)) {
       await this.containOwnershipConflict(turn.sessionId, observed?.activeProcesses ?? []);
       return;
     }
     const externalWriteVersion = this.options.observer.externalWriteVersion(turn.sessionId);
-    if (!await this.options.observer.canStartBridgeHost(turn.sessionId)) {
+    if (
+      providerKind === "claude-3p" &&
+      !await this.options.observer.canStartBridgeHost(turn.sessionId)
+    ) {
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = "queued";
       await this.recordOwnership(turn.sessionId, state.ownership);
       this.scheduleTakeoverRetry(turn.sessionId);
       return;
     }
-    if (!state.host) state.externalWriteVersion = externalWriteVersion;
+    if (!state.host && providerKind === "claude-3p") state.externalWriteVersion = externalWriteVersion;
     if (state.releaseTimer) {
       clearTimeout(state.releaseTimer);
       delete state.releaseTimer;
     }
-    const liveWriters = (await this.sessionProcessScanner(this.options.paths, turn.sessionId))
-      .filter((candidate) => candidate.processAlive);
+    const liveWriters = providerKind === "claude-3p"
+      ? (await this.sessionProcessScanner(this.options.paths, turn.sessionId))
+          .filter((candidate) => candidate.processAlive)
+      : [];
     const desktopWriter = liveWriters.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
     const foreignBridgeWriter = (
       !state.host &&
@@ -1494,10 +1620,13 @@ export class SessionBroker extends EventEmitter {
       return;
     }
     try {
-      await this.assertBridgeHostCompatible(session, state.host);
+      if (providerKind === "claude-3p") {
+        await this.assertBridgeHostCompatible(session, state.host);
+      }
     } catch (error) {
       const incompatibleHost = state.host;
       delete state.host;
+      delete state.hostLaneId;
       await incompatibleHost?.close().catch(() => undefined);
       state.ownership = observed ? "DESKTOP_OBSERVED" : "BRIDGE_IDLE";
       state.turnState = "idle";
@@ -1508,14 +1637,20 @@ export class SessionBroker extends EventEmitter {
     let accepted: ReturnType<SessionHostRuntime["send"]>;
     let evidenceId: string | undefined;
     try {
-      const host = await this.ensureHost(turn.sessionId);
-      await this.applyHostConfiguration(host, this.effectiveProfile(turn.sessionId, session.cwd));
+      const host = await this.ensureHost(turn.sessionId, turn.laneId);
+      const effective = this.effectiveProfile(turn.sessionId, session.cwd);
+      await this.applyHostConfiguration(host, {
+        ...effective,
+        ...(lane?.model ? { model: lane.model, ultracode: false } : {}),
+      });
       delete state.configurationPending;
       if (this.options.evidence) {
         evidenceId = await this.evidenceCall(() => this.options.evidence!.startBridgeTurn({
           sessionId: turn.sessionId,
           cwd: session.cwd,
           commandId: turn.commandId,
+          laneId: turn.laneId,
+          ...(lane ? { providerProfileId: lane.providerProfileId } : {}),
           startedAt: Date.now(),
         }));
       }
@@ -1535,6 +1670,7 @@ export class SessionBroker extends EventEmitter {
       }
       await state.host?.close().catch(() => undefined);
       delete state.host;
+      delete state.hostLaneId;
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = "queued";
       turn.attempts += 1;
@@ -1549,7 +1685,9 @@ export class SessionBroker extends EventEmitter {
           retrying: turn.attempts < 5,
         },
       });
-      if (turn.attempts < 5) setTimeout(() => void this.pump(), 3_000);
+      if (turn.mode === "handoff") {
+        await this.failQueuedTurn(turn, error instanceof Error ? error.message : String(error));
+      } else if (turn.attempts < 5) setTimeout(() => void this.pump(), 3_000);
       else await this.failQueuedTurn(turn, error instanceof Error ? error.message : String(error));
       return;
     }
@@ -1567,33 +1705,49 @@ export class SessionBroker extends EventEmitter {
     this.emit("changed");
   }
 
-  private async ensureHost(sessionId: string): Promise<SessionHostRuntime> {
-    const existing = this.runtimeStates.get(sessionId)?.host;
-    if (existing) return existing;
-    const starting = this.hostStarts.get(sessionId);
+  private async ensureHost(sessionId: string, laneId: string): Promise<SessionHostRuntime> {
+    const state = this.runtimeStates.get(sessionId);
+    const existing = state?.host;
+    if (existing && state.hostLaneId === laneId) return existing;
+    if (existing) {
+      await existing.close().catch(() => undefined);
+      delete state.host;
+      delete state.hostLaneId;
+    }
+    const starting = this.hostStarts.get(laneId);
     if (starting) return starting;
-    const promise = this.createHost(sessionId);
-    this.hostStarts.set(sessionId, promise);
+    const promise = this.createHost(sessionId, laneId);
+    this.hostStarts.set(laneId, promise);
     try {
       return await promise;
     } finally {
-      this.hostStarts.delete(sessionId);
+      this.hostStarts.delete(laneId);
     }
   }
 
-  private async createHost(sessionId: string): Promise<SessionHostRuntime> {
+  private async createHost(sessionId: string, laneId: string): Promise<SessionHostRuntime> {
     const session = this.session(sessionId);
     if (!session) throw new Error("Session not found");
-    if (!this.runtime?.executablePath || !this.runtime.credentialPath) {
+    if (!this.runtime?.executablePath) {
       throw new Error("Claude Host runtime is unavailable");
+    }
+    const lane = this.options.conversationState?.lane(laneId);
+    if (this.options.conversationState && (!lane || lane.conversationId !== sessionId)) {
+      throw new Error("Conversation lane is invalid");
+    }
+    const providerKind = lane?.providerKind ?? "claude-3p";
+    if (providerKind === "claude-3p" && !this.runtime.credentialPath) {
+      throw new Error("Claude-3p Host Credentials are unavailable");
     }
     const state = this.runtimeStates.get(sessionId) ?? {
       ownership: "DESKTOP_OBSERVED" as const,
       turnState: "idle" as const,
     };
     this.runtimeStates.set(sessionId, state);
-    if (state.host) return state.host;
-    state.externalWriteVersion ??= this.options.observer.externalWriteVersion(sessionId);
+    if (state.host && state.hostLaneId === laneId) return state.host;
+    if (providerKind === "claude-3p") {
+      state.externalWriteVersion ??= this.options.observer.externalWriteVersion(sessionId);
+    }
     if (state.releaseTimer) {
       clearTimeout(state.releaseTimer);
       delete state.releaseTimer;
@@ -1601,14 +1755,28 @@ export class SessionBroker extends EventEmitter {
     state.ownership = "ACQUIRING";
     await this.recordOwnership(sessionId, state.ownership);
     try {
-      const transcript = await findClaudeTranscriptFile(this.options.paths.projects, sessionId, session.cwd);
+      const plan = lane && this.options.runtimePool
+        ? await this.options.runtimePool.hostPlan(sessionId, lane, this.runtime)
+        : {
+            logicalSessionId: sessionId,
+            nativeSessionId: sessionId,
+            executablePath: this.runtime.executablePath,
+            environment: this.runtime.environment,
+            providerKind: "claude-3p" as const,
+          };
+      const transcript = await findClaudeTranscriptFile(
+        this.options.paths.projects,
+        plan.nativeSessionId,
+        session.cwd,
+      );
       const profile = this.effectiveProfile(sessionId, session.cwd);
-      const hostModel = this.modelForHost(profile);
+      const hostModel = lane?.model ?? this.modelForHost(profile);
       const host = this.hostFactory({
-        sessionId,
+        sessionId: plan.nativeSessionId,
+        eventSessionId: sessionId,
         cwd: session.cwd,
-        executablePath: this.runtime.executablePath,
-        environment: this.runtime.environment,
+        executablePath: plan.executablePath,
+        environment: plan.environment,
         permissionBroker: this.permissionBroker,
         resume: Boolean(transcript),
         ...(hostModel ? { model: hostModel } : {}),
@@ -1620,6 +1788,7 @@ export class SessionBroker extends EventEmitter {
           .then(() => this.handleHostEvent(event));
       });
       state.host = host;
+      state.hostLaneId = laneId;
       state.ownership = "BRIDGE_IDLE";
       state.turnState = "idle";
       await this.recordOwnership(sessionId, state.ownership);
@@ -1628,6 +1797,7 @@ export class SessionBroker extends EventEmitter {
     } catch (error) {
       await state.host?.close().catch(() => undefined);
       delete state.host;
+      delete state.hostLaneId;
       state.ownership = this.catalog.sessions.some((candidate) => candidate.sessionId === sessionId)
         ? "DESKTOP_OBSERVED"
         : "BRIDGE_IDLE";
@@ -2150,6 +2320,7 @@ export class SessionBroker extends EventEmitter {
         : undefined;
       const shouldRetry = event.type === "runtime.error"
         && Boolean(state?.active)
+        && state?.active?.mode !== "handoff"
         && !state?.active?.sessionAcceptedAt
         && this.transientRuntimeError(event.error)
         && (state?.active?.attempts ?? 0) < 5;
@@ -2335,6 +2506,7 @@ export class SessionBroker extends EventEmitter {
     const host = state.host;
     delete state.active;
     delete state.host;
+    delete state.hostLaneId;
     turn.state = "queued";
     delete turn.turnId;
     delete turn.sessionAcceptedAt;
@@ -2388,6 +2560,7 @@ export class SessionBroker extends EventEmitter {
     await this.recordOwnership(sessionId, state.ownership);
     await state.host.close();
     delete state.host;
+    delete state.hostLaneId;
     delete state.releaseTimer;
     state.ownership = this.catalog.sessions.some((session) => session.sessionId === sessionId)
       ? "DESKTOP_OBSERVED"
@@ -2406,7 +2579,7 @@ export class SessionBroker extends EventEmitter {
 
   private async pumpOnce(): Promise<void> {
     if (this.closed || !this.initialized) return;
-    if (!this.managedTransport?.ready && (!this.runtime?.executablePath || !this.runtime.credentialPath)) {
+    if (!this.managedTransport?.ready && !this.runtime?.executablePath) {
       await this.refreshRuntime();
     }
     this.sortPending();
@@ -2421,17 +2594,27 @@ export class SessionBroker extends EventEmitter {
         this.takeoverRetryTimers.has(turn.sessionId)
       );
       if (state?.active || conflictSettling) continue;
+      const lane = this.options.conversationState?.lane(turn.laneId);
+      const providerKind = lane?.providerKind ?? "claude-3p";
       const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
-      if (this.hasConfirmedOwnershipConflict(turn.sessionId, state)) {
+      if (providerKind === "claude-3p" && this.hasConfirmedOwnershipConflict(turn.sessionId, state)) {
         await this.containOwnershipConflict(turn.sessionId, observed?.activeProcesses ?? []);
         continue;
       }
       const fallbackConfirmed = Boolean(this.bridgeSessions.get(turn.sessionId)?.fallbackConfirmedAt);
-      if (this.managedTransport?.ready && !fallbackConfirmed) {
+      if (
+        turn.mode !== "handoff" &&
+        providerKind === "claude-3p" &&
+        this.managedTransport?.ready &&
+        !fallbackConfirmed
+      ) {
         await this.acquireManaged(turn);
         continue;
       }
-      if (!await this.options.observer.canStartBridgeHost(turn.sessionId)) {
+      if (
+        providerKind === "claude-3p" &&
+        !await this.options.observer.canStartBridgeHost(turn.sessionId)
+      ) {
         const waiting = state ?? {
           ownership: "DESKTOP_OBSERVED" as const,
           turnState: "queued" as const,
@@ -2443,7 +2626,10 @@ export class SessionBroker extends EventEmitter {
         continue;
       }
       this.clearTakeoverRetry(turn.sessionId);
-      if (!this.runtime?.executablePath || !this.runtime.credentialPath) continue;
+      if (
+        !this.runtime?.executablePath ||
+        (providerKind === "claude-3p" && !this.runtime.credentialPath)
+      ) continue;
       await this.acquire(turn);
     }
     this.emit("changed");
@@ -2545,6 +2731,7 @@ export class SessionBroker extends EventEmitter {
       delete state.releaseTimer;
     }
     delete state.host;
+    delete state.hostLaneId;
     state.ownership = "OWNERSHIP_CONFLICT";
     state.turnState = active?.transport === "bridge-host"
       || this.pending.some((turn) => turn.sessionId === sessionId && turn.state === "queued")
@@ -2691,7 +2878,7 @@ export class SessionBroker extends EventEmitter {
         throw new Error("Unsupported Bridge queue file");
       }
       for (const turn of parsed.pending) {
-        const state = turn.state === "uncertain" || (
+        const state = turn.mode === "handoff" || turn.state === "uncertain" || (
           turn.state === "running" && turn.transport === "claude-desktop-managed"
         )
           ? "uncertain"
@@ -2718,7 +2905,7 @@ export class SessionBroker extends EventEmitter {
           }
         }
         this.pending.push(restored);
-        if (state === "uncertain" && restored.mode !== "steer") {
+        if (state === "uncertain" && restored.mode !== "steer" && restored.mode !== "handoff") {
           this.runtimeStates.set(restored.sessionId, {
             ownership: "DESKTOP_MANAGED_RUNNING",
             turnState: "waiting",
@@ -2757,6 +2944,7 @@ export class SessionBroker extends EventEmitter {
       const blocked = !observedIds.has(turn.sessionId) && !this.bridgeSessions.has(turn.sessionId);
       turn.recoveryBlocked = blocked;
       if (!blocked || turn.state !== "uncertain") continue;
+      if (turn.mode === "handoff") continue;
       if (turn.mode !== "steer") this.activeTurns = Math.max(0, this.activeTurns - 1);
       turn.state = "queued";
       this.runtimeStates.delete(turn.sessionId);
@@ -2821,7 +3009,7 @@ export class SessionBroker extends EventEmitter {
     terminalTurns: TerminalTurnReceipt[],
   ): Promise<void> {
     for (const turn of pending) {
-      const state = turn.state === "uncertain" || (
+      const state = turn.mode === "handoff" || turn.state === "uncertain" || (
         turn.state === "running" && turn.transport === "claude-desktop-managed"
       )
         ? "uncertain"
@@ -2846,7 +3034,7 @@ export class SessionBroker extends EventEmitter {
         }
       }
       this.pending.push(restored);
-      if (state === "uncertain" && restored.mode !== "steer") {
+      if (state === "uncertain" && restored.mode !== "steer" && restored.mode !== "handoff") {
         this.runtimeStates.set(restored.sessionId, {
           ownership: "DESKTOP_MANAGED_RUNNING",
           turnState: "waiting",

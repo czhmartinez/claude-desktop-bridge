@@ -35,6 +35,9 @@ import {
   loadDesktopPeerConnection,
 } from "./webrtc-runtime.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
+import { ProviderRegistry } from "./provider-registry.js";
+import { ProviderRuntimePool } from "./provider-runtime-pool.js";
+import { HandoffService } from "./handoff-service.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -134,6 +137,25 @@ async function desktopMain(): Promise<void> {
   const observer = new TranscriptObserver({ paths: runtimePaths, eventLog, evidence });
   await observer.start();
   const desktopRegistrar = new ClaudeDesktopSessionRegistrar({ paths: runtimePaths });
+  let runtimeStatus = (): ReturnType<SessionBroker["runtimeStatus"]> => ({
+    state: "unavailable",
+    detail: "Claude-3p 运行时尚未初始化。",
+    activeTurns: 0,
+    maxParallelTurns: 2,
+    desktopIntegration: {
+      state: "not-managed",
+      detail: "尚未初始化。",
+      enabled: false,
+      canRestart: process.platform === "darwin",
+    },
+  });
+  const providers = new ProviderRegistry({
+    state: conversationState,
+    apiKeyPath: join(userDataPath, "anthropic-api-key-v1.json"),
+    safeStorage,
+    claude3pStatus: () => runtimeStatus(),
+  });
+  const runtimePool = new ProviderRuntimePool(providers);
   const broker = new SessionBroker({
     paths: runtimePaths,
     eventLog,
@@ -141,8 +163,21 @@ async function desktopMain(): Promise<void> {
     sessionsPath: join(userDataPath, "sessions-v2.json"),
     queuePath: join(userDataPath, "turn-queue-v2.json"),
     conversationState,
+    runtimePool,
     evidence,
     desktopRegistrar,
+  });
+  runtimeStatus = () => broker.runtimeStatus();
+  const handoffs = new HandoffService({
+    state: conversationState,
+    broker,
+    eventLog,
+    evidence,
+    providers,
+    runtimePool,
+    observer,
+    paths: runtimePaths,
+    openExternal: (url) => shell.openExternal(url),
   });
   const claudeDesktop = new ClaudeDesktopLifecycle();
   let RTCPeerConnectionImpl: typeof RTCPeerConnection | undefined;
@@ -165,6 +200,8 @@ async function desktopMain(): Promise<void> {
     evidence,
     claudeDesktop,
     RTCPeerConnectionImpl,
+    providers,
+    handoffs,
   );
 
   let mainWindow: BrowserWindow | undefined;
@@ -197,6 +234,8 @@ async function desktopMain(): Promise<void> {
   handle("bridge:create-pairing", () => controller.createPairing());
   handle("bridge:revoke-device", (deviceId: string) => controller.revokeDevice(deviceId));
   handle("bridge:set-launch-at-login", (enabled: boolean) => controller.setLaunchAtLogin(Boolean(enabled)));
+  handle("bridge:set-anthropic-api-key", (value: string) => controller.setAnthropicApiKey(value));
+  handle("bridge:remove-anthropic-api-key", () => controller.removeAnthropicApiKey());
   handle("bridge:launch-claude-desktop", () => controller.launchClaudeDesktop());
   handle("bridge:quit-claude-desktop", async () => {
     const snapshot = await controller.snapshot();

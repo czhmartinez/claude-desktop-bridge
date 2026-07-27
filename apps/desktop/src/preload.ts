@@ -11,6 +11,12 @@ contextBridge.exposeInMainWorld("bridgeDesktop", {
   setLaunchAtLogin: (enabled: boolean) => (
     ipcRenderer.invoke("bridge:set-launch-at-login", enabled) as Promise<DesktopControlSnapshot>
   ),
+  setAnthropicApiKey: (value: string) => (
+    ipcRenderer.invoke("bridge:set-anthropic-api-key", value) as Promise<DesktopControlSnapshot>
+  ),
+  removeAnthropicApiKey: () => (
+    ipcRenderer.invoke("bridge:remove-anthropic-api-key") as Promise<DesktopControlSnapshot>
+  ),
   launchClaudeDesktop: () => (
     ipcRenderer.invoke("bridge:launch-claude-desktop") as Promise<DesktopControlSnapshot>
   ),

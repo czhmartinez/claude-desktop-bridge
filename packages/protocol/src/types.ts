@@ -534,6 +534,7 @@ export interface BridgeHostSnapshot {
   transport?: BridgeConnectionStatus;
   claudeDesktop?: ClaudeDesktopAppStatus;
   permissions: BridgePermissionInfo[];
+  providers?: BridgeProviderProfile[];
   latestSeq: number;
 }
 

@@ -40,6 +40,8 @@ import type { EvidenceManager } from "./evidence-manager.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
+import type { ProviderRegistry } from "./provider-registry.js";
+import type { HandoffService } from "./handoff-service.js";
 
 export interface LocalBridgeRequest {
   method: BridgeRequest["method"];
@@ -200,6 +202,8 @@ export class DesktopController extends EventEmitter {
     private readonly evidence: EvidenceManager,
     private readonly claudeDesktop: ClaudeDesktopLifecycle,
     private readonly RTCPeerConnectionImpl?: typeof RTCPeerConnection,
+    private readonly providers?: ProviderRegistry,
+    private readonly handoffs?: HandoffService,
   ) {
     super();
   }
@@ -232,6 +236,18 @@ export class DesktopController extends EventEmitter {
     });
     this.broker.on("changed", () => void this.publish());
     await this.broker.initialize();
+    if (this.providers) {
+      this.providers.on("updated", (profile) => {
+        void this.eventLog.append({
+          origin: "system",
+          type: "provider.updated",
+          data: { profile },
+        });
+        void this.publish();
+      });
+      await this.providers.initialize();
+    }
+    await this.handoffs?.initialize();
     await this.connect();
     if (!this.config.devices.some((device) => (
       !device.revokedAt && (Boolean(device.pairedAt) || device.expiresAt > Date.now())
@@ -254,7 +270,14 @@ export class DesktopController extends EventEmitter {
         online: this.connection === "connected",
         lastSeenAt: this.lastSeenAt,
         version: this.app.getVersion(),
-        capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1"],
+        capabilities: [
+          "evidence.v1",
+          "artifact.preview.v1",
+          "artifact.transfer.v1",
+          "provider.profile.v1",
+          "conversation.lanes.v1",
+          "conversation.handoff.v1",
+        ],
       },
       projects: this.broker.listProjects(),
       sessions: this.broker.listSessions(),
@@ -282,6 +305,7 @@ export class DesktopController extends EventEmitter {
         ...(request.description ? { description: request.description } : {}),
         canAllowAlways: request.suggestions.some((suggestion) => suggestion.destination === "localSettings"),
       })),
+      ...(this.providers ? { providers: this.providers.list() } : {}),
       latestSeq: this.eventLog.latestSeq(),
       connection: this.connection,
       launchAtLogin: this.config.launchAtLogin,
@@ -324,6 +348,18 @@ export class DesktopController extends EventEmitter {
     await this.repository.save(this.config);
     this.registerPendingDevices();
     return this.publish();
+  }
+
+  async setAnthropicApiKey(value: string): Promise<DesktopControlSnapshot> {
+    if (!this.providers) throw new Error("Provider registry is unavailable");
+    await this.providers.setAnthropicApiKey(value);
+    return this.snapshot();
+  }
+
+  async removeAnthropicApiKey(): Promise<DesktopControlSnapshot> {
+    if (!this.providers) throw new Error("Provider registry is unavailable");
+    await this.providers.removeAnthropicApiKey();
+    return this.snapshot();
   }
 
   async revokeDevice(deviceId: string): Promise<DesktopControlSnapshot> {
@@ -413,6 +449,7 @@ export class DesktopController extends EventEmitter {
 
   close(): void {
     this.socket?.close();
+    this.handoffs?.close();
   }
 
   pauseForSleep(): void {
@@ -597,6 +634,48 @@ export class DesktopController extends EventEmitter {
       return { claudeDesktop: (await this.quitClaudeDesktop()).claudeDesktop };
     }
     if (request.method === "project.list") return { projects: this.broker.listProjects() };
+    if (request.method === "provider.list") {
+      if (!this.providers) throw new Error("Provider registry is unavailable");
+      return { providers: this.providers.list() };
+    }
+    if (request.method === "provider.refresh") {
+      if (!this.providers) throw new Error("Provider registry is unavailable");
+      return {
+        providers: await this.providers.refresh(stringParam(params, "profileId", false)),
+      };
+    }
+    if (request.method === "conversation.route.get") {
+      return {
+        route: this.broker.conversationRoute(stringParam(params, "sessionId")!),
+      };
+    }
+    if (request.method === "conversation.switch.preview") {
+      if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      const model = stringParam(params, "model", false);
+      return this.handoffs.preview({
+        sessionId: stringParam(params, "sessionId")!,
+        targetProviderProfileId: stringParam(params, "targetProviderProfileId")!,
+        ...(model ? { model } : {}),
+      });
+    }
+    if (request.method === "conversation.switch.commit") {
+      if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      const targetNativeSessionId = stringParam(params, "targetNativeSessionId", false);
+      const model = stringParam(params, "model", false);
+      return this.handoffs.commit({
+        handoffId: stringParam(params, "handoffId")!,
+        ...(targetNativeSessionId ? { targetNativeSessionId } : {}),
+        ...(model ? { model } : {}),
+      });
+    }
+    if (request.method === "conversation.switch.cancel") {
+      if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      return this.handoffs.cancel(stringParam(params, "handoffId")!);
+    }
+    if (request.method === "handoff.get") {
+      if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      return { handoff: this.handoffs.get(stringParam(params, "handoffId")!) };
+    }
     if (request.method === "session.list") {
       return {
         sessions: this.broker.listSessions(

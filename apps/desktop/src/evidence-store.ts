@@ -55,6 +55,10 @@ function bundleFromRow(row: SqlRow): BridgeEvidenceBundle {
     id: String(row.id),
     sessionId: String(row.session_id),
     ...(row.turn_id !== null ? { turnId: String(row.turn_id) } : {}),
+    ...(row.lane_id !== undefined && row.lane_id !== null ? { laneId: String(row.lane_id) } : {}),
+    ...(row.provider_profile_id !== undefined && row.provider_profile_id !== null
+      ? { providerProfileId: String(row.provider_profile_id) }
+      : {}),
     source: String(row.source) as BridgeEvidenceBundle["source"],
     confidence: String(row.confidence) as BridgeEvidenceBundle["confidence"],
     state: String(row.state) as BridgeEvidenceBundle["state"],
@@ -165,6 +169,16 @@ export class EvidenceStore {
         last_accessed_at INTEGER NOT NULL
       ) STRICT;
     `);
+    const bundleColumns = new Set(
+      (database.prepare("PRAGMA table_info(evidence_bundles)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!bundleColumns.has("lane_id")) {
+      database.exec("ALTER TABLE evidence_bundles ADD COLUMN lane_id TEXT");
+    }
+    if (!bundleColumns.has("provider_profile_id")) {
+      database.exec("ALTER TABLE evidence_bundles ADD COLUMN provider_profile_id TEXT");
+    }
     database.prepare(`
       INSERT INTO evidence_meta(key, value) VALUES ('version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -181,13 +195,16 @@ export class EvidenceStore {
   saveBundle(bundle: BridgeEvidenceBundle): void {
     this.db.prepare(`
       INSERT INTO evidence_bundles(
-        id, session_id, turn_id, source, confidence, state, started_at,
+        id, session_id, turn_id, lane_id, provider_profile_id,
+        source, confidence, state, started_at,
         completed_at, tool_count, change_count, artifact_count,
         tools_json, warnings_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         session_id = excluded.session_id,
         turn_id = excluded.turn_id,
+        lane_id = excluded.lane_id,
+        provider_profile_id = excluded.provider_profile_id,
         source = excluded.source,
         confidence = excluded.confidence,
         state = excluded.state,
@@ -203,6 +220,8 @@ export class EvidenceStore {
       bundle.id,
       bundle.sessionId,
       bundle.turnId ?? null,
+      bundle.laneId ?? null,
+      bundle.providerProfileId ?? null,
       bundle.source,
       bundle.confidence,
       bundle.state,

@@ -45,6 +45,7 @@ export type SessionHostEvent =
 
 export interface ClaudeSessionHostOptions {
   sessionId: string;
+  eventSessionId?: string;
   cwd: string;
   executablePath: string;
   environment: NodeJS.ProcessEnv;
@@ -117,6 +118,7 @@ export class ClaudeSessionHost extends EventEmitter {
   private retiring = false;
   private hasStartedQuery = false;
   private sessionIdValue: string;
+  private readonly eventSessionId: string;
   private currentTurnId: string | undefined;
   private modelValue: string | undefined;
   private effortValue: ClaudeSessionEffort | undefined;
@@ -126,6 +128,7 @@ export class ClaudeSessionHost extends EventEmitter {
     super();
     this.queryFactory = options.queryFactory ?? createQuery;
     this.sessionIdValue = options.sessionId;
+    this.eventSessionId = options.eventSessionId ?? options.sessionId;
     this.modelValue = options.model;
     this.effortValue = options.effort;
   }
@@ -151,7 +154,7 @@ export class ClaudeSessionHost extends EventEmitter {
     if (this.retiring) throw new Error("Session host is retiring its previous writer");
     if (this.streamTask) return;
     const canUseTool: CanUseTool = async (toolName, input, context) => (
-      this.options.permissionBroker.request(this.sessionIdValue, toolName, input, {
+      this.options.permissionBroker.request(this.eventSessionId, toolName, input, {
         signal: context.signal,
         toolUseId: context.toolUseID,
         ...(context.suggestions ? { suggestions: context.suggestions } : {}),
@@ -311,7 +314,7 @@ export class ClaudeSessionHost extends EventEmitter {
     this.closed = true;
     this.input.close();
     this.pendingTurns.length = 0;
-    this.options.permissionBroker.cancelSession(this.sessionIdValue);
+    this.options.permissionBroker.cancelSession(this.eventSessionId);
     this.queryProcess?.close();
     await this.streamTask?.catch(() => undefined);
     this.emitEvent({ type: "runtime.stopped", sessionId: this.sessionIdValue, at: Date.now() });
@@ -515,6 +518,8 @@ export class ClaudeSessionHost extends EventEmitter {
   }
 
   private emitEvent(event: SessionHostEvent): void {
-    this.emit("event", event);
+    this.emit("event", event.sessionId === this.eventSessionId
+      ? event
+      : { ...event, sessionId: this.eventSessionId });
   }
 }
