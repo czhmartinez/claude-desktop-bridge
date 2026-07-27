@@ -256,3 +256,107 @@ describe("mergeBridgeEvents", () => {
     });
   });
 });
+
+describe("provider route events", () => {
+  it("updates provider status and the logical session route without replacing the session", () => {
+    const snapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.5.0",
+        capabilities: ["provider.profile.v1", "conversation.handoff.v1"],
+      },
+      projects: [],
+      sessions: [{
+        sessionId: "session-1",
+        projectId: "project-1",
+        projectName: "project",
+        cwd: "/tmp/project",
+        title: "Session",
+        source: "bridge",
+        transport: "bridge-host",
+        ownership: "BRIDGE_IDLE",
+        turnState: "idle",
+        lastActivityAt: 1,
+        pendingCount: 0,
+      }],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 1,
+    } as BridgeHostSnapshot;
+    const providerUpdated: BridgeEvent = {
+      eventId: "provider-updated",
+      seq: 2,
+      timestamp: 2,
+      origin: "system",
+      type: "provider.updated",
+      data: {
+        profile: {
+          id: "anthropic-api",
+          kind: "anthropic-api",
+          name: "Anthropic API",
+          status: "ready",
+          detail: "Ready",
+          configured: true,
+          localOnlyConfiguration: true,
+          readOnly: false,
+          models: [],
+        },
+      },
+    };
+    const withProvider = applyEventToSnapshot(snapshot, providerUpdated, []);
+    expect(withProvider?.providers?.[0]).toMatchObject({
+      id: "anthropic-api",
+      status: "ready",
+    });
+
+    const routeChanged: BridgeEvent = {
+      eventId: "route-changed",
+      seq: 3,
+      timestamp: 3,
+      origin: "system",
+      type: "conversation.route.changed",
+      sessionId: "session-1",
+      data: {
+        route: {
+          conversationId: "session-1",
+          activeLaneId: "lane-1",
+          activeProviderProfileId: "anthropic-api",
+          state: "ready",
+          lanes: [],
+          allowedActions: {
+            canSend: true,
+            canSteer: true,
+            canInterrupt: true,
+            canSwitchProvider: true,
+            canContinueOfficial: false,
+            canConfigure: true,
+          },
+        },
+      },
+    };
+    expect(applyEventToSnapshot(withProvider, routeChanged, [])?.sessions[0]).toMatchObject({
+      sessionId: "session-1",
+      activeLaneId: "lane-1",
+      activeProviderProfileId: "anthropic-api",
+      routeState: "ready",
+      allowedActions: { canSend: true },
+    });
+  });
+});

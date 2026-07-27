@@ -387,6 +387,7 @@ export interface BridgeSessionInfo {
   activeProviderProfileId?: string;
   routeState?: BridgeRouteState;
   allowedActions?: BridgeSessionAllowedActions;
+  pendingHandoff?: BridgeHandoff;
 }
 
 export interface BridgeModelInfo {

@@ -98,6 +98,10 @@ export function App() {
       onCreateSession={mobile.createSession}
       onLoadSessionConfiguration={mobile.loadSessionConfiguration}
       onConfigureSession={mobile.configureSession}
+      onPreviewProviderSwitch={mobile.previewProviderSwitch}
+      onCommitProviderSwitch={mobile.commitProviderSwitch}
+      onCancelProviderSwitch={mobile.cancelProviderSwitch}
+      onRefreshProviders={mobile.refreshProviders}
       onClaudeDesktopLaunch={mobile.launchClaudeDesktop}
       onClaudeDesktopQuit={mobile.quitClaudeDesktop}
       onRefresh={mobile.refresh}

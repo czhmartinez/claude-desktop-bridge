@@ -2,6 +2,7 @@ import type {
   BridgeEvent,
   BridgeEvidenceBundle,
   BridgeHistoryItem,
+  BridgeHostSnapshot,
   BridgePermissionInfo,
   BridgeSessionInfo,
 } from "@bridge/protocol";
@@ -13,6 +14,8 @@ import {
   ownershipLabel,
   permissionPresentation,
   stoppableBridgeTask,
+  supportsProviderSwitching,
+  usesOfficialComposer,
 } from "./MobileWorkspace.js";
 
 function evidence(
@@ -145,6 +148,51 @@ describe("canStopBridgeTask", () => {
 
     expect(stoppableBridgeTask([native, recovered], native.sessionId)?.sessionId)
       .toBe(recovered.sessionId);
+  });
+});
+
+describe("provider switching presentation", () => {
+  const session: BridgeSessionInfo = {
+    sessionId: "session-1",
+    projectId: "project-1",
+    projectName: "Project",
+    cwd: "/tmp/project",
+    title: "Task",
+    source: "bridge",
+    ownership: "BRIDGE_IDLE",
+    transport: "bridge-host",
+    turnState: "idle",
+    lastActivityAt: 1,
+    pendingCount: 0,
+    activeProviderProfileId: "claude-official",
+  };
+
+  it("keeps provider controls hidden when a V0.4 host has no capability", () => {
+    const legacy = {
+      host: { capabilities: [] },
+    } as unknown as BridgeHostSnapshot;
+    const current = {
+      host: {
+        capabilities: ["provider.profile.v1", "conversation.handoff.v1"],
+      },
+    } as unknown as BridgeHostSnapshot;
+
+    expect(supportsProviderSwitching(legacy)).toBe(false);
+    expect(supportsProviderSwitching(current)).toBe(true);
+  });
+
+  it("replaces the writable composer for a Claude official lane", () => {
+    expect(usesOfficialComposer(session, [{
+      id: "claude-official",
+      kind: "claude-official",
+      name: "Claude 官方",
+      status: "ready",
+      detail: "Read-only",
+      configured: true,
+      localOnlyConfiguration: false,
+      readOnly: true,
+      models: [],
+    }])).toBe(true);
   });
 });
 

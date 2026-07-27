@@ -693,6 +693,7 @@ export class SessionBroker extends EventEmitter {
           activeProviderProfileId: route.activeProviderProfileId,
           routeState: route.state,
           allowedActions: route.allowedActions,
+          ...(route.pendingHandoff ? { pendingHandoff: route.pendingHandoff } : {}),
         } : {}),
       };
       if (projectId && item.projectId !== projectId) continue;

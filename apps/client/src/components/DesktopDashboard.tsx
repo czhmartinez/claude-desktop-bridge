@@ -6,6 +6,7 @@ import type {
   BridgeEvidencePage,
   BridgeEvent,
   BridgeHistoryPage,
+  BridgeProviderProfile,
   BridgeResponse,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
@@ -13,6 +14,7 @@ import type {
 } from "@bridge/protocol";
 import {
   AlertTriangle,
+  ArrowRightLeft,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
@@ -59,6 +61,12 @@ import {
   PermissionPrompt,
   stoppableBridgeTask,
 } from "./MobileWorkspace.js";
+import {
+  ProviderSwitchDialog,
+  providerName,
+  type ProviderSwitchPreview,
+  type ProviderSwitchResult,
+} from "./ProviderSwitchDialog.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -129,12 +137,18 @@ function DesktopSessions({
   apiRequest,
   onClaudeDesktopLaunch,
   onClaudeDesktopQuit,
+  onSetAnthropicApiKey,
+  onRemoveAnthropicApiKey,
+  onRefreshSnapshot,
 }: {
   snapshot: DesktopControlSnapshot;
   events: BridgeEvent[];
   apiRequest(request: LocalBridgeRequest): Promise<BridgeResponse>;
   onClaudeDesktopLaunch(): Promise<DesktopControlSnapshot>;
   onClaudeDesktopQuit(): Promise<DesktopControlSnapshot>;
+  onSetAnthropicApiKey(value: string): Promise<void>;
+  onRemoveAnthropicApiKey(): Promise<void>;
+  onRefreshSnapshot(): Promise<void>;
 }) {
   const [selectedId, setSelectedId] = useState(snapshot.sessions[0]?.sessionId);
   const [history, setHistory] = useState<Record<string, SessionHistoryState>>({});
@@ -152,12 +166,18 @@ function DesktopSessions({
   const [registrationError, setRegistrationError] = useState<string>();
   const [createOpen, setCreateOpen] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [providerOpen, setProviderOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
   const [title, setTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  const providers = snapshot.providers ?? [];
+  const providerSwitchingAvailable = snapshot.host.capabilities.includes("provider.profile.v1")
+    && snapshot.host.capabilities.includes("conversation.handoff.v1");
+  const activeProvider = providers.find((profile) => profile.id === selected?.activeProviderProfileId);
+  const officialActive = activeProvider?.kind === "claude-official";
   const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
   const bridgeRunning = selected?.turnState === "running" && (
     selected.ownership === "BRIDGE_RUNNING" ||
@@ -417,6 +437,51 @@ function DesktopSessions({
     }
   }
 
+  async function previewProviderSwitch(
+    targetProviderProfileId: string,
+    model?: string,
+  ): Promise<ProviderSwitchPreview> {
+    if (!selected) throw new Error("Session not found");
+    return unwrap<ProviderSwitchPreview>(await apiRequest({
+      method: "conversation.switch.preview",
+      params: {
+        sessionId: selected.sessionId,
+        targetProviderProfileId,
+        ...(model ? { model } : {}),
+      },
+    }));
+  }
+
+  async function commitProviderSwitch(
+    handoffId: string,
+    targetNativeSessionId?: string,
+    model?: string,
+  ): Promise<ProviderSwitchResult> {
+    return unwrap<ProviderSwitchResult>(await apiRequest({
+      method: "conversation.switch.commit",
+      params: {
+        handoffId,
+        ...(targetNativeSessionId ? { targetNativeSessionId } : {}),
+        ...(model ? { model } : {}),
+      },
+    }));
+  }
+
+  async function cancelProviderSwitch(handoffId: string): Promise<void> {
+    unwrap(await apiRequest({
+      method: "conversation.switch.cancel",
+      params: { handoffId },
+    }));
+  }
+
+  async function refreshProviders(): Promise<void> {
+    unwrap<{ providers: BridgeProviderProfile[] }>(await apiRequest({
+      method: "provider.refresh",
+      params: {},
+    }));
+    await onRefreshSnapshot();
+  }
+
   async function stopCurrentTask(): Promise<void> {
     if (!stopTarget || stoppingSessionId) return;
     setStoppingSessionId(stopTarget.sessionId);
@@ -598,7 +663,24 @@ function DesktopSessions({
                 <span>{selected.projectName} · {sessionState(selected)} · {transportLabel(selected)}</span>
               </div>
               <div className="desktop-conversation-heading-actions">
-                <button type="button" className="session-profile-trigger" aria-label="模型与 Effort" onClick={() => setConfigurationOpen(true)}>
+                {providerSwitchingAvailable && (
+                  <button
+                    type="button"
+                    className="session-provider-trigger"
+                    aria-label="切换执行提供方"
+                    onClick={() => setProviderOpen(true)}
+                  >
+                    <ArrowRightLeft size={15} />
+                    <span>{providerName(selected.activeProviderProfileId, providers)}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="session-profile-trigger"
+                  aria-label="模型与 Effort"
+                  disabled={selected.allowedActions?.canConfigure === false}
+                  onClick={() => setConfigurationOpen(true)}
+                >
                   <Settings2 size={15} />
                   <span>{sessionProfile(selected)}</span>
                 </button>
@@ -634,7 +716,27 @@ function DesktopSessions({
                 <span><strong>任务停止失败</strong>{stopError}</span>
               </div>
             )}
+            {providerSwitchingAvailable && selected.routeState && selected.routeState !== "ready" && (
+              <button
+                type="button"
+                className="desktop-channel-banner provider-route-banner"
+                onClick={() => setProviderOpen(true)}
+              >
+                <ArrowRightLeft size={18} />
+                <span>
+                  <strong>{selected.routeState === "awaiting-user-confirmation"
+                    ? "等待 Mac 确认"
+                    : selected.routeState === "awaiting-target-selection"
+                      ? "选择 Claude 官方会话"
+                      : selected.routeState === "failed"
+                        ? "提供方切换未完成"
+                        : "正在切换执行通道"}</strong>
+                  {selected.pendingHandoff?.summary ?? "原执行通道保持活动。"}
+                </span>
+              </button>
+            )}
             {selected.source === "bridge" &&
+              !officialActive &&
               selected.desktopRegistration &&
               selected.desktopRegistration.state !== "registered" && (
                 <div className={`desktop-channel-banner ${
@@ -745,6 +847,17 @@ function DesktopSessions({
             )}
             {sessionView === "conversation" && (
             <div className="desktop-composer">
+              {officialActive ? (
+                <button
+                  type="button"
+                  className="official-continue-button"
+                  onClick={() => void onClaudeDesktopLaunch()}
+                >
+                  <ArrowRightLeft size={18} />
+                  在 Claude 官方继续
+                </button>
+              ) : (
+              <>
               {attachments.length > 0 && (
                 <div className="composer-attachments">
                   {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={12} /></button></span>)}
@@ -758,17 +871,22 @@ function DesktopSessions({
               )}
               <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
                 <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp" onChange={(event) => void addImages(event.target.files)} />
-                <IconButton label="添加图片" onClick={() => fileRef.current?.click()}><ImagePlus size={19} /></IconButton>
+                <IconButton label="添加图片" disabled={selected.allowedActions?.canSend === false} onClick={() => fileRef.current?.click()}><ImagePlus size={19} /></IconButton>
                 <textarea
                   value={text}
                   onChange={(event) => setText(event.target.value)}
-                  placeholder={selected.source === "bridge"
-                    ? "在这个 Bridge 会话中继续"
-                    : "在这个 Claude Desktop 会话中继续"}
+                  disabled={selected.allowedActions?.canSend === false}
+                  placeholder={selected.allowedActions?.reason ?? (
+                    selected.source === "bridge"
+                      ? "在这个 Bridge 会话中继续"
+                      : "在这个 Claude Desktop 会话中继续"
+                  )}
                   rows={1}
                 />
-                <button type="submit" className="send-button" aria-label="发送" disabled={sending || (!text.trim() && attachments.length === 0)}><Send size={18} /></button>
+                <button type="submit" className="send-button" aria-label="发送" disabled={selected.allowedActions?.canSend === false || sending || (!text.trim() && attachments.length === 0)}><Send size={18} /></button>
               </form>
+              </>
+              )}
             </div>
             )}
           </>
@@ -793,6 +911,21 @@ function DesktopSessions({
           onLoad={loadConfiguration}
           onSave={saveConfiguration}
           onClose={() => setConfigurationOpen(false)}
+        />
+      )}
+      {providerOpen && selected && providerSwitchingAvailable && (
+        <ProviderSwitchDialog
+          session={selected}
+          profiles={providers}
+          desktopLocal
+          onPreview={previewProviderSwitch}
+          onCommit={commitProviderSwitch}
+          onCancel={cancelProviderSwitch}
+          onRefresh={refreshProviders}
+          onSetApiKey={onSetAnthropicApiKey}
+          onRemoveApiKey={onRemoveAnthropicApiKey}
+          onChanged={onRefreshSnapshot}
+          onClose={() => setProviderOpen(false)}
         />
       )}
     </section>
@@ -1042,6 +1175,15 @@ export function DesktopDashboard({ theme, onToggleTheme }: { theme: Theme; onTog
               const next = await api.quitClaudeDesktop();
               setSnapshot(next);
               return next;
+            }}
+            onSetAnthropicApiKey={async (value) => {
+              setSnapshot(await api.setAnthropicApiKey(value));
+            }}
+            onRemoveAnthropicApiKey={async () => {
+              setSnapshot(await api.removeAnthropicApiKey());
+            }}
+            onRefreshSnapshot={async () => {
+              setSnapshot(await api.getSnapshot());
             }}
           />
         )}

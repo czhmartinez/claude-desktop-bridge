@@ -20,7 +20,10 @@ import {
   type BridgePayload,
   type BridgeArtifactManifest,
   type BridgeArtifactPreview,
+  type BridgeConversationRoute,
+  type BridgeHandoff,
   type BridgePermissionInfo,
+  type BridgeProviderProfile,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeSessionConfiguration,
@@ -421,18 +424,48 @@ export function snapshotWithClaudeDesktop(
   return snapshot ? { ...snapshot, claudeDesktop } : undefined;
 }
 
+function sessionWithRoute(
+  session: BridgeSessionInfo,
+  route: BridgeConversationRoute,
+): BridgeSessionInfo {
+  const {
+    pendingHandoff: _pendingHandoff,
+    ...withoutPending
+  } = session;
+  return {
+    ...withoutPending,
+    activeLaneId: route.activeLaneId,
+    activeProviderProfileId: route.activeProviderProfileId,
+    routeState: route.state,
+    allowedActions: route.allowedActions,
+    ...(route.pendingHandoff ? { pendingHandoff: route.pendingHandoff } : {}),
+  };
+}
+
 export function applyEventToSnapshot(
   snapshot: BridgeHostSnapshot | undefined,
   event: BridgeEvent,
   permissions: BridgePermissionInfo[],
 ): BridgeHostSnapshot | undefined {
   const current = snapshotWithPermissions(snapshot, permissions);
-  if (!current || !event.sessionId) return current;
+  if (!current) return current;
+  if (event.type === "provider.updated") {
+    const profile = event.data.profile as BridgeProviderProfile | undefined;
+    if (!profile || typeof profile.id !== "string") return current;
+    const providers = new Map((current.providers ?? []).map((candidate) => [candidate.id, candidate]));
+    providers.set(profile.id, profile);
+    return { ...current, providers: [...providers.values()] };
+  }
+  if (!event.sessionId) return current;
   const hasPendingPermission = permissions.some((permission) => permission.sessionId === event.sessionId);
   return {
     ...current,
     sessions: current.sessions.map((session) => {
       if (session.sessionId !== event.sessionId) return session;
+      if (event.type === "conversation.route.changed") {
+        const route = event.data.route as BridgeConversationRoute | undefined;
+        if (route?.conversationId === session.sessionId) return sessionWithRoute(session, route);
+      }
       if (hasPendingPermission) return { ...session, turnState: "waiting" };
       if (event.type === "session.ownership" && typeof event.data.ownership === "string") {
         return {
@@ -1678,6 +1711,115 @@ export function useMobileBridge() {
     return result.configuration;
   }, [sendRequest]);
 
+  const previewProviderSwitch = useCallback(async (
+    sessionId: string,
+    targetProviderProfileId: string,
+    model?: string,
+  ) => {
+    const response = await sendRequest("conversation.switch.preview", {
+      sessionId,
+      targetProviderProfileId,
+      ...(model ? { model } : {}),
+    }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "提供方接力预览失败");
+    const result = response.result as {
+      handoff?: BridgeHandoff;
+      route?: BridgeConversationRoute;
+      target?: BridgeProviderProfile;
+      summary?: string;
+    };
+    if (!result.handoff || !result.route || !result.target || typeof result.summary !== "string") {
+      throw new Error("电脑未返回完整接力预览");
+    }
+    setState((current) => current.snapshot ? {
+      ...current,
+      snapshot: {
+        ...current.snapshot,
+        sessions: current.snapshot.sessions.map((session) => (
+          session.sessionId === result.route!.conversationId
+            ? sessionWithRoute(session, result.route!)
+            : session
+        )),
+      },
+    } : current);
+    return {
+      handoff: result.handoff,
+      route: result.route,
+      target: result.target,
+      summary: result.summary,
+    };
+  }, [sendRequest]);
+
+  const commitProviderSwitch = useCallback(async (
+    handoffId: string,
+    targetNativeSessionId?: string,
+    model?: string,
+  ) => {
+    const response = await sendRequest("conversation.switch.commit", {
+      handoffId,
+      ...(targetNativeSessionId ? { targetNativeSessionId } : {}),
+      ...(model ? { model } : {}),
+    }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "提供方切换失败");
+    const result = response.result as {
+      handoff?: BridgeHandoff;
+      route?: BridgeConversationRoute;
+      deepLink?: string;
+    };
+    if (!result.handoff || !result.route) throw new Error("电脑未返回完整接力状态");
+    setState((current) => current.snapshot ? {
+      ...current,
+      snapshot: {
+        ...current.snapshot,
+        sessions: current.snapshot.sessions.map((session) => (
+          session.sessionId === result.route!.conversationId
+            ? sessionWithRoute(session, result.route!)
+            : session
+        )),
+      },
+    } : current);
+    return {
+      handoff: result.handoff,
+      route: result.route,
+      ...(result.deepLink ? { deepLink: result.deepLink } : {}),
+    };
+  }, [sendRequest]);
+
+  const cancelProviderSwitch = useCallback(async (handoffId: string): Promise<void> => {
+    const response = await sendRequest("conversation.switch.cancel", {
+      handoffId,
+    }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "取消接力失败");
+    const result = response.result as { route?: BridgeConversationRoute };
+    if (!result.route) return;
+    setState((current) => current.snapshot ? {
+      ...current,
+      snapshot: {
+        ...current.snapshot,
+        sessions: current.snapshot.sessions.map((session) => (
+          session.sessionId === result.route!.conversationId
+            ? sessionWithRoute(session, result.route!)
+            : session
+        )),
+      },
+    } : current);
+  }, [sendRequest]);
+
+  const refreshProviders = useCallback(async (): Promise<void> => {
+    const response = await sendRequest("provider.refresh", {}, {
+      wait: true,
+      timeoutMs: 45_000,
+    });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "提供方状态刷新失败");
+    const result = response.result as { providers?: BridgeProviderProfile[] };
+    const providers = result.providers;
+    if (!providers) throw new Error("电脑未返回提供方状态");
+    setState((current) => current.snapshot ? {
+      ...current,
+      snapshot: { ...current.snapshot, providers },
+    } : current);
+  }, [sendRequest]);
+
   const controlClaudeDesktop = useCallback(async (
     action: "status" | "launch" | "quit",
   ): Promise<ClaudeDesktopAppStatus> => {
@@ -1786,6 +1928,10 @@ export function useMobileBridge() {
     createSession,
     loadSessionConfiguration,
     configureSession,
+    previewProviderSwitch,
+    commitProviderSwitch,
+    cancelProviderSwitch,
+    refreshProviders,
     launchClaudeDesktop,
     quitClaudeDesktop,
     refresh,
