@@ -48,6 +48,14 @@ import { PermissionBroker, type PermissionDecision } from "./permission-broker.j
 import type { ClaudeRuntimePaths } from "./platform.js";
 import { prepareClaudeRuntime } from "./claude-runtime-discovery.js";
 import type { BridgeEventDraft, SessionEventLog } from "./session-event-log.js";
+import {
+  ANTHROPIC_API_PROFILE_ID,
+  CLAUDE_3P_PROFILE_ID,
+  CLAUDE_OFFICIAL_PROFILE_ID,
+  ConversationStateStore,
+  legacyClaudeLaneId,
+} from "./conversation-state-store.js";
+import type { BridgeConversationRoute, BridgeExecutionLane } from "@bridge/protocol";
 
 interface StoredBridgeSession {
   sessionId: string;
@@ -77,6 +85,7 @@ export interface QueuedTurn {
   requestId: string;
   idempotencyKey: string;
   sessionId: string;
+  laneId: string;
   text: string;
   attachments: BridgeAttachment[];
   origin: "desktop" | "mobile";
@@ -187,6 +196,7 @@ export interface SessionBrokerOptions {
   observer: TranscriptObserverRuntime;
   sessionsPath: string;
   queuePath: string;
+  conversationState?: ConversationStateStore;
   maxParallelTurns?: number;
   hostFactory?: (options: ClaudeSessionHostOptions) => SessionHostRuntime;
   prepareRuntime?: typeof prepareClaudeRuntime;
@@ -387,11 +397,19 @@ export class SessionBroker extends EventEmitter {
   async initialize(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
-    await Promise.all([
-      this.options.eventLog.initialize(),
-      this.loadSessions(),
-      this.loadQueue(),
-    ]);
+    if (this.options.conversationState) {
+      await Promise.all([
+        this.options.eventLog.initialize(),
+        this.options.conversationState.initialize(),
+      ]);
+      await this.loadConversationState();
+    } else {
+      await Promise.all([
+        this.options.eventLog.initialize(),
+        this.loadSessions(),
+        this.loadQueue(),
+      ]);
+    }
     this.catalog = this.options.observer.catalog;
     this.managedTransport?.updateCatalog(this.catalog);
     this.refreshRecoveryBlocks();
@@ -619,6 +637,7 @@ export class SessionBroker extends EventEmitter {
       const turnState = state?.turnState
         ?? (source && this.options.observer.isDesktopBusy(sessionId) ? "running" : "idle");
       const profile = this.effectiveProfile(sessionId, cwd);
+      const route = this.options.conversationState?.route(sessionId);
       const item: BridgeSessionInfo = {
         sessionId,
         ...(desktopSessionId ? { desktopSessionId } : {}),
@@ -656,6 +675,12 @@ export class SessionBroker extends EventEmitter {
         ...(bridge?.desktopRegistration && this.options.desktopRegistrar
           ? { desktopRegistration: this.options.desktopRegistrar.publicInfo(bridge.desktopRegistration) }
           : {}),
+        ...(route ? {
+          activeLaneId: route.activeLaneId,
+          activeProviderProfileId: route.activeProviderProfileId,
+          routeState: route.state,
+          allowedActions: route.allowedActions,
+        } : {}),
       };
       if (projectId && item.projectId !== projectId) continue;
       if (search) {
@@ -675,6 +700,40 @@ export class SessionBroker extends EventEmitter {
 
   session(sessionId: string): BridgeSessionInfo | undefined {
     return this.listSessions().find((candidate) => candidate.sessionId === sessionId);
+  }
+
+  conversationRoute(sessionId: string): BridgeConversationRoute {
+    const store = this.options.conversationState;
+    if (!store) throw new Error("Conversation routing is unavailable");
+    const existing = store.route(sessionId);
+    if (existing) return existing;
+    const session = this.session(sessionId);
+    if (!session) throw new Error("Session not found");
+    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
+    const official = observed?.sourceProfile === "claude";
+    return store.ensureConversation({
+      conversationId: sessionId,
+      cwd: session.cwd,
+      title: session.title,
+      source: session.source,
+      providerProfileId: official ? CLAUDE_OFFICIAL_PROFILE_ID : CLAUDE_3P_PROFILE_ID,
+      providerKind: official ? "claude-official" : "claude-3p",
+      nativeSessionId: sessionId,
+      access: official ? "read-only" : "read-write",
+      createdAt: session.lastActivityAt,
+    });
+  }
+
+  activeLane(sessionId: string): BridgeExecutionLane | undefined {
+    return this.options.conversationState?.activeLane(sessionId);
+  }
+
+  hasActiveOrPending(sessionId: string): boolean {
+    const state = this.runtimeStates.get(sessionId);
+    return Boolean(state?.active) || this.pending.some((turn) => (
+      turn.sessionId === sessionId &&
+      (turn.state === "queued" || turn.state === "running" || turn.state === "uncertain")
+    ));
   }
 
   async configuration(sessionId: string, discoverModels = true): Promise<BridgeSessionConfiguration> {
@@ -859,6 +918,17 @@ export class SessionBroker extends EventEmitter {
       turnState: "idle",
       ...(this.managedTransport?.ready ? { managed: true } : {}),
     });
+    this.options.conversationState?.ensureConversation({
+      conversationId: session.sessionId,
+      cwd: session.cwd,
+      title: session.title,
+      source: "bridge",
+      providerProfileId: CLAUDE_3P_PROFILE_ID,
+      providerKind: "claude-3p",
+      nativeSessionId: session.sessionId,
+      access: "read-write",
+      createdAt: session.createdAt,
+    });
     await this.saveSessions();
     await this.record({
       sessionId: session.sessionId,
@@ -887,6 +957,15 @@ export class SessionBroker extends EventEmitter {
     if (!text && attachments.length === 0) throw new Error("Message cannot be empty");
     const session = this.session(input.sessionId);
     if (!session) throw new Error("Session not found");
+    const route = this.options.conversationState
+      ? this.conversationRoute(input.sessionId)
+      : undefined;
+    if (route && !route.allowedActions.canSend) {
+      throw new Error(
+        route.allowedActions.reason
+        ?? "当前提供方通道不能接收消息，请升级 Bridge 并切换到可执行通道。",
+      );
+    }
     const existing = this.pending.find((turn) => turn.idempotencyKey === input.idempotencyKey);
     if (existing) return existing;
     if (this.completedKeys.has(input.idempotencyKey)) {
@@ -903,6 +982,7 @@ export class SessionBroker extends EventEmitter {
       requestId: input.requestId,
       idempotencyKey: input.idempotencyKey,
       sessionId: input.sessionId,
+      laneId: route?.activeLaneId ?? legacyClaudeLaneId(input.sessionId),
       text,
       attachments,
       origin: input.origin,
@@ -2589,6 +2669,13 @@ export class SessionBroker extends EventEmitter {
   }
 
   private async saveSessions(): Promise<void> {
+    if (this.options.conversationState) {
+      this.options.conversationState.saveBrokerSessions(
+        [...this.bridgeSessions.values()],
+        [...this.sessionConfigurations.values()],
+      );
+      return;
+    }
     const contents = `${JSON.stringify({
       version: 2,
       sessions: [...this.bridgeSessions.values()],
@@ -2611,6 +2698,9 @@ export class SessionBroker extends EventEmitter {
           : "queued";
         const restored: QueuedTurn = {
           ...turn,
+          laneId: typeof turn.laneId === "string"
+            ? turn.laneId
+            : legacyClaudeLaneId(turn.sessionId),
           state,
           priority: turn.priority ?? 0,
           attempts: turn.attempts ?? 0,
@@ -2674,6 +2764,14 @@ export class SessionBroker extends EventEmitter {
   }
 
   private async saveQueue(): Promise<void> {
+    if (this.options.conversationState) {
+      this.options.conversationState.saveBrokerQueue(
+        this.pending.map((turn) => ({ ...turn })),
+        [...this.completedKeys].slice(-2_000),
+        [...this.terminalTurns.values()].slice(-2_000),
+      );
+      return;
+    }
     const contents = `${JSON.stringify({
       version: 2,
       pending: this.pending,
@@ -2691,5 +2789,78 @@ export class SessionBroker extends EventEmitter {
       await rename(temporary, path);
     });
     await this.writeQueue;
+  }
+
+  private async loadConversationState(): Promise<void> {
+    const persisted = this.options.conversationState!.loadBrokerState();
+    for (const session of persisted.sessions) {
+      this.bridgeSessions.set(session.sessionId, session as StoredBridgeSession);
+    }
+    for (const configuration of persisted.configurations) {
+      if (
+        typeof configuration.sessionId !== "string" ||
+        typeof configuration.updatedAt !== "number" ||
+        (configuration.model !== undefined && typeof configuration.model !== "string") ||
+        (configuration.effort !== undefined && !EFFORT_LEVELS.includes(configuration.effort as BridgeEffort))
+      ) continue;
+      this.sessionConfigurations.set(
+        configuration.sessionId,
+        configuration as StoredSessionConfiguration,
+      );
+    }
+    await this.restoreQueue(
+      persisted.pending as unknown as QueuedTurn[],
+      persisted.completedIdempotencyKeys,
+      persisted.terminalTurns as TerminalTurnReceipt[],
+    );
+  }
+
+  private async restoreQueue(
+    pending: QueuedTurn[],
+    completedKeys: string[],
+    terminalTurns: TerminalTurnReceipt[],
+  ): Promise<void> {
+    for (const turn of pending) {
+      const state = turn.state === "uncertain" || (
+        turn.state === "running" && turn.transport === "claude-desktop-managed"
+      )
+        ? "uncertain"
+        : "queued";
+      const restored: QueuedTurn = {
+        ...turn,
+        laneId: turn.laneId ?? legacyClaudeLaneId(turn.sessionId),
+        state,
+        priority: turn.priority ?? 0,
+        attempts: turn.attempts ?? 0,
+        mode: turn.mode ?? "start",
+        sessionTitle: turn.sessionTitle ?? `未完成任务：${compact(turn.text, 72)}`,
+      };
+      if (!restored.sessionCwd) {
+        const transcriptPath = await findClaudeTranscriptFile(
+          this.options.paths.projects,
+          restored.sessionId,
+        );
+        if (transcriptPath) {
+          const recoveredCwd = await transcriptCwd(transcriptPath);
+          if (recoveredCwd) restored.sessionCwd = recoveredCwd;
+        }
+      }
+      this.pending.push(restored);
+      if (state === "uncertain" && restored.mode !== "steer") {
+        this.runtimeStates.set(restored.sessionId, {
+          ownership: "DESKTOP_MANAGED_RUNNING",
+          turnState: "waiting",
+          active: restored,
+          managed: true,
+        });
+        this.activeTurns += 1;
+      }
+    }
+    for (const key of completedKeys) this.completedKeys.add(key);
+    for (const receipt of terminalTurns) {
+      this.terminalTurns.set(receipt.idempotencyKey, receipt);
+      this.completedKeys.add(receipt.idempotencyKey);
+    }
+    this.sortPending();
   }
 }

@@ -110,7 +110,118 @@ export type BridgeDeliveryState =
 export type BridgeCapability =
   | "evidence.v1"
   | "artifact.preview.v1"
-  | "artifact.transfer.v1";
+  | "artifact.transfer.v1"
+  | "provider.profile.v1"
+  | "conversation.lanes.v1"
+  | "conversation.handoff.v1";
+
+export type BridgeProviderKind =
+  | "claude-3p"
+  | "anthropic-api"
+  | "claude-official";
+export type BridgeProviderProfileStatus =
+  | "ready"
+  | "needs-configuration"
+  | "unavailable"
+  | "error";
+export type BridgeExecutionLaneStatus =
+  | "active"
+  | "inactive"
+  | "preparing"
+  | "failed";
+export type BridgeRouteState =
+  | "ready"
+  | "switching"
+  | "awaiting-user-confirmation"
+  | "awaiting-target-selection"
+  | "failed";
+export type BridgeHandoffState =
+  | "previewed"
+  | "preparing"
+  | "awaiting_target"
+  | "awaiting_user_confirmation"
+  | "activating"
+  | "applied"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export interface BridgeProviderModelCapability {
+  supported: boolean;
+}
+
+export interface BridgeProviderModel {
+  id: string;
+  displayName: string;
+  createdAt?: string;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  capabilities: Record<string, BridgeProviderModelCapability | Record<string, unknown>>;
+}
+
+export interface BridgeProviderProfile {
+  id: string;
+  kind: BridgeProviderKind;
+  name: string;
+  status: BridgeProviderProfileStatus;
+  detail: string;
+  configured: boolean;
+  localOnlyConfiguration: boolean;
+  readOnly: boolean;
+  models: BridgeProviderModel[];
+  defaultModel?: string;
+  refreshedAt?: number;
+}
+
+export interface BridgeExecutionLane {
+  laneId: string;
+  conversationId: string;
+  providerProfileId: string;
+  providerKind: BridgeProviderKind;
+  status: BridgeExecutionLaneStatus;
+  access: "read-write" | "read-only";
+  nativeSessionId?: string;
+  model?: string;
+  createdAt: number;
+  updatedAt: number;
+  lastUsedAt?: number;
+}
+
+export interface BridgeSessionAllowedActions {
+  canSend: boolean;
+  canSteer: boolean;
+  canInterrupt: boolean;
+  canSwitchProvider: boolean;
+  canContinueOfficial: boolean;
+  canConfigure: boolean;
+  reason?: string;
+}
+
+export interface BridgeHandoff {
+  handoffId: string;
+  conversationId: string;
+  sourceLaneId: string;
+  targetProviderProfileId: string;
+  targetLaneId?: string;
+  state: BridgeHandoffState;
+  summary: string;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt?: number;
+  requiresUserConfirmation: boolean;
+  candidateNativeSessionIds?: string[];
+  error?: string;
+}
+
+export interface BridgeConversationRoute {
+  conversationId: string;
+  activeLaneId: string;
+  activeProviderProfileId: string;
+  state: BridgeRouteState;
+  lanes: BridgeExecutionLane[];
+  allowedActions: BridgeSessionAllowedActions;
+  pendingHandoff?: BridgeHandoff;
+}
 
 export type BridgeEvidenceSource = "bridge-host" | "claude-desktop";
 export type BridgeEvidenceConfidence = "exact" | "inferred" | "partial";
@@ -176,6 +287,8 @@ export interface BridgeEvidenceBundle {
   id: string;
   sessionId: string;
   turnId?: string;
+  laneId?: string;
+  providerProfileId?: string;
   source: BridgeEvidenceSource;
   confidence: BridgeEvidenceConfidence;
   state: BridgeEvidenceState;
@@ -270,6 +383,10 @@ export interface BridgeSessionInfo {
   configurationPending?: boolean;
   fallbackConfirmed?: boolean;
   desktopRegistration?: BridgeDesktopRegistrationInfo;
+  activeLaneId?: string;
+  activeProviderProfileId?: string;
+  routeState?: BridgeRouteState;
+  allowedActions?: BridgeSessionAllowedActions;
 }
 
 export interface BridgeModelInfo {
@@ -454,6 +571,13 @@ export type BridgeMethod =
   | "artifact.transfer.open"
   | "artifact.transfer.read"
   | "artifact.transfer.close"
+  | "provider.list"
+  | "provider.refresh"
+  | "conversation.route.get"
+  | "conversation.switch.preview"
+  | "conversation.switch.commit"
+  | "conversation.switch.cancel"
+  | "handoff.get"
   | "device.revoke";
 
 export interface BridgeRequest {
@@ -506,6 +630,14 @@ export type BridgeEventType =
   | "evidence.updated"
   | "evidence.ready"
   | "evidence.failed"
+  | "provider.updated"
+  | "conversation.route.changed"
+  | "lane.created"
+  | "lane.updated"
+  | "handoff.started"
+  | "handoff.ready"
+  | "handoff.applied"
+  | "handoff.failed"
   | "device.paired"
   | "device.revoked"
   | "runtime.compatibility"

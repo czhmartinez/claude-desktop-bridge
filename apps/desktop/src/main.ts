@@ -34,6 +34,7 @@ import {
   cleanupDesktopPeerConnection,
   loadDesktopPeerConnection,
 } from "./webrtc-runtime.js";
+import { ConversationStateStore } from "./conversation-state-store.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -111,6 +112,13 @@ async function desktopMain(): Promise<void> {
   );
   const pairingConfig = await repository.loadOrCreate();
   const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));
+  const conversationState = new ConversationStateStore({
+    databasePath: join(userDataPath, "conversation-state-v1.sqlite"),
+    sessionsPath: join(userDataPath, "sessions-v2.json"),
+    queuePath: join(userDataPath, "turn-queue-v2.json"),
+    masterSecret: pairingConfig.evidenceKey,
+  });
+  await conversationState.initialize();
   const evidenceStore = new EvidenceStore({
     databasePath: join(userDataPath, "evidence-v1.sqlite"),
     blobsPath: join(userDataPath, "evidence-blobs-v1"),
@@ -132,6 +140,7 @@ async function desktopMain(): Promise<void> {
     observer,
     sessionsPath: join(userDataPath, "sessions-v2.json"),
     queuePath: join(userDataPath, "turn-queue-v2.json"),
+    conversationState,
     evidence,
     desktopRegistrar,
   });
@@ -282,6 +291,7 @@ async function desktopMain(): Promise<void> {
     }
   });
   await controller.initialize();
+  await conversationState.recordSuccessfulStartup();
   powerMonitor.on("suspend", () => controller.pauseForSleep());
   powerMonitor.on("resume", () => void controller.reconnect());
   app.on("second-instance", () => {
@@ -303,6 +313,7 @@ async function desktopMain(): Promise<void> {
       await observer.close().catch(() => undefined);
       await evidence.close().catch(() => undefined);
       await eventLog.close().catch(() => undefined);
+      conversationState.close();
       cleanupDesktopPeerConnection();
       app.quit();
     })();

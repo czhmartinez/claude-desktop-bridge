@@ -38,6 +38,13 @@ const METHODS = new Set([
   "artifact.transfer.open",
   "artifact.transfer.read",
   "artifact.transfer.close",
+  "provider.list",
+  "provider.refresh",
+  "conversation.route.get",
+  "conversation.switch.preview",
+  "conversation.switch.commit",
+  "conversation.switch.cancel",
+  "handoff.get",
   "device.revoke",
 ]);
 
