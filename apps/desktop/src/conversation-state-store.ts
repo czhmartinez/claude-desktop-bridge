@@ -17,6 +17,7 @@ import type {
   BridgeRouteState,
   BridgeSessionAllowedActions,
 } from "@bridge/protocol";
+import { supportsClaudeDesktop } from "./platform.js";
 
 const STORE_VERSION = 1;
 const ENCRYPTED_PACKAGE_MAGIC = Buffer.from("BHS1");
@@ -115,6 +116,7 @@ interface StoredHandoffPackage {
 }
 
 function defaultProviderProfiles(): BridgeProviderProfile[] {
+  const officialReady = supportsClaudeDesktop();
   return [
     {
       id: CLAUDE_3P_PROFILE_ID,
@@ -142,11 +144,11 @@ function defaultProviderProfiles(): BridgeProviderProfile[] {
       id: CLAUDE_OFFICIAL_PROFILE_ID,
       kind: "claude-official",
       name: "Claude 官方订阅",
-      status: process.platform === "darwin" ? "ready" : "unavailable",
-      detail: process.platform === "darwin"
+      status: officialReady ? "ready" : "unavailable",
+      detail: officialReady
         ? "通过 Claude 官方 Deep Link 新建会话，激活后由 Bridge 只读观察。"
-        : "Claude 官方 Deep Link 当前只支持 macOS。",
-      configured: process.platform === "darwin",
+        : "当前平台不支持 Claude 官方 Deep Link。",
+      configured: officialReady,
       localOnlyConfiguration: false,
       readOnly: true,
       models: [],

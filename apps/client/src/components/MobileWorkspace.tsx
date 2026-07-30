@@ -1094,7 +1094,7 @@ export function MobileWorkspace({
             <ArrowRightLeft size={17} />
             <span>
               <strong>{selectedSession.routeState === "awaiting-user-confirmation"
-                ? "等待 Mac 确认"
+                ? "等待本机确认"
                 : selectedSession.routeState === "awaiting-target-selection"
                   ? "选择 Claude 官方会话"
                   : selectedSession.routeState === "failed"

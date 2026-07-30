@@ -93,7 +93,7 @@ Key 验证调用 Anthropic `GET /v1/models`，模型清单可以进入 profile�
 不会进入数据库、日志、事件、接力包或 Relay。
 
 Claude 官方 lane 禁止抽取、复制或代理 Pro/Max OAuth。Bridge 只构造公开
-`claude://code/new` Deep Link，并要求用户在 Mac 上确认目录和发送第一条消息。
+`claude://code/new` Deep Link，并要求用户在 Bridge 电脑上确认目录和发送第一条消息。
 关联前同时校验官方 profile、`realpath` 后的 cwd、不透明 handoff ID、完整首条消息
 SHA-256 与十分钟创建窗口。零匹配不激活；多匹配只返回候选 ID 并等待用户选择。
 激活后 route 为只读，`turn.start/steer/configure` 在入队前失败；旧客户端也不能
@@ -136,6 +136,8 @@ V0.5 不展示、存储或推断隐藏 CoT，不附加 Claude Desktop 私有 CDP
 - Relay 数据目录、FCM 服务账号和 APNs 私钥不得进入镜像或源码。
 - 配置 macOS notarization、Windows code signing、Android keystore 和 iOS
   provisioning profile。
+- Windows 安装包必须使用 Authenticode 签名；Bridge 的 `safeStorage` 在 Windows
+  由 DPAPI 保护，API Key 仍只经电脑端 IPC 写入，绝不进入 Relay、手机或安装包。
 - 为桌面安装包建立签名自动更新源；升级必须保留设备配置与事件日志。
 - 单机自签只允许存放在 Bridge 专用钥匙串中，信任策略必须限定为 `codeSign`，不得
   复用为 TLS/邮件证书或把私钥、钥匙串密码、`.p12` 放入仓库和发布产物。

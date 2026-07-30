@@ -170,6 +170,34 @@ Electron 安装包必须在目标系统构建：macOS 产出 DMG/ZIP，Windows �
 Linux 产出 ZIP/DEB/RPM。没有 Developer ID、Authenticode 或仓库签名时只能标记为
 “构建通过”，不能宣称可正式分发。
 
+### 4.2 Windows 桌面包
+
+Windows 构建必须在 Windows（本地或 `windows-2022` runner）执行：
+
+```powershell
+npm run make:windows
+```
+
+Forge 使用 Squirrel 生成 `apps/desktop/out/make/squirrel.windows/x64/` 下的
+`Setup.exe` 与更新元数据。未提供签名材料时产物标记为 `installer-ci`，可以在本机
+安装验收但不可作为正式下载附件。需要签名时，通过 CI secret
+`BRIDGE_WIN_CERTIFICATE_BASE64` + `BRIDGE_WIN_CERTIFICATE_PASSWORD`，或本机环境变量注入：
+
+```powershell
+$env:BRIDGE_WIN_CERTIFICATE_FILE = "C:\secrets\bridge.p12"
+$env:BRIDGE_WIN_CERTIFICATE_PASSWORD = "..."
+npm run make:windows
+```
+
+也可以设置 `BRIDGE_WIN_SIGN_WITH_PARAMS` 将参数交给 Windows 签名工具。证书、密码
+和签名私钥不得提交到仓库。Windows 使用 Electron `safeStorage`（由 DPAPI 保护）
+保存 Anthropic API Key；Bridge 不读取 Windows Credential Manager 中的其他账户。
+
+Windows 与 macOS 共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic API、Relay、
+证据、普通 Claude Desktop 启动/退出、官方 Deep Link、首条消息关联和会话清单登记。
+Windows 读取 `%APPDATA%\Claude\claude-code-sessions`，并通过 PowerShell/tasklist
+检查实例。私有 CDP 仍在两个平台都关闭，不属于发布能力。
+
 ## 5. 构建移动端
 
 ```bash
@@ -215,8 +243,8 @@ Notifications 和 provisioning profile。没有 Apple Developer 条件时只能�
 - App 前后台、锁屏唤醒、扫码过期、单次二维码和设备撤销。
 - 桌面 `file://` 资源、托盘、开机启动、睡眠恢复和升级覆盖。
 - Claude-3p 创建并修改文件 -> Anthropic API 继续并生成精确证据 -> Claude 官方
-  经 Mac 确认出现在官方侧边栏并完成一轮 -> 安全复用 Claude-3p lane 继续。
-- Android 能发起 preview/commit/cancel，显示“等待 Mac 确认”，并在
+  经 Bridge 电脑确认出现在官方侧边栏并完成一轮 -> 安全复用 Claude-3p lane 继续。
+- Android 能发起 preview/commit/cancel，显示“等待本机确认”，并在
   `conversation.route.changed` 后呈现最终活动 provider；手机端绝不出现 Key 输入。
 
 桌面原生 WebRTC 运行时使用真实 DataChannel 门禁测试：
@@ -230,7 +258,7 @@ npm run test:webrtc:native
 WSS 全部通过的平台才能标记“可分发”。
 
 V0.5.0 必须同时生成本机稳定签名 DMG 与 Android APK，并记录版本、SHA-256、签名
-校验、打包态 CDP/配对结果和真机状态。没有 Anthropic API Key、用户未在 Mac 确认
+校验、打包态 CDP/配对结果和真机状态。没有 Anthropic API Key、用户未在 Bridge 电脑确认
 官方首条消息、没有已授权 Android 真机或缺少外部分发签名时，必须逐项标记为
 “外部条件未满足”，不得把自动测试、APK 构建或 HTTP `/health` 冒充真实验收。
 V0.4.2 的跨 profile 阻止、ultracode 1M 识别和 synthetic `Prompt is too long`

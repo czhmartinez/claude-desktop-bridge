@@ -13,6 +13,7 @@ import {
   CLAUDE_OFFICIAL_PROFILE_ID,
   type ConversationStateStore,
 } from "./conversation-state-store.js";
+import { supportsClaudeDesktop } from "./platform.js";
 
 const ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models?limit=1000";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -293,7 +294,7 @@ export class ProviderRegistry extends EventEmitter {
   }
 
   private refreshOfficial(): BridgeProviderProfile {
-    const ready = this.platform === "darwin";
+    const ready = supportsClaudeDesktop(this.platform);
     return this.save({
       id: CLAUDE_OFFICIAL_PROFILE_ID,
       kind: "claude-official",
@@ -301,7 +302,7 @@ export class ProviderRegistry extends EventEmitter {
       status: ready ? "ready" : "unavailable",
       detail: ready
         ? "通过 Claude 官方 Deep Link 新建会话；激活后 Bridge 仅只读观察。"
-        : "Claude 官方 Deep Link 当前只支持 macOS。",
+        : "当前平台不支持 Claude 官方 Deep Link。",
       configured: ready,
       localOnlyConfiguration: false,
       readOnly: true,

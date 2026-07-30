@@ -1,5 +1,7 @@
 import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import {
   BridgeCrypto,
@@ -9,7 +11,24 @@ import {
 
 const baseUrl = process.env.BRIDGE_QA_URL ?? "http://127.0.0.1:5188";
 const relayUrl = process.env.BRIDGE_QA_RELAY ?? "ws://127.0.0.1:8788/ws";
-const chrome = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+function defaultChromePath() {
+  const candidates = process.platform === "win32"
+    ? [
+        join(process.env.PROGRAMFILES ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+        join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+        join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Google", "Chrome", "Application", "chrome.exe"),
+      ]
+    : process.platform === "darwin"
+      ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+      : [
+          "/usr/bin/google-chrome",
+          "/usr/bin/google-chrome-stable",
+          "/usr/bin/chromium",
+          "/usr/bin/chromium-browser",
+        ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+const chrome = process.env.CHROME_PATH ?? defaultChromePath();
 const artifactDir = resolve("artifacts", "visual-qa");
 const axePath = resolve("node_modules", "axe-core", "axe.min.js");
 const errors = [];
@@ -699,7 +718,7 @@ try {
   await mobile.getByLabel("切换执行提供方，当前 Claude-3p").click();
   const mobileProviderDialog = mobile.getByRole("dialog", { name: "切换提供方" });
   await mobileProviderDialog.locator(".provider-option").filter({ hasText: "Anthropic API" }).click();
-  await mobileProviderDialog.getByText("需要在 Mac 端配置 API Key", { exact: true }).waitFor();
+  await mobileProviderDialog.getByText("需要在电脑端配置 API Key", { exact: true }).waitFor();
   await checkPage(mobile, "mobile provider switching");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-provider-switch-390x844.png"), fullPage: true });
   await mobileProviderDialog.getByLabel("关闭").click();
@@ -949,7 +968,7 @@ try {
   await desktop.getByRole("button", { name: "切换执行提供方" }).click();
   const desktopProviderDialog = desktop.getByRole("dialog", { name: "切换提供方" });
   await desktopProviderDialog.locator(".provider-option").filter({ hasText: "Anthropic API" }).click();
-  await desktopProviderDialog.getByText("在此 Mac 配置 API Key", { exact: true }).waitFor();
+  await desktopProviderDialog.getByText("在此电脑配置 API Key", { exact: true }).waitFor();
   await checkPage(desktop, "desktop provider switching");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-provider-switch-1200x800.png"), fullPage: true });
   await desktopProviderDialog.getByLabel("关闭").click();

@@ -40,19 +40,23 @@ export function isSafeForBackgroundRuntimeScan(
   return !protectedRoots.some((root) => pathIsWithin(root, candidate));
 }
 
-async function isExecutable(path: string): Promise<boolean> {
-  return access(path, process.platform === "win32" ? constants.F_OK : constants.X_OK)
+async function isExecutable(path: string, platform = process.platform): Promise<boolean> {
+  return access(path, platform === "win32" ? constants.F_OK : constants.X_OK)
     .then(() => true, () => false);
 }
 
-function credentialRoots(home: string, environment: NodeJS.ProcessEnv): string[] {
-  if (process.platform === "darwin") {
+function credentialRoots(
+  home: string,
+  environment: NodeJS.ProcessEnv,
+  platform = process.platform,
+): string[] {
+  if (platform === "darwin") {
     return [
       join(home, "Library", "Application Support", "Claude-3p"),
       join(home, "Library", "Application Support", "Claude"),
     ];
   }
-  if (process.platform === "win32") {
+  if (platform === "win32") {
     const appData = environment.APPDATA ?? join(home, "AppData", "Roaming");
     return [join(appData, "Claude-3p"), join(appData, "Claude")];
   }
@@ -60,11 +64,14 @@ function credentialRoots(home: string, environment: NodeJS.ProcessEnv): string[]
   return [join(configHome, "Claude-3p"), join(configHome, "Claude")];
 }
 
-async function protectedCredential(path: string): Promise<{ path: string; mtimeMs: number } | undefined> {
+async function protectedCredential(
+  path: string,
+  platform = process.platform,
+): Promise<{ path: string; mtimeMs: number } | undefined> {
   try {
     const metadata = await stat(path);
     if (!metadata.isFile()) return undefined;
-    if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) return undefined;
+    if (platform !== "win32" && (metadata.mode & 0o077) !== 0) return undefined;
     await access(path, constants.R_OK);
     return { path, mtimeMs: metadata.mtimeMs };
   } catch {
@@ -75,14 +82,15 @@ async function protectedCredential(path: string): Promise<{ path: string; mtimeM
 export async function findClaudeHostCredentials(
   environment: NodeJS.ProcessEnv = process.env,
   home = homedir(),
-  roots = credentialRoots(home, environment),
+  roots?: string[],
+  platform: NodeJS.Platform = process.platform,
 ): Promise<string | undefined> {
   if (environment.CLAUDE_CODE_HOST_CREDS_FILE) {
-    const explicit = await protectedCredential(environment.CLAUDE_CODE_HOST_CREDS_FILE);
+    const explicit = await protectedCredential(environment.CLAUDE_CODE_HOST_CREDS_FILE, platform);
     if (explicit) return explicit.path;
   }
   const candidates: Array<{ path: string; mtimeMs: number }> = [];
-  for (const root of roots) {
+  for (const root of roots ?? credentialRoots(home, environment, platform)) {
     let names: string[];
     try {
       names = await readdir(root);
@@ -91,7 +99,7 @@ export async function findClaudeHostCredentials(
     }
     for (const name of names) {
       if (!/^host-creds-[a-z0-9-]+\.json$/iu.test(name)) continue;
-      const candidate = await protectedCredential(join(root, name));
+      const candidate = await protectedCredential(join(root, name), platform);
       if (candidate) candidates.push(candidate);
     }
   }
@@ -106,8 +114,8 @@ export function applyClaudeHostCredentials(environment: NodeJS.ProcessEnv, path:
   environment.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH = "1";
 }
 
-async function bundledClaudeCandidates(home: string): Promise<string[]> {
-  if (process.platform !== "darwin") return [];
+async function bundledClaudeCandidates(home: string, platform = process.platform): Promise<string[]> {
+  if (platform !== "darwin") return [];
   const roots = [
     join(home, "Library", "Application Support", "Claude-3p", "claude-code"),
     join(home, "Library", "Application Support", "Claude", "claude-code"),
@@ -132,21 +140,28 @@ async function bundledClaudeCandidates(home: string): Promise<string[]> {
 export async function findClaudeExecutable(
   environment: NodeJS.ProcessEnv = process.env,
   home = homedir(),
+  platform: NodeJS.Platform = process.platform,
 ): Promise<string | undefined> {
-  const names = process.platform === "win32" ? ["claude.exe", "claude.cmd", "claude"] : ["claude"];
+  const names = platform === "win32"
+    ? ["claude.exe", "claude.cmd", "claude.bat", "claude"]
+    : ["claude"];
   const pathCandidates = (environment.PATH ?? "")
-    .split(delimiter)
+    .split(platform === "win32" ? ";" : delimiter)
     .filter(Boolean)
     .flatMap((directory) => names.map((name) => join(directory, name)))
-    .filter((candidate) => isSafeForBackgroundRuntimeScan(candidate, home));
+    .filter((candidate) => isSafeForBackgroundRuntimeScan(candidate, home, platform));
   const configured = [environment.BRIDGE_CLAUDE_PATH, environment.CLAUDE_CODE_EXECUTABLE]
     .filter((value): value is string => Boolean(value));
-  const local = process.platform === "win32"
-    ? [join(home, ".local", "bin", "claude.exe"), join(home, ".local", "bin", "claude.cmd")]
+  const local = platform === "win32"
+    ? [
+        join(home, ".local", "bin", "claude.exe"),
+        join(home, ".local", "bin", "claude.cmd"),
+        join(home, ".local", "bin", "claude.bat"),
+      ]
     : [join(home, ".local", "bin", "claude"), join(home, ".claude", "local", "claude")];
-  const bundled = await bundledClaudeCandidates(home);
+  const bundled = await bundledClaudeCandidates(home, platform);
   for (const candidate of [...configured, ...bundled, ...local, ...pathCandidates]) {
-    if (await isExecutable(candidate)) return candidate;
+    if (await isExecutable(candidate, platform)) return candidate;
   }
   return undefined;
 }
@@ -174,20 +189,22 @@ export interface ClaudeRuntime {
 export async function prepareClaudeRuntime(
   environment: NodeJS.ProcessEnv = process.env,
   previous?: ClaudeRuntime,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<ClaudeRuntime> {
   const prepared = buildClaudeRuntimeEnvironment(environment);
-  const credentialPath = await findClaudeHostCredentials(prepared);
+  const credentialPath = await findClaudeHostCredentials(prepared, homedir(), undefined, platform);
   if (credentialPath) applyClaudeHostCredentials(prepared, credentialPath);
-  const previousExecutable = previous?.executablePath && await isExecutable(previous.executablePath)
+  const previousExecutable = previous?.executablePath && await isExecutable(previous.executablePath, platform)
     ? previous.executablePath
     : undefined;
-  const executablePath = previousExecutable ?? await findClaudeExecutable(prepared);
+  const executablePath = previousExecutable ?? await findClaudeExecutable(prepared, homedir(), platform);
   let version = executablePath === previous?.executablePath ? previous?.version : undefined;
   if (executablePath && !version) {
     try {
       const result = await execFileAsync(executablePath, ["--version"], {
         cwd: homedir(),
         env: prepared,
+        ...(platform === "win32" && /\.(?:cmd|bat)$/iu.test(executablePath) ? { shell: true } : {}),
         timeout: 8_000,
         maxBuffer: 64 * 1024,
       });

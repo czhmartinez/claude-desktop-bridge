@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "clean": "rm -rf dist coverage",
+    "clean": "node ../../scripts/clean.mjs dist coverage",
     "dev": "vite --host 0.0.0.0",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run --passWithNoTests",

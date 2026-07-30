@@ -136,8 +136,10 @@ Bridge 自身事件写入 `events-v2.jsonl`，最终消息、工具结果、审�
 
 ## Claude Desktop 侧边栏登记
 
-Bridge 只为自身创建、且已经有可信 JSONL 的会话登记侧边栏。登记器从 Claude 主进程
-及其 Helper 的 `--user-data-dir` 动态识别当前 profile，不硬编码 `Claude-3p`；
+Bridge 只为自身创建、且已经有可信 JSONL 的会话登记侧边栏。登记器在 macOS 使用
+`ps`、在 Windows 使用 PowerShell，从 Claude 主进程及其 Helper 的
+`--user-data-dir` 动态识别当前 profile，不硬编码 `Claude-3p`；Windows 使用
+`%APPDATA%\Claude\claude-code-sessions` 作为标准会话根目录。
 随后要求本机仅有一个可识别的账号会话目录，并用现有 `local_*.json` 验证格式。
 
 目标 Desktop ID 固定为 `local_<Bridge sessionId>`。写入前同时校验 transcript 位于

@@ -101,9 +101,23 @@ function redact(value: string, cwd?: string): string {
     .replace(/\bsk-ant-[A-Za-z0-9_-]{8,}\b/gu, "[REDACTED_API_KEY]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{8,}\b/giu, "Bearer [REDACTED]")
     .replace(/\b(?:api[_ -]?key|authorization|oauth|access[_ -]?token)\s*[:=]\s*\S+/giu, "$1=[REDACTED]");
+  const pathIsWithinProject = (path: string): boolean => {
+    if (!cwd) return false;
+    const normalizeForCompare = (candidate: string) => candidate
+      .replaceAll("\\", "/")
+      .replace(/\/+$/u, "")
+      .toLocaleLowerCase();
+    const candidate = normalizeForCompare(path);
+    const project = normalizeForCompare(cwd);
+    return candidate === project || candidate.startsWith(`${project}/`);
+  };
   result = result.replace(
     /\/(?:Users|private|Volumes|etc|var|tmp)\/[^\s"'`]+/gu,
-    (path) => cwd && (path === cwd || path.startsWith(`${cwd}/`)) ? path : "[OUTSIDE_PROJECT_PATH]",
+    (path) => pathIsWithinProject(path) ? path : "[OUTSIDE_PROJECT_PATH]",
+  );
+  result = result.replace(
+    /(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`<>|;&]+/gu,
+    (path) => pathIsWithinProject(path) ? path : "[OUTSIDE_PROJECT_PATH]",
   );
   return result;
 }

@@ -37,7 +37,7 @@ function stateLabel(handoff: BridgeHandoff): string {
   if (handoff.state === "previewed") return "等待确认";
   if (handoff.state === "preparing") return "正在准备";
   if (handoff.state === "activating") return "等待目标通道确认";
-  if (handoff.state === "awaiting_user_confirmation") return "等待 Mac 确认";
+  if (handoff.state === "awaiting_user_confirmation") return "等待本机确认";
   if (handoff.state === "awaiting_target") return "需要选择官方会话";
   if (handoff.state === "applied") return "已完成切换";
   if (handoff.state === "failed") return "切换失败";
@@ -233,7 +233,7 @@ export function ProviderSwitchDialog({
               <div className="provider-api-setup">
                 <KeyRound size={18} />
                 <div>
-                  <strong>{desktopLocal ? "在此 Mac 配置 API Key" : "需要在 Mac 端配置 API Key"}</strong>
+                  <strong>{desktopLocal ? "在此电脑配置 API Key" : "需要在电脑端配置 API Key"}</strong>
                   <small>Key 不通过手机或 Relay 传输。</small>
                 </div>
                 {desktopLocal && onSetApiKey && (

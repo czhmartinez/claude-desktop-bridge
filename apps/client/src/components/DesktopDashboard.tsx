@@ -725,7 +725,7 @@ function DesktopSessions({
                 <ArrowRightLeft size={18} />
                 <span>
                   <strong>{selected.routeState === "awaiting-user-confirmation"
-                    ? "等待 Mac 确认"
+                    ? "等待本机确认"
                     : selected.routeState === "awaiting-target-selection"
                       ? "选择 Claude 官方会话"
                       : selected.routeState === "failed"

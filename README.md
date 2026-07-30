@@ -29,12 +29,12 @@ lane。切换只迁移用户可见、可验证且有界的上下文，不声称�
 
 - **Claude-3p**：继续使用 Agent SDK 与当前 Host Credentials，支持执行、审批、
   工具、成果和精确证据。
-- **Anthropic API**：API Key 只能在 Mac 端显式输入，并只由 Electron
+- **Anthropic API**：API Key 只能在 Bridge 电脑端显式输入，并只由 Electron
   `safeStorage` 保存；不存在明文或 base64 降级。Bridge 使用 `GET /v1/models`
   验证 Key 与模型清单，调用费用由 Anthropic API 单独计费，不继承 Host/OAuth
   凭据、第三方 Base URL 或云提供方路由。
 - **Claude 官方订阅**：只通过公开
-  `claude://code/new?q=...&folder=...` Deep Link 新建官方会话。用户在 Mac 上确认
+  `claude://code/new?q=...&folder=...` Deep Link 新建官方会话。用户在 Bridge 电脑上确认
   目录并发送第一条接力消息后，Bridge 才会按官方 profile、`realpath` cwd、不透明
   handoff ID、首条消息哈希与十分钟窗口完成关联。激活后 Bridge 只读观察，输入区
   替换为“在 Claude 官方继续”；不提取或代理 Pro/Max OAuth，不使用私有 CDP，也不
@@ -72,12 +72,12 @@ Remote Control 的用户；也可以把一段 Bridge 工作手动接力到 Claud
 ## 使用方式
 
 1. 在电脑安装并打开 Bridge，保持 Claude-3p Host 可用；需要 Anthropic API 时只在
-   Mac 端提供方面板配置 Console API Key。
+   Bridge 电脑端提供方面板配置 Console API Key。
 2. 将电脑端与 Android 端一起升级到 0.5.0。已有 0.4 配对无需重配；从 0.3 首次
    升级时，仍需在 Bridge“设备”页扫描新二维码完成 schema V4 强制重配。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
    回答 Claude 提问、调整或停止任务，也可从会话顶栏手动发起提供方接力。接力到
-   Claude 官方时，手机会显示“等待 Mac 确认”，直到官方首条消息通过关联校验。
+   Claude 官方时，手机会显示“等待本机确认”，直到官方首条消息通过关联校验。
 
 Bridge 不点击输入框，不粘贴内容，不申请辅助功能权限，也不读写系统剪贴板。
 Bridge 接管 Claude Desktop 已有会话后，电脑端 Bridge 是主要桌面界面，手机是远程
@@ -99,9 +99,16 @@ Claude Desktop 正在回复、调用工具或等待工具结果时统一显示�
 
 最新桌面安装包与 Android APK 见
 [GitHub Releases](https://github.com/czhmartinez/claude-desktop-bridge/releases/latest)。
-当前桌面发布工作流只构建 macOS（`macos-15`）；Windows / Linux 桌面安装包暂不随 CI 发布。
-Actions 中标注 `adhoc-ci` 的安装包只用于构建验证；Release 附件使用本机稳定签名，
-用于保留 macOS Files & Folders 授权。
+当前桌面发布工作流构建 macOS（`macos-15`）与 Windows（`windows-2022`）；Linux
+桌面安装包仍不随 CI 发布。Windows 附件标记为 `installer-ci`，默认可能未签名，
+正式分发必须追加 Authenticode 签名。macOS `adhoc-ci` 也只用于构建验证；Release
+附件使用本机稳定签名，用于保留 macOS Files & Folders 授权。
+
+Windows 版与 macOS 版共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic API、
+Relay、证据、普通 Claude Desktop 启动/退出控制，以及官方 Deep Link、首条消息关联和
+Claude Desktop 会话清单登记。Windows 使用 `%APPDATA%\Claude\claude-code-sessions`
+并通过 PowerShell/tasklist 做进程检查；用户无需手工复制配置。私有 CDP 和隐藏协议仍在
+两个平台都不启用，避免绕过 Anthropic 授权。
 
 版本号文件推送到 `main` 后，`release.yml` 会先校验根包、全部 workspace、
 `package-lock.json`、Android `versionName` 和 iOS `MARKETING_VERSION` 完全一致，
@@ -168,6 +175,18 @@ npm run test:visual
 npm run build:android:debug
 BRIDGE_MAC_SIGN_IDENTITY='<代码签名身份 SHA-1>' npm run make -w @bridge/desktop
 ```
+
+Windows 安装包必须在 Windows 上构建：
+
+```powershell
+npm run make:windows
+```
+
+产物位于 `apps/desktop/out/make/squirrel.windows/x64/`，其中 `*Setup.exe` 可直接运行并
+按用户安装 Bridge；未签名包可能出现 SmartScreen 提示，仅适合本机/CI 验收。正式分发
+前在 Windows CI 或本机注入 `BRIDGE_WIN_CERTIFICATE_FILE` 与
+`BRIDGE_WIN_CERTIFICATE_PASSWORD`（或 `BRIDGE_WIN_SIGN_WITH_PARAMS`）完成 Authenticode
+签名；仓库不会保存证书或密码。
 
 M0 真实闸门使用一次性项目和可丢弃会话验证同一 transcript 的多轮持久输入、
 流式回复、真实工具审批、中断和断线恢复，并检查活动应用与剪贴板前后不变。

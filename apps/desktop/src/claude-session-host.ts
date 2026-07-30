@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   query as createQuery,
@@ -8,6 +9,7 @@ import {
   type SDKControlGetContextUsageResponse,
   type SDKMessage,
   type SDKUserMessage,
+  type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   isClaudeTranscriptControlMessage,
@@ -61,6 +63,24 @@ export interface ClaudeSessionHostOptions {
 export interface SessionHostInput {
   text: string;
   attachments?: BridgeAttachment[];
+}
+
+function needsWindowsShell(executablePath: string): boolean {
+  return process.platform === "win32" && /\.(?:cmd|bat)$/iu.test(executablePath);
+}
+
+function spawnWindowsShim(options: SpawnOptions) {
+  const child = spawn(options.command, options.args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    shell: true,
+  });
+  options.signal.addEventListener("abort", () => {
+    if (!child.killed) child.kill();
+  }, { once: true });
+  return child;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -178,6 +198,9 @@ export class ClaudeSessionHost extends EventEmitter {
         persistSession: this.options.persistSession ?? true,
         ...(this.modelValue ? { model: this.modelValue } : {}),
         ...(this.effortValue ? { effort: this.effortValue } : {}),
+        ...(needsWindowsShell(this.options.executablePath)
+          ? { spawnClaudeCodeProcess: spawnWindowsShim }
+          : {}),
         ...(resumeExistingSession
           ? { resume: this.sessionIdValue, forkSession: false }
           : { sessionId: this.sessionIdValue }),

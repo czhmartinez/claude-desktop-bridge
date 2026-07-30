@@ -529,7 +529,7 @@ export class SessionBroker extends EventEmitter {
           state: "not-managed",
           detail: "实验性 Claude Desktop 同步控制尚未启用。",
           enabled: false,
-          canRestart: process.platform === "darwin",
+          canRestart: process.platform === "darwin" || process.platform === "win32",
         },
       }
     );

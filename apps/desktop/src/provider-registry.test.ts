@@ -25,7 +25,7 @@ function storage(): SafeStorageLike {
   };
 }
 
-async function fixture(fetchImpl: typeof fetch) {
+async function fixture(fetchImpl: typeof fetch, platform: NodeJS.Platform = "darwin") {
   const root = await mkdtemp(join(tmpdir(), "bridge-providers-"));
   directories.push(root);
   const state = new ConversationStateStore({
@@ -53,12 +53,25 @@ async function fixture(fetchImpl: typeof fetch) {
       },
     }),
     fetchImpl,
-    platform: "darwin",
+    platform,
   });
   return { root, state, apiKeyPath, registry };
 }
 
 describe("ProviderRegistry", () => {
+  it("keeps the official Deep Link provider available on Windows", async () => {
+    const { state, registry } = await fixture(vi.fn() as unknown as typeof fetch, "win32");
+    await registry.initialize();
+
+    expect(registry.get("provider:claude-official:default")).toMatchObject({
+      kind: "claude-official",
+      status: "ready",
+      configured: true,
+      readOnly: true,
+    });
+    state.close();
+  });
+
   it("validates the API key with GET /v1/models and only persists OS ciphertext", async () => {
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       expect(init?.method).toBe("GET");

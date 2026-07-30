@@ -13,7 +13,16 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { basename, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+  sep,
+  win32 as windowsPath,
+} from "node:path";
 import { promisify } from "node:util";
 import type {
   BridgeDesktopRegistrationInfo,
@@ -25,6 +34,12 @@ import type { ClaudeRuntimePaths } from "./platform.js";
 const execFile = promisify(execFileCallback);
 const CLAUDE_MAIN = "/Applications/Claude.app/Contents/MacOS/Claude";
 const CLAUDE_HELPER = "/Applications/Claude.app/Contents/Frameworks/Claude Helper";
+const WINDOWS_PROCESS_QUERY = [
+  "Get-CimInstance Win32_Process |",
+  "Where-Object { $_.Name -match '^(Claude|Claude Helper).*\\.exe$' } |",
+  "Select-Object ProcessId,ParentProcessId,Name,CommandLine |",
+  "ConvertTo-Json -Compress",
+].join(" ");
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const TRANSCRIPT_PROBE_BYTES = 1024 * 1024;
 
@@ -85,7 +100,7 @@ function parseRows(stdout: string): ProcessRow[] {
 }
 
 function userDataDirFromCommand(command: string): string | undefined {
-  const match = /--user-data-dir=(.+?)(?=\s--|$)/u.exec(command);
+  const match = /--user-data-dir(?:=|\s+)(.+?)(?=\s--|$)/u.exec(command);
   const value = match?.[1]?.trim();
   if (!value) return undefined;
   if (
@@ -95,17 +110,25 @@ function userDataDirFromCommand(command: string): string | undefined {
   return value;
 }
 
-export function parseClaudeDesktopProfiles(stdout: string): ClaudeDesktopProfileProcess[] {
-  const rows = parseRows(stdout);
+function parseProfileRows(
+  rows: ProcessRow[],
+  platform: NodeJS.Platform,
+): ClaudeDesktopProfileProcess[] {
   const byPid = new Map(rows.map((row) => [row.pid, row]));
+  const platformIsWindows = platform === "win32";
   const mainPids = new Set(rows
-    .filter((row) => row.command === CLAUDE_MAIN || row.command.startsWith(`${CLAUDE_MAIN} `))
+    .filter((row) => platformIsWindows
+      ? /(?:^|[\\/"'])Claude\.exe(?:["']|\s|$)/iu.test(row.command)
+      : row.command === CLAUDE_MAIN || row.command.startsWith(`${CLAUDE_MAIN} `))
     .map((row) => row.pid));
   const profiles = new Map<string, ClaudeDesktopProfileProcess>();
   for (const row of rows) {
-    if (!row.command.includes(CLAUDE_HELPER)) continue;
+    if (platformIsWindows
+      ? !/Claude Helper(?:\.exe)?/iu.test(row.command)
+      : !row.command.includes(CLAUDE_HELPER)) continue;
     const userDataDir = userDataDirFromCommand(row.command);
-    if (!userDataDir || !isAbsolute(userDataDir)) continue;
+    const absolute = platformIsWindows ? windowsPath.isAbsolute(userDataDir ?? "") : isAbsolute(userDataDir ?? "");
+    if (!userDataDir || !absolute) continue;
     let ancestor = row.ppid;
     const visited = new Set<number>();
     while (ancestor > 0 && !visited.has(ancestor) && !mainPids.has(ancestor)) {
@@ -113,21 +136,70 @@ export function parseClaudeDesktopProfiles(stdout: string): ClaudeDesktopProfile
       ancestor = byPid.get(ancestor)?.ppid ?? 0;
     }
     if (!mainPids.has(ancestor)) continue;
-    profiles.set(`${ancestor}\0${normalize(userDataDir)}`, {
+    const normalized = platformIsWindows ? windowsPath.normalize(userDataDir) : normalize(userDataDir);
+    profiles.set(`${ancestor}\0${normalized}`, {
       pid: ancestor,
-      userDataDir: normalize(userDataDir),
+      userDataDir: normalized,
     });
   }
   return [...profiles.values()];
 }
 
-async function listRunningProfiles(): Promise<ClaudeDesktopProfileProcess[]> {
-  if (process.platform !== "darwin") return [];
-  const { stdout } = await execFile("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+function parseWindowsProcessRows(stdout: string): ProcessRow[] {
+  let values: unknown;
+  try {
+    values = JSON.parse(stdout.replace(/^\uFEFF/u, ""));
+  } catch {
+    return [];
+  }
+  const rows = Array.isArray(values) ? values : values ? [values] : [];
+  return rows.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const record = value as Record<string, unknown>;
+    const pid = Number(record.ProcessId);
+    const ppid = Number(record.ParentProcessId);
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0 || ppid < 0) return [];
+    const name = typeof record.Name === "string" ? record.Name : "";
+    const commandLine = typeof record.CommandLine === "string" ? record.CommandLine : "";
+    return [{ pid, ppid, command: `${name}${commandLine ? ` ${commandLine}` : ""}` }];
+  });
+}
+
+export function parseWindowsClaudeDesktopProfiles(stdout: string): ClaudeDesktopProfileProcess[] {
+  return parseProfileRows(parseWindowsProcessRows(stdout), "win32");
+}
+
+export function parseClaudeDesktopProfiles(
+  stdout: string,
+  platform: NodeJS.Platform = "darwin",
+): ClaudeDesktopProfileProcess[] {
+  return platform === "win32"
+    ? parseWindowsClaudeDesktopProfiles(stdout)
+    : parseProfileRows(parseRows(stdout), platform);
+}
+
+async function listRunningProfiles(platform = process.platform): Promise<ClaudeDesktopProfileProcess[]> {
+  if (platform === "darwin") {
+    const { stdout } = await execFile("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return parseClaudeDesktopProfiles(stdout, platform);
+  }
+  if (platform !== "win32") return [];
+  const { stdout } = await execFile("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    WINDOWS_PROCESS_QUERY,
+  ], {
     encoding: "utf8",
+    windowsHide: true,
     maxBuffer: 8 * 1024 * 1024,
   });
-  return parseClaudeDesktopProfiles(stdout);
+  return parseWindowsClaudeDesktopProfiles(stdout);
 }
 
 function isWithin(path: string, root: string): boolean {
@@ -169,7 +241,7 @@ export class ClaudeDesktopSessionRegistrar {
 
   constructor(private readonly options: ClaudeDesktopSessionRegistrarOptions) {
     this.now = options.now ?? Date.now;
-    this.profiles = options.listProfiles ?? listRunningProfiles;
+    this.profiles = options.listProfiles ?? (() => listRunningProfiles(options.platform ?? process.platform));
     this.transcriptFinder = options.findTranscript ?? findClaudeTranscriptFile;
   }
 
@@ -179,10 +251,11 @@ export class ClaudeDesktopSessionRegistrar {
   ): Promise<DesktopSessionRegistrationResult> {
     this.assertInput(input);
     const now = this.now();
-    if ((this.options.platform ?? process.platform) !== "darwin") {
+    const platform = this.options.platform ?? process.platform;
+    if (platform !== "darwin" && platform !== "win32") {
       return this.stableStatus(previous, {
         state: "unavailable",
-        detail: "当前平台暂不支持登记 Claude Desktop 侧边栏。",
+        detail: "当前平台暂不支持登记 Claude Desktop 会话清单。",
         updatedAt: now,
       });
     }
@@ -507,10 +580,7 @@ export class ClaudeDesktopSessionRegistrar {
         if (value.sessionId === input.sessionId || value.session_id === input.sessionId) {
           hasSessionId = true;
         }
-        if (
-          typeof value.cwd === "string" &&
-          normalize(value.cwd) === normalize(input.cwd)
-        ) {
+        if (typeof value.cwd === "string" && this.samePath(value.cwd, input.cwd)) {
           hasCwd = true;
         }
       } catch {
@@ -521,6 +591,13 @@ export class ClaudeDesktopSessionRegistrar {
     if (!hasSessionId || !hasCwd) {
       throw new Error("Claude transcript 与 Bridge 会话标识或项目目录不一致");
     }
+  }
+
+  private samePath(left: string, right: string): boolean {
+    if ((this.options.platform ?? process.platform) === "win32") {
+      return windowsPath.normalize(left).toLowerCase() === windowsPath.normalize(right).toLowerCase();
+    }
+    return normalize(left) === normalize(right);
   }
 
   private async findByCliSessionId(

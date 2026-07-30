@@ -146,7 +146,7 @@ async function desktopMain(): Promise<void> {
       state: "not-managed",
       detail: "尚未初始化。",
       enabled: false,
-      canRestart: process.platform === "darwin",
+      canRestart: process.platform === "darwin" || process.platform === "win32",
     },
   });
   const providers = new ProviderRegistry({
