@@ -1,4 +1,4 @@
-# Bridge 0.5.0 安全模型
+# Bridge 0.5.1 安全模型
 
 ## 已保护
 
@@ -17,6 +17,8 @@
 - Electron 渲染进程启用 sandbox、context isolation，关闭 Node integration，
   并限制导航和 IPC 来源。
 - Bridge 不申请辅助功能权限，不发送键鼠事件，不激活 Claude/Codex，不读写剪贴板。
+- “完全授权”只在电脑端 `PermissionBroker` 自动批准工具请求，不启用 Agent SDK
+  `bypassPermissions`；Claude 提问和受管策略的明确禁止仍不能被自动批准。
 - 第三方 Claude Host 凭据不写入 Bridge 配置，不经 Relay，不出现在诊断或日志中。
 - Anthropic Console API Key 只接受 Desktop 本地 IPC；保存前必须由 Electron
   `safeStorage` 加密，磁盘格式固定带 `os:` 标记，系统安全存储不可用时拒绝保存，

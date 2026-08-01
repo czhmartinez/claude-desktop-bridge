@@ -27,8 +27,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
       - run: npm run build -w @bridge/protocol
       - run: npm run make:windows -w @bridge/desktop
+      - run: npm run build -w @bridge/relay
+      - name: Run packaged Windows QA and pairing
+        run: npm run test:desktop:packaged:windows
       - name: Assert Windows installer output
         shell: pwsh
         run: |
@@ -39,7 +44,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Bridge-Windows-installer-ci
-          path: apps/desktop/out/make/**
+          path: |
+            apps/desktop/out/make/**
+            artifacts/packaged-desktop/**
 
   android-debug:
     runs-on: ubuntu-latest

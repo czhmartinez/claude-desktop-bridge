@@ -297,7 +297,7 @@ describe("HandoffService", () => {
       activeProviderProfileId: ANTHROPIC_API_PROFILE_ID,
       state: "ready",
     });
-    fixture.service.close();
+    await fixture.service.close();
     fixture.state.close();
   });
 
@@ -320,7 +320,7 @@ describe("HandoffService", () => {
     });
     await waitFor(() => fixture.state.handoff(preview.handoff.handoffId)?.state === "failed");
     expect(fixture.state.route(fixture.sessionId)?.activeLaneId).toBe(sourceLaneId);
-    fixture.service.close();
+    await fixture.service.close();
     fixture.state.close();
   });
 
@@ -333,7 +333,7 @@ describe("HandoffService", () => {
     });
     await fixture.service.commit({ handoffId: preview.handoff.handoffId });
     expect(fixture.commands).toHaveLength(1);
-    fixture.service.close();
+    await fixture.service.close();
 
     const restarted = fixture.createService();
     await restarted.initialize();
@@ -344,7 +344,7 @@ describe("HandoffService", () => {
       error: expect.stringContaining("避免重复发送"),
     });
     expect(fixture.state.route(fixture.sessionId)?.activeLaneId).toBe(sourceLaneId);
-    restarted.close();
+    await restarted.close();
     fixture.state.close();
   });
 
@@ -404,7 +404,7 @@ describe("HandoffService", () => {
       },
     });
     expect(fixture.observer.aliases.get(officialSessionId)).toBe(fixture.sessionId);
-    fixture.service.close();
+    await fixture.service.close();
     fixture.state.close();
   });
 
@@ -441,7 +441,7 @@ describe("HandoffService", () => {
       state: "ready",
     });
     expect(fixture.state.activeLane(fixture.sessionId)?.nativeSessionId).toBe(second);
-    fixture.service.close();
+    await fixture.service.close();
     fixture.state.close();
   });
 });

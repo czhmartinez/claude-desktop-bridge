@@ -17,6 +17,7 @@ import {
   type BridgeEndpoint,
   type BridgeEffort,
   type BridgeEvent,
+  type BridgePermissionMode,
   type BridgePayload,
   type BridgeRequest,
   type BridgeResponse,
@@ -91,6 +92,16 @@ function effortParam(params: Record<string, unknown>, key: string): BridgeEffort
   if (value === undefined || value === null) return value;
   if (["low", "medium", "high", "xhigh", "max"].includes(value)) return value as BridgeEffort;
   throw new Error("Invalid effort");
+}
+
+function permissionModeParam(
+  params: Record<string, unknown>,
+  key: string,
+): BridgePermissionMode | null | undefined {
+  const value = nullableStringParam(params, key);
+  if (value === undefined || value === null) return value;
+  if (value === "standard" || value === "full-access") return value;
+  throw new Error("Invalid permission mode");
 }
 
 function attachmentsParam(params: Record<string, unknown>): BridgeAttachment[] {
@@ -213,6 +224,7 @@ export class DesktopController extends EventEmitter {
     this.config.managedDesktopEnabled = false;
     this.config.launchAtLogin = await isLaunchAtLoginEnabled(this.app);
     await this.repository.save(this.config);
+    this.broker.setDefaultPermissionMode(this.config.defaultPermissionMode);
     this.hostCrypto = await BridgeCrypto.fromHostSecret({
       hostId: this.config.hostDeviceId,
       pairingEpoch: this.config.pairingEpoch,
@@ -277,7 +289,9 @@ export class DesktopController extends EventEmitter {
           "provider.profile.v1",
           "conversation.lanes.v1",
           "conversation.handoff.v1",
+          "permission.policy.v1",
         ],
+        defaultPermissionMode: this.config.defaultPermissionMode,
       },
       projects: this.broker.listProjects(),
       sessions: this.broker.listSessions(),
@@ -447,9 +461,9 @@ export class DesktopController extends EventEmitter {
     };
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.socket?.close();
-    this.handoffs?.close();
+    await this.handoffs?.close();
   }
 
   pauseForSleep(): void {
@@ -805,6 +819,66 @@ export class DesktopController extends EventEmitter {
       return {
         resolved: true,
       };
+    }
+    if (request.method === "permission.policy.configure") {
+      const scope = stringParam(params, "scope")!;
+      if (scope !== "host" && scope !== "session") throw new Error("Invalid permission policy scope");
+      const mode = permissionModeParam(params, "mode");
+      const sessionId = stringParam(params, "sessionId", false);
+      const actor = origin === "mobile"
+        ? {
+            deviceId: sourceDeviceId ?? "mobile",
+            name: this.config?.devices.find((device) => device.deviceId === sourceDeviceId)?.name ?? "手机 Bridge",
+          }
+        : {
+            deviceId: this.config?.hostDeviceId ?? "desktop",
+            name: this.config?.desktopName ?? "电脑端 Bridge",
+          };
+      if (scope === "host") {
+        if (!mode) throw new Error("Host permission mode is required");
+        if (!this.config) throw new Error("Desktop controller is not initialized");
+        this.config.defaultPermissionMode = mode;
+        await this.repository.save(this.config);
+        await this.eventLog.append({
+          ...(sessionId ? { sessionId } : {}),
+          origin,
+          type: "permission.policy.changed",
+          data: {
+            scope,
+            mode,
+            effectiveMode: mode,
+            source: "host",
+            changedByDeviceId: actor.deviceId,
+            changedByName: actor.name,
+          },
+        });
+        const resolvedPending = this.broker.setDefaultPermissionMode(mode);
+        const configuration = sessionId && this.broker.session(sessionId)
+          ? await this.broker.configuration(sessionId, false)
+          : undefined;
+        return {
+          defaultPermissionMode: mode,
+          resolvedPending,
+          ...(configuration ? { configuration } : {}),
+        };
+      }
+      if (!sessionId) throw new Error("sessionId is required");
+      if (mode === undefined) throw new Error("mode is required");
+      const configured = await this.broker.configurePermissionPolicy(sessionId, mode);
+      await this.eventLog.append({
+        sessionId,
+        origin,
+        type: "permission.policy.changed",
+        data: {
+          scope,
+          mode,
+          effectiveMode: configured.configuration.permissionPolicy?.effectiveMode ?? "standard",
+          source: configured.configuration.permissionPolicy?.source ?? "host",
+          changedByDeviceId: actor.deviceId,
+          changedByName: actor.name,
+        },
+      });
+      return configured;
     }
     if (request.method === "events.resume") {
       const afterSeq = numberParam(params, "afterSeq", 0);

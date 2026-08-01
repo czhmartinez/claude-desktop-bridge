@@ -13,10 +13,21 @@ import {
   conversationTimeline,
   ownershipLabel,
   permissionPresentation,
+  restorableSessionId,
   stoppableBridgeTask,
   supportsProviderSwitching,
   usesOfficialComposer,
 } from "./MobileWorkspace.js";
+
+describe("restorableSessionId", () => {
+  const sessions = [{ sessionId: "session-1" }] as BridgeSessionInfo[];
+
+  it("restores only a session that still belongs to the selected host", () => {
+    expect(restorableSessionId("session-1", sessions)).toBe("session-1");
+    expect(restorableSessionId("removed-session", sessions)).toBeUndefined();
+    expect(restorableSessionId(undefined, sessions)).toBeUndefined();
+  });
+});
 
 function evidence(
   id: string,
@@ -332,6 +343,43 @@ describe("conversationItems", () => {
     }, events, []);
 
     expect(items.map((item) => item.text)).toEqual(["继续推进 P2", "继续处理 P2。"]);
+  });
+
+  it("keeps automatic approvals and turn-finished permission cleanup out of the conversation", () => {
+    const events: BridgeEvent[] = [
+      {
+        eventId: "automatic-allow",
+        seq: 1,
+        timestamp: 1,
+        origin: "system",
+        type: "permission.resolved",
+        sessionId: "session-1",
+        data: {
+          requestId: "permission-1",
+          decision: "allow-once",
+          resolvedByName: "Bridge 完全授权",
+          automatic: true,
+          reason: "policy-full-access",
+        },
+      },
+      {
+        eventId: "turn-cleanup",
+        seq: 2,
+        timestamp: 2,
+        origin: "system",
+        type: "permission.resolved",
+        sessionId: "session-1",
+        data: {
+          requestId: "permission-2",
+          decision: "deny",
+          resolvedByName: "Bridge",
+          automatic: true,
+          reason: "turn-finished",
+        },
+      },
+    ];
+
+    expect(conversationItems("session-1", undefined, events, [])).toEqual([]);
   });
 });
 

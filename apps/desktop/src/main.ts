@@ -346,8 +346,8 @@ async function desktopMain(): Promise<void> {
     event.preventDefault();
     cleanupStarted = true;
     quitting = true;
-    controller.close();
     void (async () => {
+      await controller.close().catch(() => undefined);
       await broker.close().catch(() => undefined);
       await observer.close().catch(() => undefined);
       await evidence.close().catch(() => undefined);

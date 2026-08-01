@@ -11,6 +11,8 @@ import type {
   BridgeHistoryPage,
   BridgeModelInfo,
   BridgeOwnershipState,
+  BridgePermissionMode,
+  BridgePermissionPolicy,
   BridgeProjectInfo,
   BridgeRuntimeStatus,
   BridgeSessionConfiguration,
@@ -72,6 +74,7 @@ interface StoredSessionConfiguration {
   sessionId: string;
   model?: string;
   effort?: BridgeEffort;
+  permissionMode?: BridgePermissionMode;
   updatedAt: number;
 }
 
@@ -327,7 +330,7 @@ function historyOrder(left: BridgeHistoryItem, right: BridgeHistoryItem): number
 }
 
 export class SessionBroker extends EventEmitter {
-  readonly permissionBroker = new PermissionBroker();
+  readonly permissionBroker: PermissionBroker;
   private readonly maxParallelTurns: number;
   private readonly hostFactory: NonNullable<SessionBrokerOptions["hostFactory"]>;
   private readonly runtimeFactory: typeof prepareClaudeRuntime;
@@ -347,6 +350,7 @@ export class SessionBroker extends EventEmitter {
   private runtime: Awaited<ReturnType<typeof prepareClaudeRuntime>> | undefined;
   private modelCatalogComplete = false;
   private modelCatalogDiscoveryAttempted = false;
+  private defaultPermissionMode: BridgePermissionMode = "standard";
   private activeTurns = 0;
   private initialized = false;
   private closed = false;
@@ -374,6 +378,9 @@ export class SessionBroker extends EventEmitter {
 
   constructor(private readonly options: SessionBrokerOptions) {
     super();
+    this.permissionBroker = new PermissionBroker(
+      (sessionId) => this.permissionPolicy(sessionId).effectiveMode,
+    );
     this.maxParallelTurns = options.maxParallelTurns ?? 2;
     this.hostFactory = options.hostFactory ?? ((hostOptions) => new ClaudeSessionHost(hostOptions));
     this.runtimeFactory = options.prepareRuntime ?? prepareClaudeRuntime;
@@ -444,26 +451,28 @@ export class SessionBroker extends EventEmitter {
       const type = request.toolName === "AskUserQuestion" ? "question.requested" : "permission.requested";
       const state = this.runtimeStates.get(request.sessionId);
       if (state?.active) state.turnState = "waiting";
-      void this.record({
-        sessionId: request.sessionId,
-        itemId: request.requestId,
-        timestamp: request.createdAt,
-        origin: "claude-host",
-        type,
-        data: {
-          requestId: request.requestId,
-          toolUseId: request.toolUseId,
-          toolName: request.toolName,
-          title: request.title ?? "",
-          displayName: request.displayName ?? "",
-          description: request.description ?? "",
-          input: request.input,
-          createdAt: request.createdAt,
-          canAllowAlways: request.suggestions.some(
-            (suggestion: { destination?: string }) => suggestion.destination === "localSettings",
-          ),
-        },
-      });
+      this.eventQueue = this.eventQueue
+        .catch(() => undefined)
+        .then(() => this.record({
+          sessionId: request.sessionId,
+          itemId: request.requestId,
+          timestamp: request.createdAt,
+          origin: "claude-host",
+          type,
+          data: {
+            requestId: request.requestId,
+            toolUseId: request.toolUseId,
+            toolName: request.toolName,
+            title: request.title ?? "",
+            displayName: request.displayName ?? "",
+            description: request.description ?? "",
+            input: request.input,
+            createdAt: request.createdAt,
+            canAllowAlways: request.suggestions.some(
+              (suggestion: { destination?: string }) => suggestion.destination === "localSettings",
+            ),
+          },
+        }));
       this.emit("changed");
     });
     this.permissionBroker.on("resolved", (request, result, resolution) => {
@@ -472,21 +481,28 @@ export class SessionBroker extends EventEmitter {
       if (state?.turnState === "waiting" && this.permissionBroker.list(request.sessionId).length === 0) {
         state.turnState = state.active ? "running" : "idle";
       }
-      void this.record({
-        sessionId: request.sessionId,
-        itemId: request.requestId,
-        timestamp: resolution.resolvedAt,
-        origin: "system",
-        type,
-        data: {
-          requestId: request.requestId,
-          decision: resolution.decision,
-          resolvedByDeviceId: resolution.resolvedByDeviceId,
-          resolvedByName: resolution.resolvedByName,
-          resolvedAt: resolution.resolvedAt,
-          behavior: result.behavior,
-        },
-      });
+      this.eventQueue = this.eventQueue
+        .catch(() => undefined)
+        .then(() => this.record({
+          sessionId: request.sessionId,
+          itemId: request.requestId,
+          timestamp: resolution.resolvedAt,
+          origin: "system",
+          type,
+          data: {
+            requestId: request.requestId,
+            toolUseId: request.toolUseId,
+            toolName: request.toolName,
+            input: request.input,
+            decision: resolution.decision,
+            resolvedByDeviceId: resolution.resolvedByDeviceId,
+            resolvedByName: resolution.resolvedByName,
+            resolvedAt: resolution.resolvedAt,
+            behavior: result.behavior,
+            ...(resolution.automatic ? { automatic: true } : {}),
+            ...(resolution.reason ? { reason: resolution.reason } : {}),
+          },
+        }));
       this.emit("changed");
     });
     await this.refreshRuntime();
@@ -824,7 +840,57 @@ export class SessionBroker extends EventEmitter {
         : [...EFFORT_LEVELS],
       modelsComplete,
       appliesAfterTurn: Boolean(state?.configurationPending),
+      permissionPolicy: this.permissionPolicy(sessionId),
       ...(context ? { context } : {}),
+    };
+  }
+
+  permissionPolicy(sessionId: string): BridgePermissionPolicy {
+    const sessionMode = this.sessionConfigurations.get(sessionId)?.permissionMode;
+    return {
+      hostMode: this.defaultPermissionMode,
+      ...(sessionMode ? { sessionMode } : {}),
+      effectiveMode: sessionMode ?? this.defaultPermissionMode,
+      source: sessionMode ? "session" : "host",
+    };
+  }
+
+  setDefaultPermissionMode(mode: BridgePermissionMode): number {
+    if (mode !== "standard" && mode !== "full-access") throw new Error("Invalid permission mode");
+    this.defaultPermissionMode = mode;
+    const resolved = this.permissionBroker.applyPolicy();
+    this.emit("changed");
+    return resolved;
+  }
+
+  async configurePermissionPolicy(
+    sessionId: string,
+    mode: BridgePermissionMode | null,
+  ): Promise<{ configuration: BridgeSessionConfiguration; resolvedPending: number }> {
+    await this.initialize();
+    if (!this.session(sessionId)) throw new Error("Session not found");
+    if (mode !== null && mode !== "standard" && mode !== "full-access") {
+      throw new Error("Invalid permission mode");
+    }
+    const previous = this.sessionConfigurations.get(sessionId);
+    const proposed: StoredSessionConfiguration = {
+      sessionId,
+      ...(previous?.model ? { model: previous.model } : {}),
+      ...(previous?.effort ? { effort: previous.effort } : {}),
+      ...(mode ? { permissionMode: mode } : {}),
+      updatedAt: Date.now(),
+    };
+    if (proposed.model || proposed.effort || proposed.permissionMode) {
+      this.sessionConfigurations.set(sessionId, proposed);
+    } else {
+      this.sessionConfigurations.delete(sessionId);
+    }
+    await this.saveSessions();
+    const resolvedPending = this.permissionBroker.applyPolicy(sessionId);
+    this.emit("changed");
+    return {
+      configuration: await this.configuration(sessionId, false),
+      resolvedPending,
     };
   }
 
@@ -855,6 +921,7 @@ export class SessionBroker extends EventEmitter {
       sessionId: input.sessionId,
       ...(previous?.model ? { model: previous.model } : {}),
       ...(previous?.effort ? { effort: previous.effort } : {}),
+      ...(previous?.permissionMode ? { permissionMode: previous.permissionMode } : {}),
       updatedAt: Date.now(),
     };
     if (changesModel) {
@@ -899,7 +966,7 @@ export class SessionBroker extends EventEmitter {
       state.configurationPending = true;
     }
 
-    if (proposed.model || proposed.effort) this.sessionConfigurations.set(input.sessionId, proposed);
+    if (proposed.model || proposed.effort || proposed.permissionMode) this.sessionConfigurations.set(input.sessionId, proposed);
     else this.sessionConfigurations.delete(input.sessionId);
     await this.saveSessions();
     await this.record({
@@ -1120,7 +1187,7 @@ export class SessionBroker extends EventEmitter {
     const active = state?.active;
     const activeMatches = Boolean(active && (!commandId || active.commandId === commandId));
     if (state?.managed && active && activeMatches) {
-      this.permissionBroker.cancelSession(sessionId);
+      this.permissionBroker.cancelSession(sessionId, "turn-interrupted");
       if (force) {
         if (this.managedTransport?.ready) {
           void this.managedTransport.interrupt(sessionId).catch(() => undefined);
@@ -1134,7 +1201,7 @@ export class SessionBroker extends EventEmitter {
       return true;
     }
     if (active && activeMatches && state.host) {
-      this.permissionBroker.cancelSession(sessionId);
+      this.permissionBroker.cancelSession(sessionId, "turn-interrupted");
       if (force) {
         await this.forceCancelActive(sessionId, active);
         return true;
@@ -1197,7 +1264,7 @@ export class SessionBroker extends EventEmitter {
   private async forceCancelActive(sessionId: string, turn: QueuedTurn): Promise<void> {
     const state = this.runtimeStates.get(sessionId);
     if (!state?.active || state.active.commandId !== turn.commandId) return;
-    this.permissionBroker.cancelSession(sessionId);
+    this.permissionBroker.cancelSession(sessionId, "turn-interrupted");
     this.clearTakeoverRetry(sessionId);
     if (turn.turnId) {
       this.forceStoppedTurnIds.add(turn.turnId);
@@ -2401,7 +2468,10 @@ export class SessionBroker extends EventEmitter {
     const state = this.runtimeStates.get(sessionId);
     const turn = state?.active;
     if (!state || !turn) return;
-    this.permissionBroker.cancelSession(sessionId);
+    this.permissionBroker.cancelSession(
+      sessionId,
+      terminal === "interrupted" ? "turn-interrupted" : "turn-finished",
+    );
     state.turnState = terminal;
     state.ownership = state.managed ? "DESKTOP_MANAGED_IDLE" : "BRIDGE_IDLE";
     delete state.active;
@@ -2846,7 +2916,12 @@ export class SessionBroker extends EventEmitter {
           typeof configuration.sessionId !== "string" ||
           typeof configuration.updatedAt !== "number" ||
           (configuration.model !== undefined && typeof configuration.model !== "string") ||
-          (configuration.effort !== undefined && !EFFORT_LEVELS.includes(configuration.effort))
+          (configuration.effort !== undefined && !EFFORT_LEVELS.includes(configuration.effort)) ||
+          (
+            configuration.permissionMode !== undefined &&
+            configuration.permissionMode !== "standard" &&
+            configuration.permissionMode !== "full-access"
+          )
         ) continue;
         this.sessionConfigurations.set(configuration.sessionId, configuration);
       }
@@ -2990,7 +3065,12 @@ export class SessionBroker extends EventEmitter {
         typeof configuration.sessionId !== "string" ||
         typeof configuration.updatedAt !== "number" ||
         (configuration.model !== undefined && typeof configuration.model !== "string") ||
-        (configuration.effort !== undefined && !EFFORT_LEVELS.includes(configuration.effort as BridgeEffort))
+        (configuration.effort !== undefined && !EFFORT_LEVELS.includes(configuration.effort as BridgeEffort)) ||
+        (
+          configuration.permissionMode !== undefined &&
+          configuration.permissionMode !== "standard" &&
+          configuration.permissionMode !== "full-access"
+        )
       ) continue;
       this.sessionConfigurations.set(
         configuration.sessionId,

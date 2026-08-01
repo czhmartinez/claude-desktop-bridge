@@ -100,6 +100,27 @@ describe("desktop configuration", () => {
     expect((await repository.load())?.devices[0]?.secret).toBe("independent-device-secret");
   });
 
+  it("persists the computer permission mode across restarts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await repository.loadOrCreate();
+    expect(created.defaultPermissionMode).toBe("standard");
+
+    created.defaultPermissionMode = "full-access";
+    await repository.save(created);
+
+    expect((await repository.load())?.defaultPermissionMode).toBe("full-access");
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      version: 4,
+      defaultPermissionMode: "full-access",
+    });
+  });
+
   it("refreshes a stale LAN relay address without rotating pairing secrets", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);

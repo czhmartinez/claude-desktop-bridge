@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type {
   BridgePermissionDecision,
+  BridgePermissionMode,
   BridgePermissionResolution,
+  BridgePermissionResolutionReason,
 } from "@bridge/protocol";
 import type { PermissionResult, PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
 
@@ -37,11 +39,17 @@ export interface ExternalPermissionRequest {
 interface PendingResolver {
   request: PendingPermission;
   resolve(result: PermissionResult, resolution: BridgePermissionResolution): void;
-  abort(): void;
+  abort(reason: BridgePermissionResolutionReason): void;
 }
 
 export class PermissionBroker extends EventEmitter {
   private readonly pending = new Map<string, PendingResolver>();
+
+  constructor(
+    private readonly modeForSession: (sessionId: string) => BridgePermissionMode = () => "standard",
+  ) {
+    super();
+  }
 
   list(sessionId?: string): PendingPermission[] {
     return [...this.pending.values()]
@@ -75,14 +83,18 @@ export class PermissionBroker extends EventEmitter {
       ...(options.displayName ? { displayName: options.displayName } : {}),
       ...(options.description ? { description: options.description } : {}),
     };
+    if (this.canApproveAutomatically(request)) {
+      return this.approveAutomatically(request);
+    }
     return new Promise<PermissionResult>((resolve) => {
+      const onAbort = () => abort("session-ended");
       const finish = (result: PermissionResult, resolution: BridgePermissionResolution) => {
         if (!this.pending.delete(request.requestId)) return;
-        options.signal.removeEventListener("abort", abort);
+        options.signal.removeEventListener("abort", onAbort);
         resolve(result);
         this.emit("resolved", request, result, resolution);
       };
-      const abort = () => finish({
+      const abort = (reason: BridgePermissionResolutionReason) => finish({
         behavior: "deny",
         message: "Bridge session ended before this request was answered.",
         toolUseID: request.toolUseId,
@@ -92,9 +104,15 @@ export class PermissionBroker extends EventEmitter {
         resolvedByDeviceId: "system",
         resolvedByName: "Bridge",
         resolvedAt: Date.now(),
+        automatic: true,
+        reason,
       });
       this.pending.set(request.requestId, { request, resolve: finish, abort });
-      options.signal.addEventListener("abort", abort, { once: true });
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      if (options.signal.aborted) {
+        onAbort();
+        return;
+      }
       this.emit("requested", request);
     });
   }
@@ -119,6 +137,13 @@ export class PermissionBroker extends EventEmitter {
       ...(input.displayName ? { displayName: input.displayName } : {}),
       ...(input.description ? { description: input.description } : {}),
     };
+    if (this.canApproveAutomatically(request)) {
+      this.approveAutomatically(request);
+      void Promise.resolve(responder("allow-once", request.input)).catch((error) => {
+        this.emit("external-error", request, error);
+      });
+      return true;
+    }
     const finish = (result: PermissionResult, resolution: BridgePermissionResolution) => {
       if (!this.pending.delete(request.requestId)) return;
       const updatedInput = result.behavior === "allow" ? result.updatedInput : undefined;
@@ -127,7 +152,7 @@ export class PermissionBroker extends EventEmitter {
       });
       this.emit("resolved", request, result, resolution);
     };
-    const abort = () => finish({
+    const abort = (reason: BridgePermissionResolutionReason) => finish({
       behavior: "deny",
       message: "Bridge session ended before this request was answered.",
       toolUseID: request.toolUseId,
@@ -137,6 +162,8 @@ export class PermissionBroker extends EventEmitter {
       resolvedByDeviceId: "system",
       resolvedByName: "Bridge",
       resolvedAt: Date.now(),
+      automatic: true,
+      reason,
     });
     this.pending.set(request.requestId, { request, resolve: finish, abort });
     this.emit("requested", request);
@@ -155,6 +182,10 @@ export class PermissionBroker extends EventEmitter {
       deviceId: "desktop",
       name: "电脑端 Bridge",
     },
+    metadata?: {
+      automatic?: boolean;
+      reason?: BridgePermissionResolutionReason;
+    },
   ): boolean {
     const pending = this.pending.get(requestId);
     if (!pending) return false;
@@ -170,6 +201,8 @@ export class PermissionBroker extends EventEmitter {
       resolvedByDeviceId: resolver.deviceId,
       resolvedByName: resolver.name,
       resolvedAt: Date.now(),
+      ...(metadata?.automatic ? { automatic: true } : {}),
+      ...(metadata?.reason ? { reason: metadata.reason } : {}),
     };
     if (effectiveDecision === "deny") {
       pending.resolve(
@@ -193,9 +226,52 @@ export class PermissionBroker extends EventEmitter {
     return true;
   }
 
-  cancelSession(sessionId: string): void {
-    for (const pending of this.pending.values()) {
-      if (pending.request.sessionId === sessionId) pending.abort();
+  applyPolicy(sessionId?: string): number {
+    const requests = this.list(sessionId);
+    let resolved = 0;
+    for (const request of requests) {
+      if (!this.canApproveAutomatically(request)) continue;
+      if (this.resolveRequest(
+        request.requestId,
+        "allow-once",
+        undefined,
+        undefined,
+        { deviceId: "policy", name: "Bridge 完全授权" },
+        { automatic: true, reason: "policy-full-access" },
+      )) resolved += 1;
     }
+    return resolved;
+  }
+
+  cancelSession(
+    sessionId: string,
+    reason: BridgePermissionResolutionReason = "session-ended",
+  ): void {
+    for (const pending of this.pending.values()) {
+      if (pending.request.sessionId === sessionId) pending.abort(reason);
+    }
+  }
+
+  private canApproveAutomatically(request: PendingPermission): boolean {
+    return request.toolName !== "AskUserQuestion" && this.modeForSession(request.sessionId) === "full-access";
+  }
+
+  private approveAutomatically(request: PendingPermission): PermissionResult {
+    const result: PermissionResult = {
+      behavior: "allow",
+      updatedInput: request.input,
+      toolUseID: request.toolUseId,
+    };
+    const resolution: BridgePermissionResolution = {
+      requestId: request.requestId,
+      decision: "allow-once",
+      resolvedByDeviceId: "policy",
+      resolvedByName: "Bridge 完全授权",
+      resolvedAt: Date.now(),
+      automatic: true,
+      reason: "policy-full-access",
+    };
+    this.emit("resolved", request, result, resolution);
+    return result;
   }
 }

@@ -44,6 +44,7 @@ export interface PersistedSessionConfiguration {
   sessionId: string;
   model?: string;
   effort?: string;
+  permissionMode?: "standard" | "full-access";
   updatedAt: number;
 }
 

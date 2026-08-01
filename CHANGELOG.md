@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.1
+
+- Add computer-default and per-session `standard` / `full-access` permission policies behind the
+  additive `permission.policy.v1` capability while retaining protocol V3 and pairing schema V4.
+- Keep Agent SDK permission mode at `default`; auto-approve tools in Desktop `PermissionBroker`,
+  keep `AskUserQuestion` interactive, preserve managed denials, and audit automatic decisions.
+- Drain pending tool requests immediately after enabling full access, retain first-resolver-wins
+  behavior, and mark turn-end cleanup so automatic denials no longer flood conversation history.
+- Reconnect and resume events on native app activation, network recovery and push wake without
+  interrupting Desktop work. Restore the last valid host and session after a Mobile process restart.
+- Ship Android `versionCode` 31 alongside version 0.5.1 Desktop and Mobile artifacts.
+
 ## 0.5.0
 
 - Promote Bridge `sessionId` to a stable logical conversation ID with durable provider profiles,

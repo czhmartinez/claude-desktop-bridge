@@ -113,7 +113,7 @@ const sessions = [
     projectId: project.projectId,
     projectName: project.name,
     cwd: project.cwd,
-    title: "Bridge 0.5.0 提供方接力联调",
+    title: "Bridge 0.5.1 手机授权与后台连续性",
     source: "desktop",
     ownership: "BRIDGE_RUNNING",
     turnState: "running",
@@ -374,6 +374,11 @@ let sessionConfiguration = {
   availableEffortLevels: ["low", "medium", "high", "xhigh"],
   modelsComplete: true,
   appliesAfterTurn: true,
+  permissionPolicy: {
+    hostMode: "standard",
+    effectiveMode: "standard",
+    source: "host",
+  },
   context: {
     totalTokens: 301_611,
     maxTokens: 1_000_000,
@@ -429,7 +434,7 @@ const hostSnapshot = {
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.5.0",
+    version: "0.5.1",
     pairingEpoch: 1,
     capabilities: [
       "evidence.v1",
@@ -438,7 +443,9 @@ const hostSnapshot = {
       "provider.profile.v1",
       "conversation.lanes.v1",
       "conversation.handoff.v1",
+      "permission.policy.v1",
     ],
+    defaultPermissionMode: "standard",
   },
   projects: [project, secondaryProject],
   sessions,
@@ -555,6 +562,28 @@ desktopSocket.onMessage((message, encrypted) => {
         ...(typeof request.params.effort === "string" ? { effort: request.params.effort, overrideEffort: request.params.effort } : {}),
       };
       result = { configuration: sessionConfiguration, session: sessions[0] };
+    } else if (request.method === "permission.policy.configure") {
+      const mode = request.params.mode;
+      const scope = request.params.scope;
+      const hostMode = scope === "host" && typeof mode === "string"
+        ? mode
+        : sessionConfiguration.permissionPolicy.hostMode;
+      const sessionMode = scope === "session" && typeof mode === "string" ? mode : undefined;
+      sessionConfiguration = {
+        ...sessionConfiguration,
+        permissionPolicy: {
+          hostMode,
+          ...(sessionMode ? { sessionMode } : {}),
+          effectiveMode: sessionMode ?? hostMode,
+          source: sessionMode ? "session" : "host",
+        },
+      };
+      hostSnapshot.host.defaultPermissionMode = hostMode;
+      result = {
+        configuration: sessionConfiguration,
+        defaultPermissionMode: hostMode,
+        resolvedPending: 0,
+      };
     } else if (request.method === "project.list") {
       result = { projects: hostSnapshot.projects };
     } else if (request.method === "session.list") {
@@ -654,7 +683,7 @@ try {
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
-  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.5.0 提供方接力联调" });
+  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.5.1 手机授权与后台连续性" });
   await waitingSessionRow.waitFor();
   if (await mobile.locator(".session-row-v2").count() !== 3) {
     errors.push("mobile catalog: expected three expanded session rows");
@@ -725,8 +754,19 @@ try {
 
   await mobile.getByRole("button", { name: "模型与 Effort" }).click();
   await mobile.getByText("Claude Host 实时用量").waitFor();
+  await mobile.getByText("授权模式", { exact: true }).waitFor();
   await checkPage(mobile, "mobile session configuration");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-session-configuration-390x844.png"), fullPage: true });
+  await mobile.setViewportSize({ width: 768, height: 1024 });
+  await checkPage(mobile, "wide Android session configuration");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-session-configuration-768x1024.png"), fullPage: true });
+  await mobile.setViewportSize({ width: 390, height: 844 });
+  await mobile.getByRole("button", { name: "完全授权", exact: true }).click();
+  await mobile.getByRole("button", { name: "保存授权模式", exact: true }).click();
+  const fullAccessConfirmation = mobile.getByRole("alertdialog", { name: "启用完全授权" });
+  await fullAccessConfirmation.waitFor();
+  await fullAccessConfirmation.getByRole("button", { name: "启用完全授权", exact: true }).click();
+  await mobile.getByText("当前生效：完全授权 · 电脑默认", { exact: true }).waitFor();
   await mobile.getByRole("button", { name: "关闭" }).click();
 
   await mobile.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
@@ -899,6 +939,28 @@ try {
           };
           return response(request, { configuration: currentConfiguration, session: current.sessions[0] });
         }
+        if (request.method === "permission.policy.configure") {
+          const mode = request.params.mode;
+          const scope = request.params.scope;
+          const hostMode = scope === "host" && typeof mode === "string"
+            ? mode
+            : currentConfiguration.permissionPolicy.hostMode;
+          const sessionMode = scope === "session" && typeof mode === "string" ? mode : undefined;
+          currentConfiguration = {
+            ...currentConfiguration,
+            permissionPolicy: {
+              hostMode,
+              ...(sessionMode ? { sessionMode } : {}),
+              effectiveMode: sessionMode ?? hostMode,
+              source: sessionMode ? "session" : "host",
+            },
+          };
+          current = {
+            ...current,
+            host: { ...current.host, defaultPermissionMode: hostMode },
+          };
+          return response(request, { configuration: currentConfiguration, defaultPermissionMode: hostMode });
+        }
         if (request.method === "provider.refresh" || request.method === "provider.list") {
           return response(request, { providers: current.providers });
         }
@@ -974,6 +1036,7 @@ try {
   await desktopProviderDialog.getByLabel("关闭").click();
   await desktop.getByRole("button", { name: "模型与 Effort" }).click();
   await desktop.getByText("Claude Host 实时用量").waitFor();
+  await desktop.getByText("授权模式", { exact: true }).waitFor();
   await checkPage(desktop, "desktop session configuration");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-session-configuration-1200x800.png"), fullPage: true });
   await desktop.getByRole("button", { name: "关闭" }).click();

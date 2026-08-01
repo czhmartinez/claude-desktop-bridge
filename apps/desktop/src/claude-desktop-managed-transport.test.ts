@@ -271,4 +271,42 @@ describe("ClaudeDesktopManagedTransport", () => {
     });
     transport.close();
   });
+
+  it("automatically answers managed tool requests in full access mode", async () => {
+    const manager = new FakeManager();
+    const permissions = new PermissionBroker(() => "full-access");
+    const transport = new ClaudeDesktopManagedTransport({ manager, permissionBroker: permissions });
+    transport.updateCatalog({
+      projects: [],
+      sessions: [{
+        ...session(),
+        transcriptMtimeMs: 0,
+        processAlive: true,
+        desktopProcessAlive: true,
+        bridgeProcessAlive: false,
+        processOverlap: false,
+        activeProcesses: [],
+        activeTask: true,
+      }],
+      observedAt: 1,
+    });
+
+    manager.emit("permission-request", {
+      request: {
+        requestId: "permission-full-access",
+        sessionId: "desktop-1",
+        toolUseId: "tool-full-access",
+        toolName: "Write",
+        input: { file_path: "/tmp/project/full-access.ts" },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(permissions.list()).toEqual([]);
+    expect(manager.calls.find((call) => call.name === "respondToToolPermission")).toEqual({
+      name: "respondToToolPermission",
+      args: ["permission-full-access", "once", { file_path: "/tmp/project/full-access.ts" }],
+    });
+    transport.close();
+  });
 });

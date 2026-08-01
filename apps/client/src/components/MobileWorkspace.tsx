@@ -8,6 +8,7 @@ import type {
   BridgeHistoryItem,
   BridgeHostSnapshot,
   BridgePermissionInfo,
+  BridgePermissionMode,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
   BridgeTransportMetrics,
@@ -35,6 +36,7 @@ import {
   Search,
   Send,
   Settings2,
+  ShieldCheck,
   Sun,
   Terminal,
   Wrench,
@@ -74,6 +76,36 @@ interface ConversationItem extends BridgeHistoryItem {
   requestId?: string;
   commandId?: string;
   live?: boolean;
+}
+
+function lastSessionKey(hostId: string): string {
+  return `bridge.mobile.last-session.v1:${hostId}`;
+}
+
+function readLastSession(hostId: string): string | undefined {
+  try {
+    return localStorage.getItem(lastSessionKey(hostId)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeLastSession(hostId: string, sessionId?: string): void {
+  try {
+    if (sessionId) localStorage.setItem(lastSessionKey(hostId), sessionId);
+    else localStorage.removeItem(lastSessionKey(hostId));
+  } catch {
+    // Session restoration is optional when browser storage is unavailable.
+  }
+}
+
+export function restorableSessionId(
+  candidate: string | undefined,
+  sessions: BridgeSessionInfo[],
+): string | undefined {
+  return candidate && sessions.some((session) => session.sessionId === candidate)
+    ? candidate
+    : undefined;
 }
 
 export type ConversationTimelineEntry =
@@ -318,6 +350,7 @@ export function conversationItems(
       });
     }
     if (event.type === "permission.resolved" || event.type === "question.resolved") {
+      if (event.data.automatic === true) continue;
       const resolver = typeof event.data.resolvedByName === "string"
         ? event.data.resolvedByName
         : "另一台设备";
@@ -586,6 +619,7 @@ function QuestionPrompt({
 function ToolPermissionPrompt({
   permission,
   onResolve,
+  onEnableFullAccess,
 }: {
   permission: BridgePermissionInfo;
   onResolve(
@@ -594,10 +628,12 @@ function ToolPermissionPrompt({
     message?: string,
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
+  onEnableFullAccess?(sessionId: string): Promise<void>;
 }) {
   const presentation = permissionPresentation(permission);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
 
   async function decide(decision: "allow-once" | "allow-always" | "deny"): Promise<void> {
     if (busy) return;
@@ -612,7 +648,22 @@ function ToolPermissionPrompt({
     }
   }
 
+  async function enableFullAccess(): Promise<void> {
+    if (!onEnableFullAccess || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await onEnableFullAccess(permission.sessionId);
+    } catch (resolveError) {
+      setError(resolveError instanceof Error ? resolveError.message : "完全授权设置失败");
+    } finally {
+      setBusy(false);
+      setConfirmFullAccess(false);
+    }
+  }
+
   return (
+    <>
     <section className="permission-prompt">
       <div className="permission-title">
         <strong>{permission.title || `${permission.toolName} 请求权限`}</strong>
@@ -651,14 +702,30 @@ function ToolPermissionPrompt({
         {permission.canAllowAlways && (
           <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
         )}
+        {onEnableFullAccess && (
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess(true)}>
+            <ShieldCheck size={15} />完全授权
+          </button>
+        )}
       </div>
     </section>
+    <ConfirmationDialog
+      open={confirmFullAccess}
+      title="整台电脑启用完全授权"
+      description="Bridge 将自动批准命令和文件修改，并立即处理当前积压；Claude 的提问仍需你回答。"
+      confirmLabel="启用完全授权"
+      busy={busy}
+      onCancel={() => setConfirmFullAccess(false)}
+      onConfirm={() => void enableFullAccess()}
+    />
+    </>
   );
 }
 
 export function PermissionPrompt({
   permission,
   onResolve,
+  onEnableFullAccess,
 }: {
   permission: BridgePermissionInfo;
   onResolve(
@@ -667,13 +734,21 @@ export function PermissionPrompt({
     message?: string,
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
+  onEnableFullAccess?(sessionId: string): Promise<void>;
 }) {
   return permission.toolName === "AskUserQuestion"
     ? <QuestionPrompt permission={permission} onResolve={onResolve} />
-    : <ToolPermissionPrompt permission={permission} onResolve={onResolve} />;
+    : (
+      <ToolPermissionPrompt
+        permission={permission}
+        onResolve={onResolve}
+        {...(onEnableFullAccess ? { onEnableFullAccess } : {})}
+      />
+    );
 }
 
 export function MobileWorkspace({
+  activeHostId,
   desktopName,
   connection,
   desktopOnline,
@@ -703,6 +778,7 @@ export function MobileWorkspace({
   onCreateSession,
   onLoadSessionConfiguration,
   onConfigureSession,
+  onConfigurePermissionPolicy,
   onPreviewProviderSwitch,
   onCommitProviderSwitch,
   onCancelProviderSwitch,
@@ -713,6 +789,7 @@ export function MobileWorkspace({
   onBackToHosts,
   onRetry,
 }: {
+  activeHostId: string;
   desktopName: string;
   connection: SocketState;
   desktopOnline: boolean;
@@ -749,6 +826,11 @@ export function MobileWorkspace({
   onConfigureSession(
     sessionId: string,
     change: SessionConfigurationChange,
+  ): Promise<BridgeSessionConfiguration>;
+  onConfigurePermissionPolicy?(
+    sessionId: string,
+    scope: "host" | "session",
+    mode: BridgePermissionMode | null,
   ): Promise<BridgeSessionConfiguration>;
   onPreviewProviderSwitch(
     sessionId: string,
@@ -792,6 +874,7 @@ export function MobileWorkspace({
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
+  const restoredSessionRef = useRef(false);
   const announcedPermissionsRef = useRef(new Set<string>());
 
   const sessions = snapshot?.sessions ?? [];
@@ -834,6 +917,26 @@ export function MobileWorkspace({
     && groupedProjectIds.every((projectId) => collapsedProjectIds.has(projectId));
   const allProjectsExpanded = groupedProjectIds.length > 0
     && groupedProjectIds.every((projectId) => !collapsedProjectIds.has(projectId));
+
+  useEffect(() => {
+    if (!snapshot || restoredSessionRef.current) return;
+    restoredSessionRef.current = true;
+    const storedSessionId = readLastSession(activeHostId);
+    if (!storedSessionId) return;
+    const sessionId = restorableSessionId(storedSessionId, sessions);
+    if (!sessionId) {
+      writeLastSession(activeHostId);
+      return;
+    }
+    void selectSession(sessionId);
+  }, [activeHostId, snapshot]);
+
+  useEffect(() => {
+    if (!snapshot || !selectedSessionId) return;
+    if (restorableSessionId(selectedSessionId, sessions)) return;
+    setSelectedSessionId(undefined);
+    writeLastSession(activeHostId);
+  }, [activeHostId, selectedSessionId, sessions, snapshot]);
 
   useEffect(() => registerMobileBackHandler(() => {
     if (providerOpen) {
@@ -915,6 +1018,7 @@ export function MobileWorkspace({
     setSessionView("conversation");
     setStopError(undefined);
     setSelectedSessionId(sessionId);
+    writeLastSession(activeHostId, sessionId);
     await onOpenSession(sessionId);
   }
 
@@ -1312,6 +1416,11 @@ export function MobileWorkspace({
             session={selectedSession}
             onLoad={() => onLoadSessionConfiguration(selectedSession.sessionId)}
             onSave={(change) => onConfigureSession(selectedSession.sessionId, change)}
+            {...(onConfigurePermissionPolicy ? {
+              onConfigurePermission: (scope: "host" | "session", mode: BridgePermissionMode | null) => (
+                onConfigurePermissionPolicy(selectedSession.sessionId, scope, mode)
+              ),
+            } : {})}
             onClose={() => setConfigurationOpen(false)}
           />
         )}
@@ -1328,7 +1437,15 @@ export function MobileWorkspace({
                 <IconButton label="暂时关闭" onClick={() => setPermissionOpen(false)}><X size={19} /></IconButton>
               </header>
               {sessionPermissions.length > 1 && <div className="permission-queue-count">还有 {sessionPermissions.length} 项待处理，提交后自动显示下一项。</div>}
-              <PermissionPrompt permission={activePermission} onResolve={onResolvePermission} />
+              <PermissionPrompt
+                permission={activePermission}
+                onResolve={onResolvePermission}
+                {...(onConfigurePermissionPolicy ? {
+                  onEnableFullAccess: (sessionId: string) => (
+                    onConfigurePermissionPolicy(sessionId, "host", "full-access").then(() => undefined)
+                  ),
+                } : {})}
+              />
             </section>
           </div>
         )}

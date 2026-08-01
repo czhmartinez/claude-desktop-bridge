@@ -46,9 +46,11 @@ try {
       "conversation.handoff.v1",
       "conversation.lanes.v1",
       "evidence.v1",
+      "permission.policy.v1",
       "provider.profile.v1",
     ],
   );
+  assert.ok(["standard", "full-access"].includes(snapshot.host.defaultPermissionMode));
   assert.ok(Array.isArray(snapshot.projects));
   assert.ok(Array.isArray(snapshot.sessions));
   assert.ok(Array.isArray(snapshot.devices));
@@ -94,6 +96,23 @@ try {
       activeProviderProfileId: route.activeProviderProfileId,
       state: route.state,
     };
+
+    const permissionConfigurationResponse = await page.evaluate(async (sessionId) => (
+      window.bridgeDesktop.request({
+        method: "session.configuration",
+        params: { sessionId },
+      })
+    ), selectedSession.sessionId);
+    assert.equal(
+      permissionConfigurationResponse.ok,
+      true,
+      permissionConfigurationResponse.error?.message,
+    );
+    assert.ok(
+      ["standard", "full-access"].includes(
+        permissionConfigurationResponse.result.configuration.permissionPolicy.effectiveMode,
+      ),
+    );
 
     const evidenceResponse = await page.evaluate(async (sessionId) => (
       window.bridgeDesktop.request({

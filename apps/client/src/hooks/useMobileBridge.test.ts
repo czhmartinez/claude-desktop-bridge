@@ -53,6 +53,38 @@ describe("mergeBridgeEvents", () => {
       .toEqual(["completed", "host-received"]);
   });
 
+  it("restores one completion when reconnect replay contains a duplicate event", () => {
+    const turn: LocalTurn = {
+      requestId: "request-1",
+      idempotencyKey: "key-1",
+      sessionId: "session-1",
+      text: "Long task",
+      attachments: [],
+      createdAt: 1,
+      delivery: "running",
+      commandId: "command-1",
+    };
+    const completed: BridgeEvent = {
+      eventId: "completed-1",
+      seq: 10,
+      timestamp: 10,
+      origin: "claude-host",
+      type: "turn.completed",
+      sessionId: "session-1",
+      data: { requestId: "request-1", commandId: "command-1" },
+    };
+    const replayed = mergeBridgeEvents([completed], [completed]);
+
+    expect(replayed).toHaveLength(1);
+    const restored = replayed.reduce<LocalTurn[]>(
+      (current, replayedEvent) => applyEventToTurns(current, replayedEvent),
+      [turn],
+    );
+    expect(restored).toEqual([
+      expect.objectContaining({ delivery: "completed", sessionId: "session-1" }),
+    ]);
+  });
+
   it("upserts permission requests from events and removes them when resolved", () => {
     const requested: BridgeEvent = {
       eventId: "permission-requested",

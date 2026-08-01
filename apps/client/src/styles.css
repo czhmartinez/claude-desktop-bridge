@@ -2110,7 +2110,8 @@ button:disabled {
 }
 
 .session-model-field,
-.session-effort-field {
+.session-effort-field,
+.session-permission-field {
   display: grid;
   gap: 8px;
   margin: 0;
@@ -2119,10 +2120,69 @@ button:disabled {
 }
 
 .session-model-field > span,
-.session-effort-field legend {
+.session-effort-field legend,
+.session-permission-field legend {
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
+}
+
+.session-permission-field legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.permission-scope-segments,
+.permission-mode-segments {
+  display: grid;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.permission-scope-segments {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.permission-mode-segments.session {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.permission-mode-segments.host {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.permission-scope-segments button,
+.permission-mode-segments button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.permission-scope-segments button.active,
+.permission-mode-segments button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.session-permission-status {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.session-permission-save {
+  justify-self: end;
 }
 
 .session-model-field select {

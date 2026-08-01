@@ -200,12 +200,13 @@ export class HandoffService {
     await this.reconcileOfficialHandoffs();
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.options.eventLog.off("event", this.handleEvent);
     this.stopCatalog?.();
     this.stopCatalog = undefined;
     if (this.expiryTimer) clearInterval(this.expiryTimer);
     this.expiryTimer = undefined;
+    await this.catalogQueue.catch(() => undefined);
   }
 
   get(handoffId: string): BridgeHandoff {

@@ -31,6 +31,7 @@ const METHODS = new Set([
   "turn.steer",
   "turn.interrupt",
   "permission.resolve",
+  "permission.policy.configure",
   "events.resume",
   "evidence.list",
   "evidence.get",

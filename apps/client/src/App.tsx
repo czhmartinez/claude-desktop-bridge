@@ -69,6 +69,8 @@ export function App() {
   }
   return (
     <MobileWorkspace
+      key={mobile.state.activeHostId}
+      activeHostId={mobile.state.activeHostId}
       desktopName={mobile.state.desktopName ?? "我的电脑"}
       connection={mobile.state.connection}
       desktopOnline={mobile.state.desktopOnline}
@@ -98,6 +100,9 @@ export function App() {
       onCreateSession={mobile.createSession}
       onLoadSessionConfiguration={mobile.loadSessionConfiguration}
       onConfigureSession={mobile.configureSession}
+      {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")
+        ? { onConfigurePermissionPolicy: mobile.configurePermissionPolicy }
+        : {})}
       onPreviewProviderSwitch={mobile.previewProviderSwitch}
       onCommitProviderSwitch={mobile.commitProviderSwitch}
       onCancelProviderSwitch={mobile.cancelProviderSwitch}

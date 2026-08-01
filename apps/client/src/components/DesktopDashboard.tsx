@@ -6,6 +6,7 @@ import type {
   BridgeEvidencePage,
   BridgeEvent,
   BridgeHistoryPage,
+  BridgePermissionMode,
   BridgeProviderProfile,
   BridgeResponse,
   BridgeSessionConfiguration,
@@ -589,6 +590,19 @@ function DesktopSessions({
     })).configuration;
   }
 
+  async function savePermissionPolicy(
+    scope: "host" | "session",
+    mode: BridgePermissionMode | null,
+  ): Promise<BridgeSessionConfiguration> {
+    if (!selected) throw new Error("Session not found");
+    const result = unwrap<{ configuration: BridgeSessionConfiguration }>(await apiRequest({
+      method: "permission.policy.configure",
+      params: { sessionId: selected.sessionId, scope, mode },
+    }));
+    await onRefreshSnapshot();
+    return result.configuration;
+  }
+
   return (
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
@@ -813,7 +827,12 @@ function DesktopSessions({
               {snapshot.permissions
                 .filter((permission) => permission.sessionId === selected.sessionId)
                 .map((permission) => (
-                  <PermissionPrompt key={permission.requestId} permission={permission} onResolve={resolvePermission} />
+                  <PermissionPrompt
+                    key={permission.requestId}
+                    permission={permission}
+                    onResolve={resolvePermission}
+                    onEnableFullAccess={() => savePermissionPolicy("host", "full-access").then(() => undefined)}
+                  />
                 ))}
               {uncertainDeliveries.map((event) => (
                 <article className="conversation-item system uncertain-delivery" key={event.eventId}>
@@ -910,6 +929,7 @@ function DesktopSessions({
           session={selected}
           onLoad={loadConfiguration}
           onSave={saveConfiguration}
+          onConfigurePermission={savePermissionPolicy}
           onClose={() => setConfigurationOpen(false)}
         />
       )}

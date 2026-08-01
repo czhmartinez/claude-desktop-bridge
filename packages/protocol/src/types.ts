@@ -95,6 +95,13 @@ export type BridgeDesktopRegistrationState =
   | "registered"
   | "failed";
 export type BridgePermissionDecision = "allow-once" | "allow-always" | "deny";
+export type BridgePermissionMode = "standard" | "full-access";
+export type BridgePermissionPolicySource = "host" | "session";
+export type BridgePermissionResolutionReason =
+  | "policy-full-access"
+  | "turn-finished"
+  | "turn-interrupted"
+  | "session-ended";
 export type BridgeConfigurationSource = "bridge" | "claude-desktop" | "project" | "default";
 export type BridgeDeliveryState =
   | "local-saved"
@@ -113,7 +120,8 @@ export type BridgeCapability =
   | "artifact.transfer.v1"
   | "provider.profile.v1"
   | "conversation.lanes.v1"
-  | "conversation.handoff.v1";
+  | "conversation.handoff.v1"
+  | "permission.policy.v1";
 
 export type BridgeProviderKind =
   | "claude-3p"
@@ -421,7 +429,15 @@ export interface BridgeSessionConfiguration {
   availableEffortLevels: BridgeEffort[];
   modelsComplete: boolean;
   appliesAfterTurn: boolean;
+  permissionPolicy?: BridgePermissionPolicy;
   context?: BridgeSessionContextUsage;
+}
+
+export interface BridgePermissionPolicy {
+  hostMode: BridgePermissionMode;
+  sessionMode?: BridgePermissionMode;
+  effectiveMode: BridgePermissionMode;
+  source: BridgePermissionPolicySource;
 }
 
 export interface BridgeHistoryItem {
@@ -481,6 +497,8 @@ export interface BridgePermissionResolution {
   resolvedByDeviceId: string;
   resolvedByName: string;
   resolvedAt: number;
+  automatic?: boolean;
+  reason?: BridgePermissionResolutionReason;
 }
 
 export interface BridgeRuntimeStatus {
@@ -527,6 +545,7 @@ export interface BridgeHostSnapshot {
     lastSeenAt: number;
     version: string;
     capabilities: BridgeCapability[];
+    defaultPermissionMode?: BridgePermissionMode;
   };
   projects: BridgeProjectInfo[];
   sessions: BridgeSessionInfo[];
@@ -566,6 +585,7 @@ export type BridgeMethod =
   | "turn.steer"
   | "turn.interrupt"
   | "permission.resolve"
+  | "permission.policy.configure"
   | "events.resume"
   | "evidence.list"
   | "evidence.get"
@@ -621,6 +641,7 @@ export type BridgeEventType =
   | "tool.completed"
   | "permission.requested"
   | "permission.resolved"
+  | "permission.policy.changed"
   | "question.requested"
   | "question.resolved"
   | "turn.queued"

@@ -198,6 +198,19 @@ Windows 与 macOS 共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic AP
 Windows 读取 `%APPDATA%\Claude\claude-code-sessions`，并通过 PowerShell/tasklist
 检查实例。私有 CDP 仍在两个平台都关闭，不属于发布能力。
 
+0.5.1 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
+必须先运行完整 typecheck/test，再生成 Squirrel 包，并执行：
+
+```powershell
+npm run build -w @bridge/relay
+npm run test:desktop:packaged:windows
+```
+
+这个门禁会启动隔离数据目录下的打包版 `bridge.exe` 和本地 Relay，验证 preload、
+`file://` 渲染、`permission.policy.v1`、会话授权有效模式、真实加密配对、请求响应和
+设备撤销。它不能代替 Windows 真机上的 Claude/Claude-3p 运行时、DPAPI 跨重启、
+托盘常驻、手机断线后任务继续及恢复去重验收。
+
 ## 5. 构建移动端
 
 ```bash
@@ -257,9 +270,12 @@ npm run test:webrtc:native
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
 WSS 全部通过的平台才能标记“可分发”。
 
-V0.5.0 必须同时生成本机稳定签名 DMG 与 Android APK，并记录版本、SHA-256、签名
-校验、打包态 CDP/配对结果和真机状态。没有 Anthropic API Key、用户未在 Bridge 电脑确认
-官方首条消息、没有已授权 Android 真机或缺少外部分发签名时，必须逐项标记为
-“外部条件未满足”，不得把自动测试、APK 构建或 HTTP `/health` 冒充真实验收。
+V0.5.1 必须同时生成本机稳定签名 DMG、Windows Squirrel `Setup.exe`/`.nupkg` 与
+Android APK，并记录版本、SHA-256、签名校验、打包态 CDP/配对结果和真机状态。
+Windows 正式分发必须有有效 Authenticode；CI 会生成
+`windows-release-evidence.json`，没有证书时只能标记为未签名验收包。没有 Anthropic
+API Key、用户未在 Bridge 电脑确认官方首条消息、没有已授权 Android 真机、没有完成
+Windows 真机连续性测试或缺少外部分发签名时，必须逐项标记为“外部条件未满足”，
+不得把自动测试、安装包构建或 HTTP `/health` 冒充真实验收。
 V0.4.2 的跨 profile 阻止、ultracode 1M 识别和 synthetic `Prompt is too long`
 去重仍需回归；iOS/Web 共享代码必须保持可构建。

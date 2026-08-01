@@ -32,6 +32,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
       - run: npm run build -w @bridge/protocol
       - name: Prepare Windows Authenticode certificate
         if: matrix.os == 'windows-2022' && env.BRIDGE_WIN_CERTIFICATE_BASE64 != ''
@@ -45,6 +47,12 @@ jobs:
           "BRIDGE_WIN_CERTIFICATE_FILE=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "BRIDGE_WIN_CERTIFICATE_PASSWORD=$env:BRIDGE_WIN_CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: ${{ matrix.make_command }}
+      - name: Build Relay for packaged Windows QA
+        if: matrix.os == 'windows-2022'
+        run: npm run build -w @bridge/relay
+      - name: Run packaged Windows QA and pairing
+        if: matrix.os == 'windows-2022'
+        run: npm run test:desktop:packaged:windows
       - name: Assert Windows installer output
         if: matrix.os == 'windows-2022'
         shell: pwsh
@@ -53,7 +61,29 @@ jobs:
           if ($null -eq $setup) { throw "Squirrel Setup.exe was not produced" }
           $nupkg = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*.nupkg" | Select-Object -First 1
           if ($null -eq $nupkg) { throw "Squirrel nupkg was not produced" }
+      - name: Record Windows hashes and Authenticode status
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
+          $nupkg = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*.nupkg" | Select-Object -First 1
+          $signature = Get-AuthenticodeSignature -FilePath $setup.FullName
+          if ($env:BRIDGE_WIN_CERTIFICATE_BASE64 -ne '' -and $signature.Status -ne 'Valid') {
+            throw "Signed Windows installer failed Authenticode validation: $($signature.Status)"
+          }
+          $evidence = [ordered]@{
+            version = (Get-Content "apps/desktop/package.json" | ConvertFrom-Json).version
+            setup = $setup.FullName
+            setupSha256 = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLowerInvariant()
+            nupkg = $nupkg.FullName
+            nupkgSha256 = (Get-FileHash -Algorithm SHA256 $nupkg.FullName).Hash.ToLowerInvariant()
+            authenticode = $signature.Status.ToString()
+            signer = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+          }
+          $evidence | ConvertTo-Json | Set-Content -Encoding utf8 "apps/desktop/out/make/windows-release-evidence.json"
       - uses: actions/upload-artifact@v4
         with:
           name: Bridge-${{ matrix.name }}-${{ matrix.artifact_suffix }}-ci
-          path: apps/desktop/out/make/**
+          path: |
+            apps/desktop/out/make/**
+            artifacts/packaged-desktop/**

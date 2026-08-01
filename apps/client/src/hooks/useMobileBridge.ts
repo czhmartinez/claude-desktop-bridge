@@ -23,6 +23,7 @@ import {
   type BridgeConversationRoute,
   type BridgeHandoff,
   type BridgePermissionInfo,
+  type BridgePermissionMode,
   type BridgeProviderProfile,
   type BridgeRequest,
   type BridgeResponse,
@@ -38,6 +39,7 @@ import {
   type PairingBundle,
   type SocketState,
 } from "@bridge/protocol";
+import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeVault, type StoredBridgeHost } from "../lib/vault.js";
@@ -140,6 +142,24 @@ const INITIAL_STATE: MobileBridgeState = {
 };
 
 const LOCAL_EVIDENCE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const LAST_ACTIVE_HOST_KEY = "bridge.mobile.last-active-host.v1";
+
+function readLastActiveHost(): string | undefined {
+  try {
+    return localStorage.getItem(LAST_ACTIVE_HOST_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeLastActiveHost(roomId?: string): void {
+  try {
+    if (roomId) localStorage.setItem(LAST_ACTIVE_HOST_KEY, roomId);
+    else localStorage.removeItem(LAST_ACTIVE_HOST_KEY);
+  } catch {
+    // The vault still retains pairing state when browser storage is unavailable.
+  }
+}
 
 function isLoopbackRelay(value: string): boolean {
   try {
@@ -972,6 +992,7 @@ export function useMobileBridge() {
     socketRef.current = undefined;
     cryptoRef.current = crypto;
     const roomId = crypto.identity.roomId;
+    writeLastActiveHost(roomId);
     const storedHost = await bridgeVault.getHost(roomId);
     const relayEndpoints = normalizeBridgeEndpoints(
       storedHost?.relayEndpoints ?? [bridgeEndpoint(crypto.identity.relayUrl, 100, "legacy")],
@@ -1142,9 +1163,43 @@ export function useMobileBridge() {
         }));
       }
       if (frame.type === "error") {
+        const issue = relayIssue(frame.code, frame.message);
+        if (issue.code === "pairing-invalid" || issue.code === "revoked") {
+          if (socketRef.current === socket) {
+            socketRef.current = undefined;
+            cryptoRef.current = undefined;
+          }
+          writeLastActiveHost();
+          socket.close();
+          setState((current) => ({
+            ...current,
+            activeHostId: undefined,
+            desktopName: undefined,
+            connection: "closed",
+            desktopOnline: false,
+            snapshot: undefined,
+            permissions: [],
+            focusSessionId: undefined,
+            histories: {},
+            evidence: {},
+            artifactPreviews: {},
+            artifactTransfers: {},
+            events: [],
+            localTurns: [],
+            latestSeq: 0,
+            connectionIssue: undefined,
+            transportMetrics: undefined,
+            pendingOutbound: 0,
+            error: issue.message,
+            hosts: current.hosts.map((host) => host.roomId === roomId
+              ? { ...host, needsRepair: true, status: "offline" }
+              : host),
+          }));
+          return;
+        }
         setState((current) => ({
           ...current,
-          connectionIssue: relayIssue(frame.code, frame.message),
+          connectionIssue: issue,
         }));
       }
     });
@@ -1219,6 +1274,10 @@ export function useMobileBridge() {
       }));
       if (!active) return;
       setState((current) => ({ ...current, loading: false, hosts: summaries }));
+      const lastRoomId = readLastActiveHost();
+      const lastHost = lastRoomId ? hosts.find((host) => host.roomId === lastRoomId) : undefined;
+      if (lastRoomId && (!lastHost || lastHost.needsRepair)) writeLastActiveHost();
+      if (lastHost && !lastHost.needsRepair) await start(lastHost.crypto, false);
     })().catch(() => setState((current) => ({
       ...current,
       loading: false,
@@ -1231,20 +1290,21 @@ export function useMobileBridge() {
       for (const pending of pendingResponsesRef.current.values()) clearTimeout(pending.timer);
       pendingResponsesRef.current.clear();
     };
-  }, []);
+  }, [start]);
 
-  useEffect(() => onNativePushWake(() => {
-    socketRef.current?.connect();
-    void resumeEvents();
-  }), [resumeEvents]);
+  const reconnectAndResume = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    socket.connect();
+    if (socket.state === "connected") void resumeEvents();
+  }, [resumeEvents]);
+
+  useEffect(() => onNativePushWake(reconnectAndResume), [reconnectAndResume]);
 
   useEffect(() => {
     const reconnect = () => {
       if (document.visibilityState === "hidden") return;
-      const socket = socketRef.current;
-      if (!socket) return;
-      socket.connect();
-      if (socket.state === "connected") void resumeEvents();
+      reconnectAndResume();
     };
     const visibilityChanged = () => {
       if (document.visibilityState === "visible") reconnect();
@@ -1255,7 +1315,23 @@ export function useMobileBridge() {
       window.removeEventListener("online", reconnect);
       document.removeEventListener("visibilitychange", visibilityChanged);
     };
-  }, [resumeEvents]);
+  }, [reconnectAndResume]);
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined;
+    let active = true;
+    let remove: (() => Promise<void>) | undefined;
+    void CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+      if (isActive) reconnectAndResume();
+    }).then((handle) => {
+      if (!active) void handle.remove();
+      else remove = () => handle.remove();
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+      void remove?.();
+    };
+  }, [reconnectAndResume]);
 
   const pair = useCallback(async (pairing: PairingBundle): Promise<boolean> => {
     setState((current) => ({ ...current, loading: true, error: undefined }));
@@ -1331,6 +1407,7 @@ export function useMobileBridge() {
     socketRef.current?.close();
     socketRef.current = undefined;
     cryptoRef.current = undefined;
+    writeLastActiveHost();
     setState((current) => ({
       ...current,
       activeHostId: undefined,
@@ -1711,6 +1788,38 @@ export function useMobileBridge() {
     return result.configuration;
   }, [sendRequest]);
 
+  const configurePermissionPolicy = useCallback(async (
+    sessionId: string,
+    scope: "host" | "session",
+    mode: BridgePermissionMode | null,
+  ): Promise<BridgeSessionConfiguration> => {
+    const response = await sendRequest("permission.policy.configure", {
+      sessionId,
+      scope,
+      mode,
+    }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "授权模式保存失败");
+    const result = response.result as {
+      configuration?: BridgeSessionConfiguration;
+      defaultPermissionMode?: BridgePermissionMode;
+    };
+    if (!result.configuration) throw new Error("电脑未返回授权配置");
+    setState((current) => current.snapshot ? {
+      ...current,
+      snapshot: {
+        ...current.snapshot,
+        host: {
+          ...current.snapshot.host,
+          ...(result.defaultPermissionMode
+            ? { defaultPermissionMode: result.defaultPermissionMode }
+            : {}),
+        },
+      },
+    } : current);
+    await resumeEvents();
+    return result.configuration;
+  }, [resumeEvents, sendRequest]);
+
   const previewProviderSwitch = useCallback(async (
     sessionId: string,
     targetProviderProfileId: string,
@@ -1879,6 +1988,7 @@ export function useMobileBridge() {
       socketRef.current = undefined;
       cryptoRef.current = undefined;
     }
+    if (readLastActiveHost() === roomId) writeLastActiveHost();
     await bridgeVault.removeHost(roomId);
     cryptoByRoomRef.current.delete(roomId);
     setState((current) => ({
@@ -1928,6 +2038,7 @@ export function useMobileBridge() {
     createSession,
     loadSessionConfiguration,
     configureSession,
+    configurePermissionPolicy,
     previewProviderSwitch,
     commitProviderSwitch,
     cancelProviderSwitch,
