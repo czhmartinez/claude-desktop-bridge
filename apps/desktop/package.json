@@ -1,6 +1,8 @@
 {
   "name": "@bridge/desktop",
   "productName": "Bridge",
+  "description": "Secure mobile access to local Claude sessions.",
+  "author": "Claude Bridge Contributors",
   "version": "0.5.1",
   "private": true,
   "type": "module",
