@@ -206,7 +206,10 @@ export class HandoffService {
     this.stopCatalog = undefined;
     if (this.expiryTimer) clearInterval(this.expiryTimer);
     this.expiryTimer = undefined;
-    await this.catalogQueue.catch(() => undefined);
+    await Promise.all([
+      this.catalogQueue.catch(() => undefined),
+      this.eventQueue.catch(() => undefined),
+    ]);
   }
 
   get(handoffId: string): BridgeHandoff {

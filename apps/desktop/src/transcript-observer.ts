@@ -19,6 +19,7 @@ import type { SessionEventLog } from "./session-event-log.js";
 export interface TranscriptObserverOptions {
   paths: ClaudeRuntimePaths;
   eventLog: SessionEventLog;
+  platform?: NodeJS.Platform;
   pollIntervalMs?: number;
   catalogIntervalMs?: number;
   idleGraceMs?: number;
@@ -118,7 +119,7 @@ export class TranscriptObserver extends EventEmitter {
       const now = Date.now();
       let changed = false;
       if (!this.catalogValue.observedAt || now >= this.nextCatalogAt) {
-        const catalog = await scanClaudeCatalog(this.options.paths);
+        const catalog = await scanClaudeCatalog(this.options.paths, this.options.platform);
         const initialCandidates = new Set(
           catalog.sessions
             .filter((session, index) => index < 24 || session.processAlive || session.activeTask)

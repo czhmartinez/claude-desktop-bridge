@@ -190,7 +190,9 @@ describe("ClaudeDesktopSessionRegistrar", () => {
       effort: "high",
       isArchived: false,
     });
-    expect((await stat(metadataPath)).mode & 0o777).toBe(0o600);
+    const metadataStat = await stat(metadataPath);
+    expect(metadataStat.isFile()).toBe(true);
+    if (process.platform !== "win32") expect(metadataStat.mode & 0o777).toBe(0o600);
 
     now = 200;
     const unchanged = await registrar.register(input, first);

@@ -18,6 +18,7 @@ import {
   isAbsolute,
   join,
   normalize,
+  posix as posixPath,
   relative,
   resolve,
   sep,
@@ -116,6 +117,7 @@ function parseProfileRows(
 ): ClaudeDesktopProfileProcess[] {
   const byPid = new Map(rows.map((row) => [row.pid, row]));
   const platformIsWindows = platform === "win32";
+  const pathApi = platformIsWindows ? windowsPath : posixPath;
   const mainPids = new Set(rows
     .filter((row) => platformIsWindows
       ? /(?:^|[\\/"'])Claude\.exe(?:["']|\s|$)/iu.test(row.command)
@@ -127,7 +129,7 @@ function parseProfileRows(
       ? !/Claude Helper(?:\.exe)?/iu.test(row.command)
       : !row.command.includes(CLAUDE_HELPER)) continue;
     const userDataDir = userDataDirFromCommand(row.command);
-    const absolute = platformIsWindows ? windowsPath.isAbsolute(userDataDir ?? "") : isAbsolute(userDataDir ?? "");
+    const absolute = pathApi.isAbsolute(userDataDir ?? "");
     if (!userDataDir || !absolute) continue;
     let ancestor = row.ppid;
     const visited = new Set<number>();
@@ -136,7 +138,7 @@ function parseProfileRows(
       ancestor = byPid.get(ancestor)?.ppid ?? 0;
     }
     if (!mainPids.has(ancestor)) continue;
-    const normalized = platformIsWindows ? windowsPath.normalize(userDataDir) : normalize(userDataDir);
+    const normalized = pathApi.normalize(userDataDir);
     profiles.set(`${ancestor}\0${normalized}`, {
       pid: ancestor,
       userDataDir: normalized,

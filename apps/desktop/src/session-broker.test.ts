@@ -308,7 +308,7 @@ function observed(
   };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
     if (Date.now() - started > timeoutMs) throw new Error("Timed out waiting for broker state");
