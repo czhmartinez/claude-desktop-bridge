@@ -166,7 +166,7 @@ BRIDGE_DESKTOP_CDP=http://127.0.0.1:9223 npm run test:desktop:pairing
 开发版正常但安装包白屏；同时验证协议 V3 能力声明和打包态事后证据。配对检查还会
 使用真实 Relay 完成一次设备认领、加密请求、主机快照和撤销失效闭环。
 
-Electron 安装包必须在目标系统构建：macOS 产出 DMG/ZIP，Windows 产出 Squirrel，
+Electron 安装包必须在目标系统构建：macOS 产出 DMG/ZIP，Windows 产出辅助式 NSIS，
 Linux 产出 ZIP/DEB/RPM。没有 Developer ID、Authenticode 或仓库签名时只能标记为
 “构建通过”，不能宣称可正式分发。
 
@@ -178,8 +178,9 @@ Windows 构建必须在 Windows（本地或 `windows-2022` runner）执行：
 npm run make:windows
 ```
 
-Forge 使用 Squirrel 生成 `apps/desktop/out/make/squirrel.windows/x64/` 下的
-`Setup.exe` 与更新元数据。未提供签名材料时产物标记为 `installer-ci`，可以在本机
+electron-builder 使用 NSIS 生成 `apps/desktop/out/make/nsis.windows/x64/` 下的
+`Bridge-<version>-Setup.exe`。安装向导必须显示目录选择页，不能把路径静默固定到
+Squirrel 的用户目录。未提供签名材料时产物标记为 `installer-ci`，可以在本机
 安装验收但不可作为正式下载附件。需要签名时，通过 CI secret
 `BRIDGE_WIN_CERTIFICATE_BASE64` + `BRIDGE_WIN_CERTIFICATE_PASSWORD`，或本机环境变量注入：
 
@@ -189,8 +190,8 @@ $env:BRIDGE_WIN_CERTIFICATE_PASSWORD = "..."
 npm run make:windows
 ```
 
-也可以设置 `BRIDGE_WIN_SIGN_WITH_PARAMS` 将参数交给 Windows 签名工具。证书、密码
-和签名私钥不得提交到仓库。Windows 使用 Electron `safeStorage`（由 DPAPI 保护）
+也可以使用 electron-builder 标准的 `WIN_CSC_LINK` 与 `WIN_CSC_KEY_PASSWORD`。证书、
+密码和签名私钥不得提交到仓库。Windows 使用 Electron `safeStorage`（由 DPAPI 保护）
 保存 Anthropic API Key；Bridge 不读取 Windows Credential Manager 中的其他账户。
 
 Windows 与 macOS 共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic API、Relay、
@@ -198,15 +199,16 @@ Windows 与 macOS 共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic AP
 Windows 读取 `%APPDATA%\Claude\claude-code-sessions`，并通过 PowerShell/tasklist
 检查实例。私有 CDP 仍在两个平台都关闭，不属于发布能力。
 
-0.5.2 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
-必须先运行完整 typecheck/test，再生成 Squirrel 包，并执行：
+0.5.3 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
+必须先运行完整 typecheck/test，再生成辅助式 NSIS 包，并执行：
 
 ```powershell
 npm run build -w @bridge/relay
 npm run test:desktop:packaged:windows
 ```
 
-这个门禁会启动隔离数据目录下的打包版 `bridge.exe` 和本地 Relay，验证 preload、
+这个门禁会先把安装包安装到随机的非默认目录，确认 `bridge.exe` 确实位于所选目录，
+再启动隔离数据目录下的安装版程序和本地 Relay，验证 preload、
 `file://` 渲染、`permission.policy.v1`、会话授权有效模式、真实加密配对、请求响应和
 设备撤销。它不能代替 Windows 真机上的 Claude/Claude-3p 运行时、DPAPI 跨重启、
 托盘常驻、手机断线后任务继续及恢复去重验收。
@@ -270,7 +272,7 @@ npm run test:webrtc:native
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
 WSS 全部通过的平台才能标记“可分发”。
 
-V0.5.2 必须同时生成本机稳定签名 DMG、Windows Squirrel `Setup.exe`/`.nupkg` 与
+V0.5.3 必须同时生成本机稳定签名 DMG、Windows NSIS `Setup.exe` 与
 Android APK，并记录版本、SHA-256、签名校验、打包态 CDP/配对结果和真机状态。
 Windows 正式分发必须有有效 Authenticode；CI 会生成
 `windows-release-evidence.json`，没有证书时只能标记为未签名验收包。没有 Anthropic

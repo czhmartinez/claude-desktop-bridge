@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.3
+
+- Replace the no-prompt Windows Squirrel installer with an assisted NSIS wizard that exposes the
+  installation directory page instead of silently forcing a policy-restricted user location.
+- Install the Windows package into a randomized custom directory in CI, then launch that installed
+  executable for cold-start, packaged UI, encrypted pairing and device-revocation checks.
+- Keep optional Authenticode signing through electron-builder certificate settings while retaining
+  protocol V3, pairing schema V4 and compatibility with existing 0.5 mobile clients.
+
 ## 0.5.2
 
 - Treat blank release variables as absent so Windows packages retain the built-in Relay, pairing,

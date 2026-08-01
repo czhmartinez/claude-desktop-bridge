@@ -58,25 +58,22 @@ jobs:
         shell: pwsh
         run: |
           $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
-          if ($null -eq $setup) { throw "Squirrel Setup.exe was not produced" }
-          $nupkg = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*.nupkg" | Select-Object -First 1
-          if ($null -eq $nupkg) { throw "Squirrel nupkg was not produced" }
+          if ($null -eq $setup) { throw "Assisted NSIS Setup.exe was not produced" }
       - name: Record Windows hashes and Authenticode status
         if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
           $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
-          $nupkg = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*.nupkg" | Select-Object -First 1
           $signature = Get-AuthenticodeSignature -FilePath $setup.FullName
           if ($env:BRIDGE_WIN_CERTIFICATE_BASE64 -ne '' -and $signature.Status -ne 'Valid') {
             throw "Signed Windows installer failed Authenticode validation: $($signature.Status)"
           }
           $evidence = [ordered]@{
             version = (Get-Content "apps/desktop/package.json" | ConvertFrom-Json).version
+            installerType = "nsis-assisted"
+            directorySelection = $true
             setup = $setup.FullName
             setupSha256 = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLowerInvariant()
-            nupkg = $nupkg.FullName
-            nupkgSha256 = (Get-FileHash -Algorithm SHA256 $nupkg.FullName).Hash.ToLowerInvariant()
             authenticode = $signature.Status.ToString()
             signer = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
           }

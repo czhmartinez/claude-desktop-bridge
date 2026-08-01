@@ -45,9 +45,7 @@ jobs:
         shell: pwsh
         run: |
           $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
-          if ($null -eq $setup) { throw "Squirrel Setup.exe was not produced" }
-          $nupkg = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*.nupkg" | Select-Object -First 1
-          if ($null -eq $nupkg) { throw "Squirrel nupkg was not produced" }
+          if ($null -eq $setup) { throw "Assisted NSIS Setup.exe was not produced" }
       - uses: actions/upload-artifact@v4
         with:
           name: Bridge-Windows-installer-ci

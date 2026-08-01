@@ -12,19 +12,6 @@ const macSignKeychain = process.env.BRIDGE_MAC_SIGN_KEYCHAIN?.trim();
 const macSignTimestamp = process.env.BRIDGE_MAC_SIGN_TIMESTAMP?.trim();
 const macLocalSigning = process.env.BRIDGE_MAC_LOCAL_SIGNING === "1";
 const allowAdHocMacSigning = process.env.BRIDGE_ALLOW_ADHOC_SIGNING === "1";
-const windowsCertificateFile = process.env.BRIDGE_WIN_CERTIFICATE_FILE?.trim();
-const windowsCertificatePassword = process.env.BRIDGE_WIN_CERTIFICATE_PASSWORD;
-const windowsSignWithParams = process.env.BRIDGE_WIN_SIGN_WITH_PARAMS?.trim();
-const windowsSigning = windowsSignWithParams
-  ? { signWithParams: windowsSignWithParams }
-  : windowsCertificateFile
-    ? {
-        certificateFile: windowsCertificateFile,
-        ...(windowsCertificatePassword !== undefined
-          ? { certificatePassword: windowsCertificatePassword }
-          : {}),
-      }
-    : {};
 
 module.exports = {
   packagerConfig: {
@@ -164,15 +151,6 @@ module.exports = {
     },
   },
   makers: [
-    {
-      name: "@electron-forge/maker-squirrel",
-      platforms: ["win32"],
-      config: {
-        name: "bridge",
-        setupIcon: path.join(__dirname, "assets", "icon.ico"),
-        ...windowsSigning,
-      },
-    },
     { name: "@electron-forge/maker-zip", platforms: ["darwin", "linux"] },
     { name: "@electron-forge/maker-dmg", platforms: ["darwin"], config: { name: "Bridge" } },
     { name: "@electron-forge/maker-deb", platforms: ["linux"], config: {} },

@@ -20,10 +20,12 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前稳定版：0.5.2
+## 当前稳定版：0.5.3
 
-Bridge 0.5.2 修复 Windows 安装包在发布变量为空时首次启动报 `Invalid URL` 的问题，
-并增加无环境变量的打包版冷启动门禁。它兼容 0.5.1 手机端，不需要重新配对。
+Bridge 0.5.3 将 Windows 无交互 Squirrel 安装器替换为辅助式 NSIS 安装向导。安装时会
+显示目录选择页，用户可以改到任意有写权限的位置；Windows 门禁会把安装包静默安装到
+随机自定义目录，再从该目录完成冷启动、界面和加密配对检查。0.5.2 的空发布变量
+`Invalid URL` 修复继续保留；0.5.3 兼容 0.5.1/0.5.2 手机端，不需要重新配对。
 
 Bridge 0.5.1 增加电脑级“标准授权 / 完全授权”、单会话覆盖和手机后台连续性。
 完全授权由电脑端 `PermissionBroker` 自动批准命令与文件修改，Claude 提问仍必须由
@@ -59,7 +61,7 @@ lane。切换只迁移用户可见、可验证且有界的上下文，不声称�
 - V0.4.2 的跨 Claude/Claude-3p profile 原始恢复阻止、ultracode 1M 上下文识别和
   synthetic `Prompt is too long` 去重继续生效。
 
-0.5.2 继续使用协议 V3 和配对 schema V4；已配对的 0.4/0.5 设备无需重配。V0.5 客户端
+0.5.3 继续使用协议 V3 和配对 schema V4；已配对的 0.4/0.5 设备无需重配。V0.5 客户端
 连接 V0.4 Host 时会按能力缺失隐藏提供方入口；V0.4 客户端连接 V0.5 Host 时仍可在
 可写 lane 正常执行，但对官方只读 lane 的写入会失败关闭并提示升级。它仍不兼容
 0.3 配对：从 0.3 升级后会保留稳定主机 ID、
@@ -70,7 +72,7 @@ Relay 始终保留一个低流量控制连接，用于信令、设备撤销、�
 直连失败回退。界面显示“直连”时业务数据不经过 Relay；显示“安全中继”或
 “局域网连接”时业务数据使用相应 Relay 路径。
 
-Bridge 0.5.2 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
+Bridge 0.5.3 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
 共享同一个逻辑 `sessionId`、活动 lane 和同一条有序事件流。
 
 它面向已经通过第三方 Host 或 Gateway 登录 Claude Desktop、但不能使用官方
@@ -81,7 +83,7 @@ Remote Control 的用户；也可以把一段 Bridge 工作手动接力到 Claud
 
 1. 在电脑安装并打开 Bridge，保持 Claude-3p Host 可用；需要 Anthropic API 时只在
    Bridge 电脑端提供方面板配置 Console API Key。
-2. 将电脑端升级到 0.5.2；0.5.1 Android/iOS 可继续使用。已有 0.4/0.5 配对无需重配；从 0.3 首次
+2. 将电脑端升级到 0.5.3；0.5.1/0.5.2 Android/iOS 可继续使用。已有 0.4/0.5 配对无需重配；从 0.3 首次
    升级时，仍需在 Bridge“设备”页扫描新二维码完成 schema V4 强制重配。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
    回答 Claude 提问、调整或停止任务，也可从会话顶栏手动发起提供方接力。接力到
@@ -118,9 +120,9 @@ Claude Desktop 会话清单登记。Windows 使用 `%APPDATA%\Claude\claude-code
 并通过 PowerShell/tasklist 做进程检查；用户无需手工复制配置。私有 CDP 和隐藏协议仍在
 两个平台都不启用，避免绕过 Anthropic 授权。
 
-0.5.2 的“标准授权 / 完全授权”、单会话覆盖、手机离线继续执行和 `events.resume`
-同样运行在 Windows Host。`windows-2022` 门禁会执行完整 typecheck/test、Squirrel
-打包、打包版 UI 检查和真实加密配对；Windows 真机上的 DPAPI 跨重启、托盘常驻和
+0.5.3 的“标准授权 / 完全授权”、单会话覆盖、手机离线继续执行和 `events.resume`
+同样运行在 Windows Host。`windows-2022` 门禁会执行完整 typecheck/test、NSIS
+自定义目录安装、打包版 UI 检查和真实加密配对；Windows 真机上的 DPAPI 跨重启、托盘常驻和
 手机断线恢复仍必须在发布前单独验收。
 
 版本号文件推送到 `main` 后，`release.yml` 会先校验根包、全部 workspace、
@@ -132,7 +134,7 @@ macOS 构建冒充正式安装包，也不会自动上传未签名附件。
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
 发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
-## 0.5.2 当前能力
+## 0.5.3 当前能力
 
 - 电脑默认与单会话授权模式、切换后立即处理待授权队列、自动批准审计，以及
   `AskUserQuestion` 始终等待用户回答。
@@ -157,7 +159,7 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
 - 0.3 已有的持久 Agent SDK 会话、单写入者保护、可靠 WSS、WebRTC 直连、事件恢复、
   审批、提问、停止、推送唤醒、主机/项目/会话导航和稳定签名发布门继续保留。
 
-0.5.2 不包含隐藏 CoT、官方 OAuth 代理、自动故障转移、Claude Desktop 实时工具
+0.5.3 不包含隐藏 CoT、官方 OAuth 代理、自动故障转移、Claude Desktop 实时工具
 镜像、私有 CDP、完整项目浏览、远程编辑、动态站点直播、自动启动服务、PDF 内嵌
 渲染或超过 20 MiB 的产物传输。
 
@@ -201,11 +203,13 @@ npm run build -w @bridge/relay
 npm run test:desktop:packaged:windows
 ```
 
-产物位于 `apps/desktop/out/make/squirrel.windows/x64/`，其中 `*Setup.exe` 可直接运行并
-按用户安装 Bridge；未签名包可能出现 SmartScreen 提示，仅适合本机/CI 验收。正式分发
-前在 Windows CI 或本机注入 `BRIDGE_WIN_CERTIFICATE_FILE` 与
-`BRIDGE_WIN_CERTIFICATE_PASSWORD`（或 `BRIDGE_WIN_SIGN_WITH_PARAMS`）完成 Authenticode
-签名；仓库不会保存证书或密码。
+产物位于 `apps/desktop/out/make/nsis.windows/x64/`，其中 `Bridge-0.5.3-Setup.exe`
+会打开辅助式安装向导并显示目录选择页，不再静默固定到 Squirrel 的用户目录。应选择
+当前账户可写的位置，受管电脑可使用例如 `F:\Apps\Bridge`，不要选择被 IT 策略锁定的
+`ProgramData`。未签名包可能出现 SmartScreen 提示，仅适合本机/CI 验收。正式分发前在
+Windows CI 或本机注入 `BRIDGE_WIN_CERTIFICATE_FILE` 与
+`BRIDGE_WIN_CERTIFICATE_PASSWORD`，也可使用 electron-builder 标准的 `WIN_CSC_LINK` 与
+`WIN_CSC_KEY_PASSWORD` 完成 Authenticode 签名；仓库不会保存证书或密码。
 
 M0 真实闸门使用一次性项目和可丢弃会话验证同一 transcript 的多轮持久输入、
 流式回复、真实工具审批、中断和断线恢复，并检查活动应用与剪贴板前后不变。
@@ -229,7 +233,7 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.5.2 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
+Bridge 0.5.3 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
 必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
 签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。

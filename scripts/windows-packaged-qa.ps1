@@ -27,15 +27,15 @@ function Invoke-NpmScript {
   if ($LASTEXITCODE -ne 0) { throw "npm run $Name failed with exit code $LASTEXITCODE" }
 }
 
-$desktopExecutable = Get-ChildItem -Path "apps/desktop/out" -Recurse -Filter "bridge.exe" |
-  Where-Object { $_.FullName -match "Bridge-win32-x64" } |
+$installer = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" |
   Select-Object -First 1
-if ($null -eq $desktopExecutable) {
-  throw "Packaged Windows executable was not found. Run npm run make:windows first."
+if ($null -eq $installer) {
+  throw "Windows NSIS installer was not found. Run npm run make:windows first."
 }
 
 $qaRoot = Join-Path $env:TEMP ("bridge-packaged-qa-" + [Guid]::NewGuid().ToString("N"))
 $smokeRoot = Join-Path $env:TEMP ("bridge-packaged-smoke-" + [Guid]::NewGuid().ToString("N"))
+$installRoot = Join-Path $env:TEMP ("bridge-custom-install-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $qaRoot | Out-Null
 New-Item -ItemType Directory -Path $smokeRoot | Out-Null
 
@@ -57,7 +57,28 @@ foreach ($key in $environmentKeys) {
 $relayProcess = $null
 $desktopProcess = $null
 $smokeProcess = $null
+$desktopExecutable = $null
 try {
+  $installResult = Start-Process -FilePath $installer.FullName `
+    -ArgumentList @("/S", "/D=$installRoot") `
+    -Wait `
+    -PassThru
+  if ($installResult.ExitCode -ne 0) {
+    throw "Windows installer failed with exit code $($installResult.ExitCode)."
+  }
+
+  $desktopExecutable = Get-ChildItem -Path $installRoot -Recurse -Filter "bridge.exe" |
+    Select-Object -First 1
+  if ($null -eq $desktopExecutable) {
+    throw "Bridge executable was not installed into the selected directory: $installRoot"
+  }
+  if (-not $desktopExecutable.FullName.StartsWith(
+    [IO.Path]::GetFullPath($installRoot),
+    [StringComparison]::OrdinalIgnoreCase
+  )) {
+    throw "Bridge executable did not honor the selected installation directory."
+  }
+
   foreach ($key in $environmentKeys) {
     [Environment]::SetEnvironmentVariable($key, $null, "Process")
   }
@@ -125,8 +146,14 @@ try {
   if ($null -ne $relayProcess -and -not $relayProcess.HasExited) {
     Stop-Process -Id $relayProcess.Id -Force -ErrorAction SilentlyContinue
   }
+  $uninstaller = Get-ChildItem -Path $installRoot -Filter "Uninstall*.exe" -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($null -ne $uninstaller) {
+    Start-Process -FilePath $uninstaller.FullName -ArgumentList @("/S") -Wait -ErrorAction SilentlyContinue
+  }
   Remove-Item -Path $qaRoot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -Path $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -Path $installRoot -Recurse -Force -ErrorAction SilentlyContinue
   foreach ($key in $environmentKeys) {
     [Environment]::SetEnvironmentVariable($key, $originalEnvironment[$key], "Process")
   }
