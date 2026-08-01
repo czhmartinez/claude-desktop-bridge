@@ -23,6 +23,14 @@ export function localNetworkAddress(): string {
   return "127.0.0.1";
 }
 
+export function firstNonEmpty(values: readonly (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    const configured = value?.trim();
+    if (configured) return configured;
+  }
+  return undefined;
+}
+
 export function networkReachableUrl(value: string): string {
   const url = new URL(value);
   if (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]") {

@@ -113,7 +113,7 @@ const sessions = [
     projectId: project.projectId,
     projectName: project.name,
     cwd: project.cwd,
-    title: "Bridge 0.5.1 手机授权与后台连续性",
+    title: "Bridge 0.5.2 手机授权与后台连续性",
     source: "desktop",
     ownership: "BRIDGE_RUNNING",
     turnState: "running",
@@ -434,7 +434,7 @@ const hostSnapshot = {
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.5.1",
+    version: "0.5.2",
     pairingEpoch: 1,
     capabilities: [
       "evidence.v1",
@@ -683,7 +683,7 @@ try {
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
-  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.5.1 手机授权与后台连续性" });
+  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.5.2 手机授权与后台连续性" });
   await waitingSessionRow.waitFor();
   if (await mobile.locator(".session-row-v2").count() !== 3) {
     errors.push("mobile catalog: expected three expanded session rows");

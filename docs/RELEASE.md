@@ -198,7 +198,7 @@ Windows 与 macOS 共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic AP
 Windows 读取 `%APPDATA%\Claude\claude-code-sessions`，并通过 PowerShell/tasklist
 检查实例。私有 CDP 仍在两个平台都关闭，不属于发布能力。
 
-0.5.1 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
+0.5.2 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
 必须先运行完整 typecheck/test，再生成 Squirrel 包，并执行：
 
 ```powershell
@@ -270,7 +270,7 @@ npm run test:webrtc:native
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
 WSS 全部通过的平台才能标记“可分发”。
 
-V0.5.1 必须同时生成本机稳定签名 DMG、Windows Squirrel `Setup.exe`/`.nupkg` 与
+V0.5.2 必须同时生成本机稳定签名 DMG、Windows Squirrel `Setup.exe`/`.nupkg` 与
 Android APK，并记录版本、SHA-256、签名校验、打包态 CDP/配对结果和真机状态。
 Windows 正式分发必须有有效 Authenticode；CI 会生成
 `windows-release-evidence.json`，没有证书时只能标记为未签名验收包。没有 Anthropic

@@ -21,7 +21,13 @@ import {
 } from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
 import { DesktopController, type LocalBridgeRequest } from "./controller.js";
-import { claudeRuntimePaths, connectorPaths, defaultDesktopName, networkReachableUrl } from "./platform.js";
+import {
+  claudeRuntimePaths,
+  connectorPaths,
+  defaultDesktopName,
+  firstNonEmpty,
+  networkReachableUrl,
+} from "./platform.js";
 import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
@@ -53,19 +59,33 @@ protocol.registerSchemesAsPrivileged([{
   },
 }]);
 
-const CONFIGURED_RELAY = process.env.BRIDGE_RELAY_URL
-  ?? __BRIDGE_DEFAULT_RELAY__;
+const CONFIGURED_RELAY = firstNonEmpty([
+  process.env.BRIDGE_RELAY_URL,
+  __BRIDGE_DEFAULT_RELAY__,
+  "ws://127.0.0.1:8788/ws",
+])!;
 const DEFAULT_RELAY = networkReachableUrl(CONFIGURED_RELAY);
-const DEFAULT_PAIRING_BASE = process.env.BRIDGE_PAIRING_BASE_URL
-  ?? networkReachableUrl(__BRIDGE_DEFAULT_PAIRING_BASE__);
+const DEFAULT_PAIRING_BASE = firstNonEmpty([process.env.BRIDGE_PAIRING_BASE_URL])
+  ?? networkReachableUrl(firstNonEmpty([
+    __BRIDGE_DEFAULT_PAIRING_BASE__,
+    "http://localhost:5188",
+  ])!);
 const CONFIGURED_PUBLIC_RELAY = (
-  process.env.BRIDGE_PUBLIC_RELAY_URL ?? __BRIDGE_DEFAULT_PUBLIC_RELAY__
-) || (relayPathForUrl(CONFIGURED_RELAY) === "public-relay" ? CONFIGURED_RELAY : undefined);
-const DEFAULT_SERVICE_ORIGIN = (
-  process.env.BRIDGE_SERVICE_ORIGIN ?? __BRIDGE_DEFAULT_SERVICE_ORIGIN__
-) || DEFAULT_PAIRING_BASE;
+  process.env.BRIDGE_PUBLIC_RELAY_URL === undefined
+    ? firstNonEmpty([__BRIDGE_DEFAULT_PUBLIC_RELAY__])
+    : firstNonEmpty([process.env.BRIDGE_PUBLIC_RELAY_URL])
+) ?? (relayPathForUrl(CONFIGURED_RELAY) === "public-relay" ? CONFIGURED_RELAY : undefined);
+const DEFAULT_SERVICE_ORIGIN = firstNonEmpty([
+  process.env.BRIDGE_SERVICE_ORIGIN,
+  __BRIDGE_DEFAULT_SERVICE_ORIGIN__,
+  DEFAULT_PAIRING_BASE,
+])!;
 const DEFAULT_ICE_SERVERS = parseBridgeIceServers(
-  process.env.BRIDGE_ICE_SERVERS ?? __BRIDGE_DEFAULT_ICE_SERVERS__,
+  firstNonEmpty([
+    process.env.BRIDGE_ICE_SERVERS,
+    __BRIDGE_DEFAULT_ICE_SERVERS__,
+    '[{"urls":"stun:stun.cloudflare.com:3478"}]',
+  ])!,
 );
 
 function configPath(): string {

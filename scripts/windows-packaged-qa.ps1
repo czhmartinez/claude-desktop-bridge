@@ -35,7 +35,9 @@ if ($null -eq $desktopExecutable) {
 }
 
 $qaRoot = Join-Path $env:TEMP ("bridge-packaged-qa-" + [Guid]::NewGuid().ToString("N"))
+$smokeRoot = Join-Path $env:TEMP ("bridge-packaged-smoke-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $qaRoot | Out-Null
+New-Item -ItemType Directory -Path $smokeRoot | Out-Null
 
 $environmentKeys = @(
   "BRIDGE_RELAY_HOST",
@@ -54,7 +56,29 @@ foreach ($key in $environmentKeys) {
 
 $relayProcess = $null
 $desktopProcess = $null
+$smokeProcess = $null
 try {
+  foreach ($key in $environmentKeys) {
+    [Environment]::SetEnvironmentVariable($key, $null, "Process")
+  }
+  $smokeStart = @{
+    FilePath = $desktopExecutable.FullName
+    ArgumentList = @(
+      "--bridge-packaged-qa",
+      "--user-data-dir=`"$smokeRoot`"",
+      "--remote-debugging-port=9224"
+    )
+    WorkingDirectory = $desktopExecutable.DirectoryName
+    PassThru = $true
+  }
+  $smokeProcess = Start-Process @smokeStart
+  Wait-HttpEndpoint -Url "http://127.0.0.1:9224/json/version" -TimeoutSeconds 45
+  if ($smokeProcess.HasExited) {
+    throw "Packaged Windows app exited during the default-configuration startup smoke test."
+  }
+  & taskkill.exe /PID $smokeProcess.Id /T /F 2>$null | Out-Null
+  $smokeProcess = $null
+
   $relayUrl = "ws://127.0.0.1:8788/ws"
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_HOST", "0.0.0.0", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_URL", $relayUrl, "Process")
@@ -92,6 +116,9 @@ try {
   Invoke-NpmScript -Name "test:desktop:packaged"
   Invoke-NpmScript -Name "test:desktop:pairing"
 } finally {
+  if ($null -ne $smokeProcess -and -not $smokeProcess.HasExited) {
+    & taskkill.exe /PID $smokeProcess.Id /T /F 2>$null | Out-Null
+  }
   if ($null -ne $desktopProcess -and -not $desktopProcess.HasExited) {
     & taskkill.exe /PID $desktopProcess.Id /T /F 2>$null | Out-Null
   }
@@ -99,6 +126,7 @@ try {
     Stop-Process -Id $relayProcess.Id -Force -ErrorAction SilentlyContinue
   }
   Remove-Item -Path $qaRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -Path $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
   foreach ($key in $environmentKeys) {
     [Environment]::SetEnvironmentVariable($key, $originalEnvironment[$key], "Process")
   }

@@ -30,7 +30,14 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build -w @bridge/protocol
-      - run: npm run make:windows -w @bridge/desktop
+      - name: Build Windows installer with empty optional release variables
+        run: npm run make:windows -w @bridge/desktop
+        env:
+          BRIDGE_RELAY_URL: ""
+          BRIDGE_PUBLIC_RELAY_URL: ""
+          BRIDGE_PAIRING_BASE_URL: ""
+          BRIDGE_SERVICE_ORIGIN: ""
+          BRIDGE_ICE_SERVERS: ""
       - run: npm run build -w @bridge/relay
       - name: Run packaged Windows QA and pairing
         run: npm run test:desktop:packaged:windows

@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { claudeRuntimePaths, connectorPaths, supportsClaudeDesktop } from "./platform.js";
+import {
+  claudeRuntimePaths,
+  connectorPaths,
+  firstNonEmpty,
+  supportsClaudeDesktop,
+} from "./platform.js";
+
+describe("desktop URL configuration", () => {
+  it("ignores empty runtime and embedded values before using the safe fallback", () => {
+    expect(firstNonEmpty(["", "   ", "ws://127.0.0.1:8788/ws"])).toBe(
+      "ws://127.0.0.1:8788/ws",
+    );
+  });
+
+  it("trims and preserves the first configured value", () => {
+    expect(firstNonEmpty(["  wss://relay.example/ws  ", "ws://fallback/ws"])).toBe(
+      "wss://relay.example/ws",
+    );
+  });
+});
 
 describe("Windows Claude paths", () => {
   it("treats Windows and macOS as Claude Desktop hosts", () => {

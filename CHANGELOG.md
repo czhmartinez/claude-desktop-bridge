@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2
+
+- Treat blank release variables as absent so Windows packages retain the built-in Relay, pairing,
+  service-origin and ICE defaults instead of crashing in `networkReachableUrl` on first launch.
+- Add a packaged Windows cold-start gate with all Bridge transport variables removed before the
+  existing encrypted pairing and device-revocation checks.
+- Ship Windows Squirrel as an upgrade from 0.5.1; protocol V3, pairing schema V4 and existing
+  mobile pairings remain unchanged.
+
 ## 0.5.1
 
 - Add computer-default and per-session `standard` / `full-access` permission policies behind the
