@@ -169,14 +169,18 @@ try {
     };
   }
 
-  const configurationButton = page.getByRole("button", { name: "模型与 Effort" });
-  await configurationButton.click();
-  const configurationDialog = page.getByRole("dialog");
-  await configurationDialog.waitFor();
-  await configurationDialog.getByText("上下文", { exact: true }).waitFor();
-  await configurationDialog.getByRole("button", { name: "关闭" }).click();
-  await page.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
-  await page.locator(".evidence-panel, .evidence-empty").waitFor();
+  if (selectedSession) {
+    const configurationButton = page.getByRole("button", { name: "模型与 Effort" });
+    await configurationButton.click();
+    const configurationDialog = page.getByRole("dialog");
+    await configurationDialog.waitFor();
+    await configurationDialog.getByText("上下文", { exact: true }).waitFor();
+    await configurationDialog.getByRole("button", { name: "关闭" }).click();
+    await page.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
+    await page.locator(".evidence-panel, .evidence-empty").waitFor();
+  } else {
+    await page.getByText("等待发现 Claude Desktop 会话", { exact: true }).waitFor();
+  }
   assert.deepEqual(errors, []);
   await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });
   process.stdout.write(`${JSON.stringify({
