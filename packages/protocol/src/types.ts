@@ -68,8 +68,53 @@ export interface StoredIdentity {
   instanceId?: string;
 }
 
-export type BridgeOrigin = "desktop" | "mobile" | "claude-desktop" | "claude-host" | "system";
-export type BridgeSessionTransport = "claude-desktop-managed" | "bridge-host";
+export type BridgeOrigin =
+  | "desktop"
+  | "mobile"
+  | "claude-desktop"
+  | "claude-host"
+  | "codex-desktop"
+  | "codex-host"
+  | "hermes-desktop"
+  | "hermes-host"
+  | "system";
+
+/**
+ * A Desktop runtime owns its own account, native session IDs and transcript.
+ * Bridge normalizes the controls around it; it never turns these into one
+ * shared conversation domain.
+ */
+export type BridgeDesktopRuntimeId = "claude-desktop" | "codex-desktop" | "hermes-desktop";
+export type BridgeDesktopRuntimeState = "ready" | "starting" | "unavailable" | "error";
+export type BridgeRuntimeCapability =
+  | "session.list"
+  | "session.create"
+  | "session.history"
+  | "turn.start"
+  | "turn.steer"
+  | "turn.interrupt"
+  | "permission.resolve"
+  | "tool.events"
+  | "attachment.image";
+
+export interface BridgeDesktopRuntime {
+  id: BridgeDesktopRuntimeId;
+  name: string;
+  state: BridgeDesktopRuntimeState;
+  detail: string;
+  capabilities: BridgeRuntimeCapability[];
+  /** Every runtime remains an isolated native session domain. */
+  sessionIsolation: "independent";
+  sessionCount: number;
+  updatedAt: number;
+  appVersion?: string;
+}
+
+export type BridgeSessionTransport =
+  | "claude-desktop-managed"
+  | "bridge-host"
+  | "codex-app-server"
+  | "hermes-gateway";
 export type ClaudeDesktopIntegrationState =
   | "not-managed"
   | "starting"
@@ -121,7 +166,8 @@ export type BridgeCapability =
   | "provider.profile.v1"
   | "conversation.lanes.v1"
   | "conversation.handoff.v1"
-  | "permission.policy.v1";
+  | "permission.policy.v1"
+  | "runtime.adapter.v1";
 
 export type BridgeProviderKind =
   | "claude-3p"
@@ -361,6 +407,8 @@ export interface BridgeProjectInfo {
   runningCount: number;
   pendingCount: number;
   lastActivityAt: number;
+  /** Omitted only for snapshots produced by pre-0.6 hosts. */
+  runtimeId?: BridgeDesktopRuntimeId;
 }
 
 export interface BridgeDesktopRegistrationInfo {
@@ -373,6 +421,10 @@ export interface BridgeDesktopRegistrationInfo {
 
 export interface BridgeSessionInfo {
   sessionId: string;
+  /** The native Desktop that owns this session. Defaults to Claude for old hosts. */
+  runtimeId?: BridgeDesktopRuntimeId;
+  /** Never portable across Desktop runtimes; exposed only as an opaque reference. */
+  nativeSessionId?: string;
   desktopSessionId?: string;
   projectId: string;
   projectName: string;
@@ -553,6 +605,7 @@ export interface BridgeHostSnapshot {
   runtime: BridgeRuntimeStatus;
   transport?: BridgeConnectionStatus;
   claudeDesktop?: ClaudeDesktopAppStatus;
+  runtimes?: BridgeDesktopRuntime[];
   permissions: BridgePermissionInfo[];
   providers?: BridgeProviderProfile[];
   latestSeq: number;
@@ -569,6 +622,8 @@ export interface DesktopControlSnapshot extends BridgeHostSnapshot {
 
 export type BridgeMethod =
   | "snapshot.get"
+  | "runtime.list"
+  | "runtime.refresh"
   | "project.list"
   | "session.list"
   | "session.open"
@@ -665,6 +720,7 @@ export type BridgeEventType =
   | "device.paired"
   | "device.revoked"
   | "runtime.compatibility"
+  | "runtime.updated"
   | "runtime.error";
 
 export interface BridgeEvent {

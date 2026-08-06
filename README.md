@@ -1,6 +1,10 @@
-# Claude Desktop Bridge
+# Bridge
 
-首先这是一个专门针对第三方登录Claude desktop时使用的手机同步开发工具，仅限此种使用场景。
+Bridge 0.6 是一个独立的多 Desktop 协作产品：它给 Claude Desktop、Codex Desktop 和 Hermes Desktop
+提供一致的会话、发送、流式输出、审批、追问和中断体验，但不会把三者的原生会话、账号、
+模型、权限或历史合并到一起。
+
+## 早期背景
 
 这段是我自己写的：
 
@@ -20,7 +24,28 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前稳定版：0.5.3
+## 当前开发版：0.6.0
+
+Bridge 0.6 不再把自己定义为 Claude 的单一 tunnel。它保留一条加密的手机与 Bridge Host
+连接，并在 Host 内注册独立的 Desktop adapter：Claude 继续使用既有 `SessionBroker`；Codex
+通过 Bridge 自己启动的本地 `codex app-server --stdio` 接入；Hermes 通过 Bridge 自己启动的
+仅环回 Gateway 接入。统一列表只是入口索引，原生会话身份始终是
+`(runtimeId, nativeSessionId)`。
+
+- **统一操作，不统一会话**：任何任务都可在 Bridge 中查看、继续、steer、审批、回答追问和中断；
+  Claude、Codex 与 Hermes 不会互相迁移、共享上下文或自动故障转移。
+- **本地最小权限**：Codex adapter 不附着或改写已经运行的 Desktop 进程；Hermes adapter 只接受
+  环回 WebSocket，Bridge 为自己启动的 Gateway 生成进程级随机令牌，且不读取 Hermes Desktop 的
+  token/keychain。
+- **能力按运行时声明**：文本会话、流、工具、审批和中断是 0.6 的共同基线；图片附件和模型配置
+  只在对应 adapter 确认支持时开放。模型设置仍在各自 Desktop 应用内完成。
+- **Claude 域内功能保持独立**：原有多 provider lane 与 handoff 仍只在 Claude 域内工作，不能用于
+  Codex/Hermes 跨应用迁移。
+
+协议仍为 V3、配对 schema 仍为 V4；`runtimes`、`runtimeId` 与 `nativeSessionId` 是可选快照字段，
+旧客户端会忽略它们，新客户端会显示 Desktop 归属与筛选。
+
+## Claude 域功能（延续自 0.5）
 
 Bridge 0.5.3 将 Windows 无交互 Squirrel 安装器替换为辅助式 NSIS 安装向导。安装时会
 显示目录选择页，用户可以改到任意有写权限的位置；Windows 门禁会把安装包静默安装到
@@ -61,9 +86,10 @@ lane。切换只迁移用户可见、可验证且有界的上下文，不声称�
 - V0.4.2 的跨 Claude/Claude-3p profile 原始恢复阻止、ultracode 1M 上下文识别和
   synthetic `Prompt is too long` 去重继续生效。
 
-0.5.3 继续使用协议 V3 和配对 schema V4；已配对的 0.4/0.5 设备无需重配。V0.5 客户端
-连接 V0.4 Host 时会按能力缺失隐藏提供方入口；V0.4 客户端连接 V0.5 Host 时仍可在
-可写 lane 正常执行，但对官方只读 lane 的写入会失败关闭并提示升级。它仍不兼容
+0.6.0 继续使用协议 V3 和配对 schema V4；已配对的 0.4/0.5 设备无需重配。V0.6 客户端
+连接 V0.4 Host 时会按能力缺失隐藏新增入口；V0.4/0.5 客户端连接 V0.6 Host 时会忽略
+`runtimeId`、`nativeSessionId` 和 `runtimes`，仍可沿用既有 Claude 可写 lane；需要
+Desktop 归属筛选和外部 adapter 的统一体验时应升级到 V0.6。它仍不兼容
 0.3 配对：从 0.3 升级后会保留稳定主机 ID、
 设置、会话历史与本地事件，但会轮换房间和端到端密钥并清空旧设备授权；手机会将
 旧主机标记为“需要重新配对”，扫描新二维码后按同一主机接回本地缓存。
@@ -72,22 +98,17 @@ Relay 始终保留一个低流量控制连接，用于信令、设备撤销、�
 直连失败回退。界面显示“直连”时业务数据不经过 Relay；显示“安全中继”或
 “局域网连接”时业务数据使用相应 Relay 路径。
 
-Bridge 0.5.3 是运行在电脑上的 Claude 会话客户端。电脑端 Bridge 与 Android/iOS
-共享同一个逻辑 `sessionId`、活动 lane 和同一条有序事件流。
-
-它面向已经通过第三方 Host 或 Gateway 登录 Claude Desktop、但不能使用官方
-Remote Control 的用户；也可以把一段 Bridge 工作手动接力到 Claude 官方本机应用，
-但官方 lane 不提供 Bridge 远程写入。
+Claude Desktop 仍保留其既有会话与 lane 行为。它面向已经通过第三方 Host 或 Gateway
+登录 Claude Desktop、但不能使用官方 Remote Control 的用户；也可以把一段 Claude 域内
+Bridge 工作手动接力到 Claude 官方本机应用，但官方 lane 不提供 Bridge 远程写入。
 
 ## 使用方式
 
-1. 在电脑安装并打开 Bridge，保持 Claude-3p Host 可用；需要 Anthropic API 时只在
-   Bridge 电脑端提供方面板配置 Console API Key。
-2. 将电脑端升级到 0.5.3；0.5.1/0.5.2 Android/iOS 可继续使用。已有 0.4/0.5 配对无需重配；从 0.3 首次
-   升级时，仍需在 Bridge“设备”页扫描新二维码完成 schema V4 强制重配。
-3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、
-   回答 Claude 提问、调整或停止任务，也可从会话顶栏手动发起提供方接力。接力到
-   Claude 官方时，手机会显示“等待本机确认”，直到官方首条消息通过关联校验。
+1. 在电脑安装并打开 Bridge，启动需要使用的 Claude Desktop、Codex Desktop 或 Hermes Desktop。
+2. Bridge 会发现本机 adapter；在桌面或手机的“项目与会话”中按 Desktop 归属筛选，或在创建任务时
+   选择目标 runtime。
+3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、回答追问、调整或停止任务。
+   Claude 域内的 provider handoff 仍在会话顶栏单独触发，不会跨 Desktop 生效。
 
 Bridge 不点击输入框，不粘贴内容，不申请辅助功能权限，也不读写系统剪贴板。
 Bridge 接管 Claude Desktop 已有会话后，电脑端 Bridge 是主要桌面界面，手机是远程
@@ -120,7 +141,7 @@ Claude Desktop 会话清单登记。Windows 使用 `%APPDATA%\Claude\claude-code
 并通过 PowerShell/tasklist 做进程检查；用户无需手工复制配置。私有 CDP 和隐藏协议仍在
 两个平台都不启用，避免绕过 Anthropic 授权。
 
-0.5.3 的“标准授权 / 完全授权”、单会话覆盖、手机离线继续执行和 `events.resume`
+0.6.0 的“标准授权 / 完全授权”、单会话覆盖、手机离线继续执行和 `events.resume`
 同样运行在 Windows Host。`windows-2022` 门禁会执行完整 typecheck/test、NSIS
 自定义目录安装、打包版 UI 检查和真实加密配对；Windows 真机上的 DPAPI 跨重启、托盘常驻和
 手机断线恢复仍必须在发布前单独验收。
@@ -134,8 +155,15 @@ macOS 构建冒充正式安装包，也不会自动上传未签名附件。
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
 发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
-## 0.5.3 当前能力
+## 0.6.0 当前能力
 
+- `RuntimeAdapterRegistry` 和 `RuntimeSessionBroker` 将 Claude、Codex、Hermes 的会话统一呈现为
+  同一套列表、对话、流、审批、追问、调整与中断操作，同时用 `(runtimeId, nativeSessionId)`
+  彻底隔离会话身份。
+- Codex 使用 Bridge 自己启动的官方 `codex app-server --stdio`；Hermes 使用 Bridge 自己启动的
+  仅环回 Gateway 和进程级随机令牌。两者都不读取或复用原生 Desktop 的账号、token/keychain。
+- 运行时能力决定可见控件：当前外部 adapter 支持文本、流、工具、审批、追问、调整和中断；
+  图片附件与模型配置只在相应 adapter 声明支持时开放，模型仍在原生 Desktop 内管理。
 - 电脑默认与单会话授权模式、切换后立即处理待授权队列、自动批准审计，以及
   `AskUserQuestion` 始终等待用户回答。
 - 手机后台、网络恢复和推送唤醒统一重连 `events.resume`；进程重启后恢复最近主机、
@@ -159,9 +187,9 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
 - 0.3 已有的持久 Agent SDK 会话、单写入者保护、可靠 WSS、WebRTC 直连、事件恢复、
   审批、提问、停止、推送唤醒、主机/项目/会话导航和稳定签名发布门继续保留。
 
-0.5.3 不包含隐藏 CoT、官方 OAuth 代理、自动故障转移、Claude Desktop 实时工具
-镜像、私有 CDP、完整项目浏览、远程编辑、动态站点直播、自动启动服务、PDF 内嵌
-渲染或超过 20 MiB 的产物传输。
+0.6.0 不包含隐藏 CoT、官方 OAuth 代理、自动故障转移、跨 Desktop 会话/账号/模型/权限
+迁移、Claude Desktop 实时工具镜像、私有 CDP、完整项目浏览、远程编辑、动态站点直播、
+自动启动服务、PDF 内嵌渲染或超过 20 MiB 的产物传输。
 
 ## 本地运行
 
@@ -203,7 +231,7 @@ npm run build -w @bridge/relay
 npm run test:desktop:packaged:windows
 ```
 
-产物位于 `apps/desktop/out/make/nsis.windows/x64/`，其中 `Bridge-0.5.3-Setup.exe`
+产物位于 `apps/desktop/out/make/nsis.windows/x64/`，其中 `Bridge-0.6.0-Setup.exe`
 会打开辅助式安装向导并显示目录选择页，不再静默固定到 Squirrel 的用户目录。应选择
 当前账户可写的位置，受管电脑可使用例如 `F:\Apps\Bridge`，不要选择被 IT 策略锁定的
 `ProgramData`。未签名包可能出现 SmartScreen 提示，仅适合本机/CI 验收。正式分发前在
@@ -217,7 +245,7 @@ M0 真实闸门使用一次性项目和可丢弃会话验证同一 transcript �
 ad-hoc 包覆盖升级会导致 macOS 再次请求“文稿 / 桌面”等 Files & Folders 授权。
 个人 Mac 可按发布手册显式执行一次 `signing:setup-local`，之后用
 `make:local-signed` 生成身份稳定的本机测试包；对外发布仍必须使用 Developer ID。
-V0.5 的本机验收必须同时交付 DMG 与 Android APK；除非改动明确仅限桌面原生层，
+V0.6 的本机验收必须同时交付 DMG 与 Android APK；除非改动明确仅限桌面原生层，
 不得只更新其中一个安装包。两端本机包统一使用
 `npm run make:local:desktop-android` 生成。
 
@@ -233,7 +261,7 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.5.3 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
+Bridge 0.6.0 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
 必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
 签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。

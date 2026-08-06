@@ -76,7 +76,7 @@ export class AnthropicApiProviderAdapter implements ProviderAdapter {
       "CLAUDE_CODE_USE_VERTEX",
     ]) delete environment[key];
     environment.ANTHROPIC_API_KEY = await this.registry.anthropicApiKey();
-    environment.CLAUDE_AGENT_SDK_CLIENT_APP = "claude-bridge/0.5.3";
+    environment.CLAUDE_AGENT_SDK_CLIENT_APP = "claude-bridge/0.6.0";
     return {
       logicalSessionId,
       nativeSessionId: requiredNativeSession(lane),

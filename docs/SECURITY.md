@@ -1,4 +1,4 @@
-# Bridge 0.5.3 安全模型
+# Bridge 0.6.0 安全模型
 
 ## 已保护
 
@@ -16,7 +16,8 @@
   `safeStorage` 保护，不复用传输身份密钥。
 - Electron 渲染进程启用 sandbox、context isolation，关闭 Node integration，
   并限制导航和 IPC 来源。
-- Bridge 不申请辅助功能权限，不发送键鼠事件，不激活 Claude/Codex，不读写剪贴板。
+- Bridge 不申请辅助功能权限，不发送键鼠事件，不附着、注入或自动操作 Claude、Codex、Hermes
+  的原生窗口，也不读写剪贴板。
 - “完全授权”只在电脑端 `PermissionBroker` 自动批准工具请求，不启用 Agent SDK
   `bypassPermissions`；Claude 提问和受管策略的明确禁止仍不能被自动批准。
 - 第三方 Claude Host 凭据不写入 Bridge 配置，不经 Relay，不出现在诊断或日志中。
@@ -51,6 +52,21 @@ STUN 能看到发起 Binding 的公网 IP 和端口，但不接收 Claude 指令
 或 SHA-256。客户端只在完整分块通过最终哈希校验后保存或分享文件。
 
 ## 本机边界
+
+### 多 Desktop adapter
+
+Bridge 0.6 统一操作体验，不合并原生会话域。每个会话的本机身份是
+`(runtimeId, nativeSessionId)`；运行时相同的原生 ID 不会相互覆盖，Bridge 也不会在
+Claude、Codex、Hermes 间复制历史、认证、模型选择、权限规则或自动故障转移。
+
+`CodexAppServerAdapter` 只启动 Bridge 自己拥有的官方 `codex app-server --stdio` 子进程，
+不附着已有 app-server 或 Codex Desktop 进程。`HermesGatewayAdapter` 只连接 `localhost` /
+`127.0.0.1` / `::1` WebSocket；未配置 Gateway 时由 Bridge 启动 Hermes sidecar，并为该进程
+生成随机会话令牌。Bridge 不读取 Hermes Desktop 的 token、keychain 或远端 Gateway 地址。
+adapter 启动超时、关闭或重试时必须关闭其自有子进程，不能保留后台访问通道。
+
+Codex/Hermes 的模型、账号和原生配置只在相应 Desktop 内管理。外部 adapter 的图片附件、
+模型配置和其他非共同能力默认关闭，只有显式能力声明才能在 Bridge UI 开放。
 
 `TranscriptObserver` 需要只读访问当前用户的 Claude 会话 JSONL 与元数据。
 `ClaudeSessionHost` 以当前用户身份运行，并继承第三方 Host 环境，因此它拥有与
@@ -114,7 +130,7 @@ Bridge 任务只快照本轮归因到的变化，不镜像整个项目。Claude 
 
 所有远程文件请求只接受服务端生成的 `artifactId`。实际读取前必须通过 `realpath`
 确认目标仍位于该会话项目根目录；路径穿越、项目外绝对路径和符号链接逃逸一律
-拒绝。默认阻止 `.env*`、私钥、凭据文件、认证配置和 `.git` 内部数据，V0.5 没有
+拒绝。默认阻止 `.env*`、私钥、凭据文件、认证配置和 `.git` 内部数据，V0.6 没有
 远程绕过开关。工具输出中的令牌、密钥和认证头在持久化前脱敏。
 
 单文件硬上限为 20 MiB。文本 diff 每文件最多 1 MiB、每轮最多 5 MiB；工具输出
@@ -125,7 +141,7 @@ Bridge 任务只快照本轮归因到的变化，不镜像整个项目。Claude 
 证据清单长期保留；加密快照和预览在 30 天或总量超过 1 GiB 时按 LRU 清理。缓存
 失效后，只有源文件仍在项目根内且 SHA-256 与清单一致时才允许重建。
 
-V0.5 不展示、存储或推断隐藏 CoT，不附加 Claude Desktop 私有 CDP，不提供远程
+V0.6 不展示、存储或推断隐藏 CoT，不附加 Claude Desktop 私有 CDP，不提供远程
 项目浏览、编辑、动态服务启动或大文件绕过。
 
 ## 生产要求

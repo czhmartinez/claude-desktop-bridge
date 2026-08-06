@@ -3,6 +3,7 @@ import type {
   BridgeArtifactManifest,
   BridgeArtifactPreview,
   BridgeDeliveryState,
+  BridgeDesktopRuntimeId,
   BridgeEvidenceBundle,
   BridgeEvent,
   BridgeHistoryItem,
@@ -154,8 +155,28 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
   if (session.turnState === "waiting") return "需处理";
   if (bridgeCreated) return "Bridge 待机";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
+  if (session.runtimeId && session.runtimeId !== "claude-desktop") return `${desktopRuntimeName(session.runtimeId)} 待机`;
   if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
   return "待机";
+}
+
+export function desktopRuntimeId(session: BridgeSessionInfo): BridgeDesktopRuntimeId {
+  return session.runtimeId ?? "claude-desktop";
+}
+
+export function desktopRuntimeName(runtimeId: BridgeDesktopRuntimeId | undefined): string {
+  if (runtimeId === "codex-desktop") return "Codex Desktop";
+  if (runtimeId === "hermes-desktop") return "Hermes Desktop";
+  return "Claude Desktop";
+}
+
+function runtimeSupports(
+  snapshot: BridgeHostSnapshot | undefined,
+  session: BridgeSessionInfo,
+  capability: "attachment.image",
+): boolean {
+  const runtime = snapshot?.runtimes?.find((candidate) => candidate.id === desktopRuntimeId(session));
+  return runtime?.capabilities.includes(capability) ?? desktopRuntimeId(session) === "claude-desktop";
 }
 
 export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
@@ -196,7 +217,7 @@ function deliveryLabel(state: BridgeDeliveryState): string {
   if (state === "relay-received") return "Relay 已接收";
   if (state === "host-received") return "主机已接收";
   if (state === "session-received") return "会话已接收";
-  if (state === "running") return "Claude 处理中";
+  if (state === "running") return "正在处理中";
   if (state === "completed") return "已完成";
   if (state === "failed") return "发送失败";
   if (state === "uncertain") return "发送结果待确认";
@@ -521,7 +542,7 @@ export function permissionPresentation(permission: BridgePermissionInfo): Permis
   return {
     summary: permission.description
       || permission.displayName
-      || (mutating ? "这项操作会修改电脑上的项目内容" : "Claude 需要确认后才能继续"),
+      || (mutating ? "这项操作会修改电脑上的项目内容" : "当前任务需要确认后才能继续"),
     facts,
     ...(preview ? { preview } : {}),
     raw: truncate(serialized, 4_000),
@@ -570,7 +591,7 @@ function QuestionPrompt({
   return (
     <section className="permission-prompt question-prompt">
       <div className="permission-title">
-        <strong>{permission.title || "Claude 需要你的选择"}</strong>
+        <strong>{permission.title || "当前任务需要你的选择"}</strong>
         <span>任一已授权设备的首次回答生效</span>
       </div>
       {error && <div className="permission-error" role="alert">{error}</div>}
@@ -672,7 +693,7 @@ function ToolPermissionPrompt({
       </div>
       <div className={`permission-risk ${presentation.mutating ? "mutating" : ""}`}>
         {presentation.mutating ? <AlertTriangle size={16} /> : <Wrench size={16} />}
-        <span>{presentation.mutating ? "操作前请核对目标与内容" : "Claude 正在等待你的确认"}</span>
+        <span>{presentation.mutating ? "操作前请核对目标与内容" : "当前任务正在等待你的确认"}</span>
       </div>
       {presentation.facts.length > 0 && (
         <dl className="permission-facts">
@@ -822,7 +843,11 @@ export function MobileWorkspace({
     message?: string,
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
-  onCreateSession(cwd: string, title?: string): Promise<BridgeSessionInfo | undefined>;
+  onCreateSession(
+    cwd: string,
+    title?: string,
+    runtimeId?: BridgeDesktopRuntimeId,
+  ): Promise<BridgeSessionInfo | undefined>;
   onLoadSessionConfiguration(sessionId: string): Promise<BridgeSessionConfiguration>;
   onConfigureSession(
     sessionId: string,
@@ -860,6 +885,7 @@ export function MobileWorkspace({
   const [steer, setSteer] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createProjectId, setCreateProjectId] = useState("");
+  const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
   const [createTitle, setCreateTitle] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
@@ -873,6 +899,7 @@ export function MobileWorkspace({
   const [desktopAction, setDesktopAction] = useState<"launch" | "quit">();
   const [desktopActionError, setDesktopActionError] = useState("");
   const [quitDesktopOpen, setQuitDesktopOpen] = useState(false);
+  const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
@@ -882,7 +909,9 @@ export function MobileWorkspace({
   const sessions = snapshot?.sessions ?? [];
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
   const providers = snapshot?.providers ?? [];
-  const providerSwitchingAvailable = supportsProviderSwitching(snapshot);
+  const providerSwitchingAvailable = Boolean(
+    selectedSession && desktopRuntimeId(selectedSession) === "claude-desktop" && supportsProviderSwitching(snapshot),
+  );
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
   const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
@@ -897,8 +926,9 @@ export function MobileWorkspace({
   );
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    const filtered = sessions.filter((session) => !query || (
-      `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query)
+    const filtered = sessions.filter((session) => (
+      (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
+      && (!query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query))
     ));
     const groups = new Map<string, BridgeSessionInfo[]>();
     for (const session of filtered) {
@@ -910,7 +940,7 @@ export function MobileWorkspace({
       project: snapshot?.projects.find((project) => project.projectId === projectId),
       sessions: projectSessions,
     }));
-  }, [search, sessions, snapshot?.projects]);
+  }, [runtimeFilter, search, sessions, snapshot?.projects]);
   const groupedProjectIds = useMemo(
     () => grouped.map((group) => group.project?.projectId ?? group.sessions[0]!.projectId),
     [grouped],
@@ -1058,10 +1088,10 @@ export function MobileWorkspace({
       !selectedSession ||
       selectedSession.allowedActions?.canSend === false ||
       sending ||
-      (!text.trim() && attachments.length === 0)
+      (!text.trim() && (!runtimeSupports(snapshot, selectedSession, "attachment.image") || attachments.length === 0))
     ) return;
     const nextText = text.trim();
-    const nextAttachments = attachments;
+    const nextAttachments = runtimeSupports(snapshot, selectedSession, "attachment.image") ? attachments : [];
     setText("");
     setAttachments([]);
     setSending(true);
@@ -1111,7 +1141,11 @@ export function MobileWorkspace({
     if (!project || createBusy) return;
     setCreateBusy(true);
     try {
-      const created = await onCreateSession(project.cwd, createTitle.trim() || undefined);
+      const created = await onCreateSession(
+        project.cwd,
+        createTitle.trim() || undefined,
+        createRuntimeId,
+      );
       if (created) {
         setCreateOpen(false);
         setCreateTitle("");
@@ -1125,6 +1159,10 @@ export function MobileWorkspace({
   }
 
   if (selectedSession) {
+    const runtimeName = desktopRuntimeName(desktopRuntimeId(selectedSession));
+    const canAttachImages = runtimeSupports(snapshot, selectedSession, "attachment.image");
+    const canConfigure = desktopRuntimeId(selectedSession) === "claude-desktop"
+      && selectedSession.allowedActions?.canConfigure !== false;
     const officialActive = usesOfficialComposer(selectedSession, providers);
     const bridgeRunning = selectedSession.turnState === "running"
       && (
@@ -1148,7 +1186,7 @@ export function MobileWorkspace({
           <div className="mobile-device">
             <strong>{selectedSession.title}</strong>
             <span className={`session-presence ${selectedSession.turnState}`}>
-              <i />{ownershipLabel(selectedSession)}
+              <i />{runtimeName} · {ownershipLabel(selectedSession)}
             </span>
           </div>
           <div className="topbar-actions">
@@ -1160,13 +1198,14 @@ export function MobileWorkspace({
                 <ArrowRightLeft size={19} />
               </IconButton>
             )}
-            <IconButton
-              label="模型与 Effort"
-              disabled={selectedSession.allowedActions?.canConfigure === false}
-              onClick={() => setConfigurationOpen(true)}
-            >
-              <Settings2 size={19} />
-            </IconButton>
+            {canConfigure && (
+              <IconButton
+                label="模型与 Effort"
+                onClick={() => setConfigurationOpen(true)}
+              >
+                <Settings2 size={19} />
+              </IconButton>
+            )}
             {canStop ? (
               <IconButton
                 label={stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
@@ -1250,7 +1289,7 @@ export function MobileWorkspace({
           {activePermission ? (
             <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
               <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
-              <span><strong>Claude 正在等待授权</strong><small>{activePermission.title || activePermission.displayName || activePermission.toolName}</small></span>
+              <span><strong>{runtimeName} 正在等待授权</strong><small>{activePermission.title || activePermission.displayName || activePermission.toolName}</small></span>
               <b>{sessionPermissions.length > 1 ? `${sessionPermissions.length} 项` : "处理"}</b>
             </button>
           ) : otherPermission && otherPermissionSession ? (
@@ -1299,7 +1338,7 @@ export function MobileWorkspace({
           ) : (
             <article className={`conversation-item ${entry.item.role} ${entry.item.live ? "live" : ""}`} key={entry.item.id}>
               <div className="conversation-item-meta">
-                <strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? "Claude" : entry.item.role === "tool" ? entry.item.toolName : "Bridge"}</strong>
+                <strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? runtimeName : entry.item.role === "tool" ? entry.item.toolName : "Bridge"}</strong>
                 <time>{formatTime(entry.item.createdAt)}</time>
               </div>
               {entry.item.role === "tool" && <Wrench size={16} aria-hidden="true" />}
@@ -1379,13 +1418,15 @@ export function MobileWorkspace({
               hidden
               onChange={(event) => void addImages(event.target.files)}
             />
-            <IconButton
-              label="添加图片"
-              disabled={selectedSession.allowedActions?.canSend === false}
-              onClick={() => fileRef.current?.click()}
-            >
-              <ImagePlus size={20} />
-            </IconButton>
+            {canAttachImages && (
+              <IconButton
+                label="添加图片"
+                disabled={selectedSession.allowedActions?.canSend === false}
+                onClick={() => fileRef.current?.click()}
+              >
+                <ImagePlus size={20} />
+              </IconButton>
+            )}
             <textarea
               value={text}
               onChange={(event) => setText(event.target.value)}
@@ -1394,17 +1435,17 @@ export function MobileWorkspace({
                 ? selectedSession.allowedActions?.reason ?? (
                     selectedSession.source === "bridge"
                       ? "给这个 Bridge 会话发指令"
-                      : "给这个 Claude Desktop 会话发指令"
+                      : `给这个 ${runtimeName} 会话发指令`
                   )
                 : "电脑离线，消息会保存在手机并自动送达"}
               rows={1}
-              aria-label="给 Claude 发指令"
+              aria-label={`给 ${runtimeName} 发指令`}
             />
             <button
               type="submit"
               className="send-button"
               aria-label="发送"
-              disabled={selectedSession.allowedActions?.canSend === false || sending || (!text.trim() && attachments.length === 0)}
+              disabled={selectedSession.allowedActions?.canSend === false || sending || (!text.trim() && (!canAttachImages || attachments.length === 0))}
             >
               {sending ? <LoaderCircle className="is-spinning" size={19} /> : <Send size={19} />}
             </button>
@@ -1430,7 +1471,7 @@ export function MobileWorkspace({
             onClose={() => setProviderOpen(false)}
           />
         )}
-        {configurationOpen && (
+        {configurationOpen && canConfigure && (
           <SessionConfigurationDialog
             session={selectedSession}
             onLoad={() => onLoadSessionConfiguration(selectedSession.sessionId)}
@@ -1451,7 +1492,7 @@ export function MobileWorkspace({
               <header>
                 <div>
                   <span>需要处理</span>
-                  <h2 id="permission-sheet-title">Claude 等待授权</h2>
+                  <h2 id="permission-sheet-title">{runtimeName} 等待授权</h2>
                 </div>
                 <IconButton label="暂时关闭" onClick={() => setPermissionOpen(false)}><X size={19} /></IconButton>
               </header>
@@ -1506,7 +1547,7 @@ export function MobileWorkspace({
       <section className="host-detail">
         <div className="host-detail-heading">
           <div>
-            <span>Claude</span>
+            <span>Bridge 0.6</span>
             <h1>项目与会话</h1>
           </div>
           <button
@@ -1514,13 +1555,39 @@ export function MobileWorkspace({
             className="primary-button"
             disabled={!snapshot?.projects.length}
             onClick={() => {
-              setCreateProjectId(snapshot?.projects[0]?.projectId ?? "");
+              const runtimeId = runtimeFilter === "all"
+                ? snapshot?.runtimes?.find((runtime) => (
+                    runtime.state === "ready" && runtime.capabilities.includes("session.create")
+                  ))?.id ?? "claude-desktop"
+                : runtimeFilter;
+              setCreateRuntimeId(runtimeId);
+              setCreateProjectId(
+                snapshot?.projects.find((project) => project.runtimeId === runtimeId)?.projectId
+                ?? snapshot?.projects[0]?.projectId
+                ?? "",
+              );
               setCreateOpen(true);
             }}
           >
             <Plus size={17} />新建
           </button>
         </div>
+        {(snapshot?.runtimes?.length ?? 0) > 0 && (
+          <nav className="runtime-filter" aria-label="Desktop 运行时筛选">
+            <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
+            {snapshot!.runtimes!.map((runtime) => (
+              <button
+                type="button"
+                key={runtime.id}
+                className={runtimeFilter === runtime.id ? "active" : ""}
+                disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
+                onClick={() => setRuntimeFilter(runtime.id)}
+              >
+                {desktopRuntimeName(runtime.id)}
+              </button>
+            ))}
+          </nav>
+        )}
         <section className={`mobile-desktop-control ${snapshot?.claudeDesktop?.state ?? "unknown"}`}>
           <div className="mobile-desktop-control-copy">
             <i aria-hidden="true" />
@@ -1579,7 +1646,7 @@ export function MobileWorkspace({
           <button type="button" className="host-permission-alert" onClick={() => void selectSession(permissions[0]!.sessionId)}>
             <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
             <span>
-              <strong>Claude 正在等待处理</strong>
+              <strong>Desktop 任务正在等待处理</strong>
               <small>{sessions.find((session) => session.sessionId === permissions[0]!.sessionId)?.title ?? permissions[0]!.toolName}</small>
             </span>
             <b>{permissions.length > 1 ? `${permissions.length} 项` : "查看"}</b>
@@ -1599,8 +1666,8 @@ export function MobileWorkspace({
         )}
         {snapshot && grouped.length === 0 && (
           <div className="session-catalog-loading">
-            <strong>{search ? "没有匹配的会话" : "暂未发现 Claude 会话"}</strong>
-            <span>{search ? "换一个关键词试试。" : "先在电脑端 Claude 打开一个项目，Bridge 会自动读取。"}</span>
+            <strong>{search ? "没有匹配的会话" : "暂未发现 Desktop 会话"}</strong>
+            <span>{search ? "换一个关键词试试。" : "启动目标 Desktop 后，Bridge 会自动读取其独立会话。"}</span>
           </div>
         )}
         <div className="project-groups">
@@ -1639,7 +1706,7 @@ export function MobileWorkspace({
                         <span className={`session-state-dot ${session.turnState}`} />
                         <span className="session-row-copy">
                           <strong>{session.title}</strong>
-                          <small>{relativeTime(session.lastActivityAt)}{session.currentSummary ? ` · ${session.currentSummary}` : ""}</small>
+                          <small>{desktopRuntimeName(desktopRuntimeId(session))} · {relativeTime(session.lastActivityAt)}{session.currentSummary ? ` · ${session.currentSummary}` : ""}</small>
                         </span>
                         <span className="session-row-status">{ownershipLabel(session)}</span>
                         <ChevronRight size={18} />
@@ -1659,9 +1726,34 @@ export function MobileWorkspace({
         }}>
           <section className="create-session-dialog" role="dialog" aria-modal="true" aria-labelledby="create-session-title">
             <header>
-              <h2 id="create-session-title">新建 Bridge 会话</h2>
+              <h2 id="create-session-title">新建会话</h2>
               <IconButton label="关闭" onClick={() => setCreateOpen(false)}><X size={19} /></IconButton>
             </header>
+            <label>
+              <span>Desktop 运行时</span>
+              <select
+                value={createRuntimeId}
+                onChange={(event) => {
+                  const runtimeId = event.target.value as BridgeDesktopRuntimeId;
+                  setCreateRuntimeId(runtimeId);
+                  setCreateProjectId(
+                    snapshot?.projects.find((project) => project.runtimeId === runtimeId)?.projectId
+                    ?? snapshot?.projects[0]?.projectId
+                    ?? "",
+                  );
+                }}
+              >
+                {snapshot?.runtimes?.map((runtime) => (
+                  <option
+                    value={runtime.id}
+                    key={runtime.id}
+                    disabled={runtime.state !== "ready" || !runtime.capabilities.includes("session.create")}
+                  >
+                    {desktopRuntimeName(runtime.id)}{runtime.state === "ready" ? "" : "（不可用）"}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label>
               <span>项目</span>
               <select value={createProjectId} onChange={(event) => setCreateProjectId(event.target.value)}>
@@ -1675,7 +1767,7 @@ export function MobileWorkspace({
             <div className="dialog-actions">
               <button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>取消</button>
               <button type="button" className="primary-button" disabled={!createProjectId || createBusy} onClick={() => void createSession()}>
-                {createBusy && <LoaderCircle className="is-spinning" size={16} />}创建 Bridge 会话
+                {createBusy && <LoaderCircle className="is-spinning" size={16} />}创建会话
               </button>
             </div>
           </section>

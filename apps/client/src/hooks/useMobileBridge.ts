@@ -10,6 +10,7 @@ import {
   randomId,
   type BridgeAttachment,
   type BridgeDeliveryState,
+  type BridgeDesktopRuntimeId,
   type BridgeEndpoint,
   type BridgeEffort,
   type BridgeEvidenceBundle,
@@ -1894,10 +1895,15 @@ export function useMobileBridge() {
     });
   }, [resumeEvents, sendRequest]);
 
-  const createSession = useCallback(async (cwd: string, title?: string): Promise<BridgeSessionInfo | undefined> => {
+  const createSession = useCallback(async (
+    cwd: string,
+    title?: string,
+    runtimeId?: BridgeDesktopRuntimeId,
+  ): Promise<BridgeSessionInfo | undefined> => {
     const response = await sendRequest("session.create", {
       cwd,
       ...(title ? { title } : {}),
+      ...(runtimeId ? { runtimeId } : {}),
     }, { wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "新建会话失败");
     const result = response.result as { session?: BridgeSessionInfo };

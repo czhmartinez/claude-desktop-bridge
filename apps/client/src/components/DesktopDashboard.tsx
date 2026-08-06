@@ -6,6 +6,7 @@ import type {
   BridgeEvidencePage,
   BridgeEvent,
   BridgeHistoryPage,
+  BridgeDesktopRuntimeId,
   BridgePermissionMode,
   BridgeProviderProfile,
   BridgeResponse,
@@ -59,6 +60,8 @@ import { IconButton } from "./IconButton.js";
 import {
   conversationItems,
   conversationTimeline,
+  desktopRuntimeId,
+  desktopRuntimeName,
   fileToAttachment,
   PermissionPrompt,
   stoppableBridgeTask,
@@ -111,12 +114,16 @@ function sessionState(session: BridgeSessionInfo): string {
   if (session.turnState === "queued") return bridgeCreated ? "Bridge 排队中" : "排队中";
   if (bridgeCreated) return "Bridge 待机";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
+  if (session.runtimeId && session.runtimeId !== "claude-desktop") return `${desktopRuntimeName(session.runtimeId)} 待机`;
   if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
   return "待机";
 }
 
 function transportLabel(session: BridgeSessionInfo): string {
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
+  if (session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop") {
+    return `${desktopRuntimeName(session.runtimeId)} 原生会话`;
+  }
   if (session.source === "bridge") {
     if (session.desktopRegistration?.state === "registered") return "Claude Desktop 已登记";
     if (session.desktopRegistration?.state === "restart-required") return "等待 Desktop 重启";
@@ -171,13 +178,26 @@ function DesktopSessions({
   const [providerOpen, setProviderOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
+  const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
+  const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
   const [title, setTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  const selectedRuntime = selected ? desktopRuntimeId(selected) : "claude-desktop";
+  const selectedRuntimeName = desktopRuntimeName(selectedRuntime);
+  const canAttachImages = selected
+    ? snapshot.runtimes?.find((runtime) => runtime.id === selectedRuntime)?.capabilities.includes("attachment.image")
+      ?? selectedRuntime === "claude-desktop"
+    : false;
+  const canConfigure = selectedRuntime === "claude-desktop" && selected?.allowedActions?.canConfigure !== false;
   const providers = snapshot.providers ?? [];
-  const providerSwitchingAvailable = snapshot.host.capabilities.includes("provider.profile.v1")
-    && snapshot.host.capabilities.includes("conversation.handoff.v1");
+  const providerSwitchingAvailable = Boolean(
+    selected
+    && desktopRuntimeId(selected) === "claude-desktop"
+    && snapshot.host.capabilities.includes("provider.profile.v1")
+    && snapshot.host.capabilities.includes("conversation.handoff.v1"),
+  );
   const activeProvider = providers.find((profile) => profile.id === selected?.activeProviderProfileId);
   const officialActive = activeProvider?.kind === "claude-official";
   const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
@@ -198,13 +218,15 @@ function DesktopSessions({
   );
   const grouped = useMemo(() => {
     const map = new Map<string, BridgeSessionInfo[]>();
-    for (const session of snapshot.sessions) {
+    for (const session of snapshot.sessions.filter((candidate) => (
+      runtimeFilter === "all" || desktopRuntimeId(candidate) === runtimeFilter
+    ))) {
       const list = map.get(session.projectId) ?? [];
       list.push(session);
       map.set(session.projectId, list);
     }
     return [...map.entries()];
-  }, [snapshot.sessions]);
+  }, [runtimeFilter, snapshot.sessions]);
   const groupedProjectIds = useMemo(
     () => grouped.map(([groupProjectId]) => groupProjectId),
     [grouped],
@@ -414,9 +436,9 @@ function DesktopSessions({
   }
 
   async function send(): Promise<void> {
-    if (!selected || sending || (!text.trim() && attachments.length === 0)) return;
+    if (!selected || sending || (!text.trim() && (!canAttachImages || attachments.length === 0))) return;
     const nextText = text.trim();
-    const nextAttachments = attachments;
+    const nextAttachments = canAttachImages ? attachments : [];
     setText("");
     setAttachments([]);
     setSending(true);
@@ -543,7 +565,11 @@ function DesktopSessions({
     if (!project) return;
     const result = unwrap<{ session: BridgeSessionInfo }>(await apiRequest({
       method: "session.create",
-      params: { cwd: project.cwd, ...(title.trim() ? { title: title.trim() } : {}) },
+      params: {
+        cwd: project.cwd,
+        ...(title.trim() ? { title: title.trim() } : {}),
+        runtimeId: createRuntimeId,
+      },
     }));
     setCreateOpen(false);
     setTitle("");
@@ -608,7 +634,7 @@ function DesktopSessions({
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
         <div className="desktop-sidebar-heading">
-          <div><span>Claude</span><h1>会话</h1></div>
+          <div><span>Bridge 0.6</span><h1>会话</h1></div>
           <div className="desktop-sidebar-actions">
             <IconButton
               label="全部折叠"
@@ -624,9 +650,42 @@ function DesktopSessions({
             >
               <ChevronsDown size={17} />
             </IconButton>
-            <IconButton label="新建 Bridge 会话" onClick={() => setCreateOpen(true)} disabled={!snapshot.projects.length}><Plus size={18} /></IconButton>
+            <IconButton
+              label="新建会话"
+              onClick={() => {
+                const runtimeId = runtimeFilter === "all"
+                  ? snapshot.runtimes?.find((runtime) => (
+                      runtime.state === "ready" && runtime.capabilities.includes("session.create")
+                    ))?.id ?? "claude-desktop"
+                  : runtimeFilter;
+                setCreateRuntimeId(runtimeId);
+                setProjectId(
+                  snapshot.projects.find((project) => project.runtimeId === runtimeId)?.projectId
+                  ?? snapshot.projects[0]?.projectId
+                  ?? "",
+                );
+                setCreateOpen(true);
+              }}
+              disabled={!snapshot.projects.length}
+            ><Plus size={18} /></IconButton>
           </div>
         </div>
+        {(snapshot.runtimes?.length ?? 0) > 0 && (
+          <nav className="runtime-filter desktop-runtime-filter" aria-label="Desktop 运行时筛选">
+            <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
+            {snapshot.runtimes!.map((runtime) => (
+              <button
+                type="button"
+                key={runtime.id}
+                className={runtimeFilter === runtime.id ? "active" : ""}
+                disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
+                onClick={() => setRuntimeFilter(runtime.id)}
+              >
+                {desktopRuntimeName(runtime.id)}
+              </button>
+            ))}
+          </nav>
+        )}
         <div className="desktop-project-list">
           {grouped.map(([groupProjectId, sessions]) => {
             const expanded = !collapsedProjectIds.has(groupProjectId);
@@ -654,7 +713,7 @@ function DesktopSessions({
                         key={session.sessionId}
                       >
                         <span className={`session-state-dot ${session.turnState}`} />
-                        <span><strong>{session.title}</strong><small>{sessionState(session)}</small></span>
+                        <span><strong>{session.title}</strong><small>{desktopRuntimeName(desktopRuntimeId(session))} · {sessionState(session)}</small></span>
                         {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
                       </button>
                     ))}
@@ -663,8 +722,8 @@ function DesktopSessions({
               </section>
             );
           })}
-          {snapshot.sessions.length === 0 && (
-            <div className="desktop-sidebar-empty">等待发现 Claude Desktop 会话</div>
+          {grouped.length === 0 && (
+            <div className="desktop-sidebar-empty">等待发现 Desktop 会话</div>
           )}
         </div>
       </aside>
@@ -675,7 +734,7 @@ function DesktopSessions({
             <header className="desktop-conversation-heading">
               <div>
                 <h2>{selected.title}</h2>
-                <span>{selected.projectName} · {sessionState(selected)} · {transportLabel(selected)}</span>
+                <span>{selectedRuntimeName} · {selected.projectName} · {sessionState(selected)} · {transportLabel(selected)}</span>
               </div>
               <div className="desktop-conversation-heading-actions">
                 {providerSwitchingAvailable && (
@@ -689,16 +748,17 @@ function DesktopSessions({
                     <span>{providerName(selected.activeProviderProfileId, providers)}</span>
                   </button>
                 )}
-                <button
-                  type="button"
-                  className="session-profile-trigger"
-                  aria-label="模型与 Effort"
-                  disabled={selected.allowedActions?.canConfigure === false}
-                  onClick={() => setConfigurationOpen(true)}
-                >
-                  <Settings2 size={15} />
-                  <span>{sessionProfile(selected)}</span>
-                </button>
+                {canConfigure && (
+                  <button
+                    type="button"
+                    className="session-profile-trigger"
+                    aria-label="模型与 Effort"
+                    onClick={() => setConfigurationOpen(true)}
+                  >
+                    <Settings2 size={15} />
+                    <span>{sessionProfile(selected)}</span>
+                  </button>
+                )}
                 {canStop && (
                   <button
                     type="button"
@@ -821,7 +881,7 @@ function DesktopSessions({
                 />
               ) : (
                 <article className={`conversation-item ${entry.item.role}`} key={entry.item.id}>
-                  <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? "Claude" : entry.item.toolName ?? "Bridge"}</strong></div>
+                  <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
                   <div className="conversation-text">{entry.item.text}</div>
                 </article>
               ))}
@@ -832,13 +892,15 @@ function DesktopSessions({
                     key={permission.requestId}
                     permission={permission}
                     onResolve={resolvePermission}
-                    onEnableFullAccess={() => savePermissionPolicy("host", "full-access").then(() => undefined)}
+                    {...(selectedRuntime === "claude-desktop" ? {
+                      onEnableFullAccess: () => savePermissionPolicy("host", "full-access").then(() => undefined),
+                    } : {})}
                   />
                 ))}
               {uncertainDeliveries.map((event) => (
                 <article className="conversation-item system uncertain-delivery" key={event.eventId}>
                   <div className="conversation-item-meta"><strong>发送结果待确认</strong></div>
-                  <div className="conversation-text">{typeof event.data.error === "string" ? event.data.error : "Claude Desktop 在确认消息前断开。"}</div>
+                  <div className="conversation-text">{typeof event.data.error === "string" ? event.data.error : "Desktop 在确认消息前断开。"}</div>
                   <div className="uncertain-delivery-actions">
                     <button type="button" className="secondary-button" onClick={() => void apiRequest({
                       method: "message.delivery.resolve",
@@ -891,7 +953,9 @@ function DesktopSessions({
               )}
               <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
                 <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp" onChange={(event) => void addImages(event.target.files)} />
-                <IconButton label="添加图片" disabled={selected.allowedActions?.canSend === false} onClick={() => fileRef.current?.click()}><ImagePlus size={19} /></IconButton>
+                {canAttachImages && (
+                  <IconButton label="添加图片" disabled={selected.allowedActions?.canSend === false} onClick={() => fileRef.current?.click()}><ImagePlus size={19} /></IconButton>
+                )}
                 <textarea
                   value={text}
                   onChange={(event) => setText(event.target.value)}
@@ -899,11 +963,11 @@ function DesktopSessions({
                   placeholder={selected.allowedActions?.reason ?? (
                     selected.source === "bridge"
                       ? "在这个 Bridge 会话中继续"
-                      : "在这个 Claude Desktop 会话中继续"
+                      : `在这个 ${selectedRuntimeName} 会话中继续`
                   )}
                   rows={1}
                 />
-                <button type="submit" className="send-button" aria-label="发送" disabled={selected.allowedActions?.canSend === false || sending || (!text.trim() && attachments.length === 0)}><Send size={18} /></button>
+                <button type="submit" className="send-button" aria-label="发送" disabled={selected.allowedActions?.canSend === false || sending || (!text.trim() && (!canAttachImages || attachments.length === 0))}><Send size={18} /></button>
               </form>
               </>
               )}
@@ -918,14 +982,39 @@ function DesktopSessions({
       {createOpen && (
         <div className="modal-backdrop">
           <section className="create-session-dialog" role="dialog" aria-modal="true">
-            <header><h2>新建 Bridge 会话</h2><IconButton label="关闭" onClick={() => setCreateOpen(false)}><X size={18} /></IconButton></header>
+            <header><h2>新建会话</h2><IconButton label="关闭" onClick={() => setCreateOpen(false)}><X size={18} /></IconButton></header>
+            <label>
+              <span>Desktop 运行时</span>
+              <select
+                value={createRuntimeId}
+                onChange={(event) => {
+                  const runtimeId = event.target.value as BridgeDesktopRuntimeId;
+                  setCreateRuntimeId(runtimeId);
+                  setProjectId(
+                    snapshot.projects.find((project) => project.runtimeId === runtimeId)?.projectId
+                    ?? snapshot.projects[0]?.projectId
+                    ?? "",
+                  );
+                }}
+              >
+                {snapshot.runtimes?.map((runtime) => (
+                  <option
+                    key={runtime.id}
+                    value={runtime.id}
+                    disabled={runtime.state !== "ready" || !runtime.capabilities.includes("session.create")}
+                  >
+                    {desktopRuntimeName(runtime.id)}{runtime.state === "ready" ? "" : "（不可用）"}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label><span>项目</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}>{snapshot.projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}</select></label>
             <label><span>会话名称</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可留空" /></label>
             <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>取消</button><button type="button" className="primary-button" onClick={() => void createSession()}>创建</button></div>
           </section>
         </div>
       )}
-      {configurationOpen && selected && (
+      {configurationOpen && selected && canConfigure && (
         <SessionConfigurationDialog
           session={selected}
           onLoad={loadConfiguration}

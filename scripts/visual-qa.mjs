@@ -40,6 +40,7 @@ const project = {
   projectId: "project-bridge",
   name: "Claude Bridge",
   cwd: "/Users/martinez/Documents/Claude Bridge",
+  runtimeId: "claude-desktop",
   sessionCount: 2,
   runningCount: 1,
   pendingCount: 1,
@@ -49,10 +50,31 @@ const secondaryProject = {
   projectId: "project-pms",
   name: "ega-pms",
   cwd: "/Users/martinez/Desktop/ega-pms",
+  runtimeId: "claude-desktop",
   sessionCount: 1,
   runningCount: 0,
   pendingCount: 0,
   lastActivityAt: now - 3_600_000,
+};
+const codexProject = {
+  projectId: "codex-desktop:/Users/martinez/Documents/Claude Bridge",
+  name: "Claude Bridge",
+  cwd: "/Users/martinez/Documents/Claude Bridge",
+  runtimeId: "codex-desktop",
+  sessionCount: 1,
+  runningCount: 0,
+  pendingCount: 0,
+  lastActivityAt: now - 2_400_000,
+};
+const hermesProject = {
+  projectId: "hermes-desktop:/Users/martinez/Documents/Claude Bridge",
+  name: "Claude Bridge",
+  cwd: "/Users/martinez/Documents/Claude Bridge",
+  runtimeId: "hermes-desktop",
+  sessionCount: 1,
+  runningCount: 0,
+  pendingCount: 0,
+  lastActivityAt: now - 3_000_000,
 };
 const providerProfiles = [
   {
@@ -113,7 +135,7 @@ const sessions = [
     projectId: project.projectId,
     projectName: project.name,
     cwd: project.cwd,
-    title: "Bridge 0.5.3 Windows 安装目录选择",
+    title: "Bridge 0.6 Windows 安装目录选择",
     source: "desktop",
     ownership: "BRIDGE_RUNNING",
     turnState: "running",
@@ -154,6 +176,52 @@ const sessions = [
     model: "claude-opus-4-8",
     effort: "high",
     ...writableRoute("session-pms"),
+  },
+  {
+    sessionId: "codex-desktop:thread-visual",
+    runtimeId: "codex-desktop",
+    nativeSessionId: "thread-visual",
+    projectId: codexProject.projectId,
+    projectName: codexProject.name,
+    cwd: codexProject.cwd,
+    title: "Codex Desktop 独立任务",
+    source: "desktop",
+    transport: "codex-app-server",
+    ownership: "BRIDGE_IDLE",
+    turnState: "idle",
+    lastActivityAt: codexProject.lastActivityAt,
+    pendingCount: 0,
+    allowedActions: {
+      canSend: true,
+      canSteer: true,
+      canInterrupt: true,
+      canSwitchProvider: false,
+      canContinueOfficial: false,
+      canConfigure: false,
+    },
+  },
+  {
+    sessionId: "hermes-desktop:session-visual",
+    runtimeId: "hermes-desktop",
+    nativeSessionId: "session-visual",
+    projectId: hermesProject.projectId,
+    projectName: hermesProject.name,
+    cwd: hermesProject.cwd,
+    title: "Hermes Desktop 独立任务",
+    source: "desktop",
+    transport: "hermes-gateway",
+    ownership: "BRIDGE_IDLE",
+    turnState: "idle",
+    lastActivityAt: hermesProject.lastActivityAt,
+    pendingCount: 0,
+    allowedActions: {
+      canSend: true,
+      canSteer: true,
+      canInterrupt: true,
+      canSwitchProvider: false,
+      canContinueOfficial: false,
+      canConfigure: false,
+    },
   },
 ];
 const history = {
@@ -434,7 +502,7 @@ const hostSnapshot = {
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.5.3",
+    version: "0.6.0",
     pairingEpoch: 1,
     capabilities: [
       "evidence.v1",
@@ -444,11 +512,44 @@ const hostSnapshot = {
       "conversation.lanes.v1",
       "conversation.handoff.v1",
       "permission.policy.v1",
+      "runtime.adapter.v1",
     ],
     defaultPermissionMode: "standard",
   },
-  projects: [project, secondaryProject],
+  projects: [project, secondaryProject, codexProject, hermesProject],
   sessions,
+  runtimes: [
+    {
+      id: "claude-desktop",
+      name: "Claude Desktop",
+      state: "ready",
+      detail: "Claude Desktop 已接入。",
+      capabilities: ["session.list", "session.create", "session.history", "turn.start", "turn.steer", "turn.interrupt", "permission.resolve", "tool.events", "attachment.image"],
+      sessionIsolation: "independent",
+      sessionCount: 3,
+      updatedAt: now,
+    },
+    {
+      id: "codex-desktop",
+      name: "Codex Desktop",
+      state: "ready",
+      detail: "Codex app-server 已接入。",
+      capabilities: ["session.list", "session.create", "session.history", "turn.start", "turn.steer", "turn.interrupt", "permission.resolve", "tool.events"],
+      sessionIsolation: "independent",
+      sessionCount: 1,
+      updatedAt: now,
+    },
+    {
+      id: "hermes-desktop",
+      name: "Hermes Desktop",
+      state: "ready",
+      detail: "Hermes Gateway 已接入。",
+      capabilities: ["session.list", "session.create", "session.history", "turn.start", "turn.steer", "turn.interrupt", "permission.resolve", "tool.events"],
+      sessionIsolation: "independent",
+      sessionCount: 1,
+      updatedAt: now,
+    },
+  ],
   providers: providerProfiles,
   devices: [{
     deviceId: pairing.deviceId,
@@ -546,7 +647,14 @@ desktopSocket.onMessage((message, encrypted) => {
     if (request.method === "events.resume") {
       result = { events: [], latestSeq: eventSeq };
     } else if (request.method === "session.open") {
-      result = { session: sessions[0], history, latestSeq: eventSeq };
+      const session = sessions.find((candidate) => candidate.sessionId === request.params.sessionId) ?? sessions[0];
+      result = {
+        session,
+        history: session.sessionId === history.sessionId
+          ? history
+          : { sessionId: session.sessionId, items: [], hasMore: false },
+        latestSeq: eventSeq,
+      };
     } else if (request.method === "evidence.list") {
       result = { evidence };
     } else if (request.method === "artifact.preview") {
@@ -683,11 +791,23 @@ try {
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
-  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.5.3 Windows 安装目录选择" });
+  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.6 Windows 安装目录选择" });
   await waitingSessionRow.waitFor();
-  if (await mobile.locator(".session-row-v2").count() !== 3) {
-    errors.push("mobile catalog: expected three expanded session rows");
+  if (await mobile.locator(".session-row-v2").count() !== 5) {
+    errors.push("mobile catalog: expected five expanded session rows");
   }
+  const mobileRuntimeFilter = mobile.getByRole("navigation", { name: "Desktop 运行时筛选" });
+  await mobileRuntimeFilter.getByRole("button", { name: "Codex Desktop", exact: true }).click();
+  await mobile.getByText("Codex Desktop 独立任务", { exact: true }).waitFor();
+  if (await mobile.locator(".session-row-v2").count() !== 1) {
+    errors.push("mobile runtime filter: Codex should show one isolated session");
+  }
+  await mobileRuntimeFilter.getByRole("button", { name: "Hermes Desktop", exact: true }).click();
+  await mobile.getByText("Hermes Desktop 独立任务", { exact: true }).waitFor();
+  if (await mobile.locator(".session-row-v2").count() !== 1) {
+    errors.push("mobile runtime filter: Hermes should show one isolated session");
+  }
+  await mobileRuntimeFilter.getByRole("button", { name: "全部", exact: true }).click();
   await mobile.getByRole("button", { name: "全部折叠" }).click();
   if (await mobile.locator(".session-row-v2").count() !== 0) {
     errors.push("mobile catalog: collapse all did not hide every session row");
@@ -731,7 +851,7 @@ try {
       canAllowAlways: false,
     }, { itemId: "permission-write-live" }),
   });
-  const livePermissionSheet = mobile.getByRole("dialog", { name: "Claude 等待授权" });
+  const livePermissionSheet = mobile.getByRole("dialog", { name: "Claude Desktop 等待授权" });
   await livePermissionSheet.getByText("Write 请求权限", { exact: true }).waitFor();
   await livePermissionSheet.locator(".permission-facts").getByText(
     "/Users/martinez/Documents/Claude Bridge/tmp/permission-event.ts",
@@ -783,7 +903,7 @@ try {
   await mobile.getByLabel("关闭预览").click();
   await mobile.getByRole("button", { name: "对话", exact: true }).click();
 
-  await mobile.getByLabel("给 Claude 发指令").fill("继续验证同一会话的手机消息。");
+  await mobile.getByLabel("给 Claude Desktop 发指令").fill("继续验证同一会话的手机消息。");
   await mobile.getByRole("button", { name: "发送", exact: true }).click();
   await mobile.getByText("收到。回复与手机消息已经写入同一个 Claude 会话。").waitFor();
   const sentCount = await mobile.getByText("继续验证同一会话的手机消息。", { exact: true }).count();
@@ -917,7 +1037,14 @@ try {
       request: async (request) => {
         window.__bridgeQaRequests.push(request);
         if (request.method === "session.open") {
-          return response(request, { session: current.sessions[0], history, latestSeq: current.latestSeq });
+          const session = current.sessions.find((candidate) => candidate.sessionId === request.params.sessionId) ?? current.sessions[0];
+          return response(request, {
+            session,
+            history: session.sessionId === history.sessionId
+              ? history
+              : { sessionId: session.sessionId, items: [], hasMore: false },
+            latestSeq: current.latestSeq,
+          });
         }
         if (request.method === "evidence.list") {
           return response(request, { evidence });
@@ -1016,14 +1143,27 @@ try {
   if (!registrationRestarted) {
     errors.push("desktop registration: restart and registration request were not completed");
   }
-  if (await desktop.locator(".desktop-session-row").count() !== 4) {
-    errors.push("desktop sessions: expected four expanded session rows");
+  if (await desktop.locator(".desktop-session-row").count() !== 6) {
+    errors.push("desktop sessions: expected six expanded session rows");
   }
   await desktop.getByRole("button", { name: "全部折叠" }).click();
   if (await desktop.locator(".desktop-session-row").count() !== 0) {
     errors.push("desktop sessions: collapse all did not hide every session row");
   }
   await desktop.getByRole("button", { name: "全部展开" }).click();
+  await desktop.locator(".desktop-session-row").first().waitFor();
+  const desktopRuntimeFilter = desktop.locator(".desktop-runtime-filter");
+  await desktopRuntimeFilter.getByRole("button", { name: "Codex Desktop", exact: true }).click();
+  await desktop.getByText("Codex Desktop 独立任务", { exact: true }).waitFor();
+  if (await desktop.locator(".desktop-session-row").count() !== 1) {
+    errors.push("desktop runtime filter: Codex should show one isolated session");
+  }
+  await desktopRuntimeFilter.getByRole("button", { name: "Hermes Desktop", exact: true }).click();
+  await desktop.getByText("Hermes Desktop 独立任务", { exact: true }).waitFor();
+  if (await desktop.locator(".desktop-session-row").count() !== 1) {
+    errors.push("desktop runtime filter: Hermes should show one isolated session");
+  }
+  await desktopRuntimeFilter.getByRole("button", { name: "全部", exact: true }).click();
   await desktop.locator(".desktop-session-row").first().waitFor();
   await checkPage(desktop, "desktop sessions");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-sessions-1200x800.png"), fullPage: true });

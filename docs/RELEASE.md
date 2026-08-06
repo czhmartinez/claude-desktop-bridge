@@ -1,4 +1,4 @@
-# Bridge 0.5 发布手册
+# Bridge 0.6 发布手册
 
 ## 1. 发布闸门
 
@@ -16,13 +16,13 @@ npm run make:local:desktop-android
 凡是影响 `apps/client`、协议或跨端工作流的改动，本机验收包必须在同一轮同时更新
 DMG 与 Android APK。先递增 Android `versionCode`，再运行
 `npm run make:local:desktop-android`；只有明确限定为桌面原生层的改动才可跳过 APK。
-V0.5 涉及共享协议与客户端，不属于例外：DMG 和 APK 必须来自同一提交。协议 V3、
+V0.6 涉及共享协议与客户端，不属于例外：DMG 和 APK 必须来自同一提交。协议 V3、
 配对 schema V4、Application Support、证据、Key、事件和已配对设备不得清空。
 
 M0 必须证明手机/测试客户端消息与 Claude 回复落入同一 `sessionId` 和同一 JSONL，
 且测试前后的活动应用和剪贴板不变。SDK 不通过时停止发布，不能退回单次任务。
 
-V0.5 还必须检查根包、全部 workspace、Android `versionName` 和 iOS
+V0.6 还必须检查根包、全部 workspace、Android `versionName` 和 iOS
 `MARKETING_VERSION` 一致，并确认协议常量为 V3、配对 schema 为 V4。V0.3 客户端
 必须收到升级拒绝；重配后稳定 `hostId`、会话历史、本地事件和手机缓存仍可接回。
 
@@ -34,8 +34,11 @@ Provider 发布闸门还必须覆盖：
   环境已经清除。没有用户 Key 时只报告“需配置”，不得用其他凭据替代。
 - 官方接力只使用公开 Deep Link；必须验证 profile、`realpath` cwd、handoff ID、
   首条消息哈希和十分钟窗口。零/多匹配、超时、崩溃和不确定投递均保持原 lane。
-- V0.4 Host 能隐藏新 UI；V0.4 客户端可在 V0.5 可写 lane 正常执行；官方只读 lane
+- V0.4 Host 能隐藏新 UI；V0.4/0.5 客户端可在 V0.6 Claude 可写 lane 正常执行；官方只读 lane
   对旧客户端写入必须在入队前失败并提示升级。
+- Codex、Hermes adapter 必须分别验证会话列表、历史、发送、流、审批/追问、调整与中断；
+  相同 `nativeSessionId` 在不同 runtime 下必须保持隔离。Codex 只能使用 Bridge 自有的
+  app-server；Hermes Gateway 只能是进程自有、带随机令牌的环回地址。
 - `sessions-v2.json` 和 `turn-queue-v2.json` 的幂等 SQLite 迁移、两次成功启动以及
   `.migrated` 改名必须在保留副本上验证。
 
@@ -199,7 +202,7 @@ Windows 与 macOS 共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic AP
 Windows 读取 `%APPDATA%\Claude\claude-code-sessions`，并通过 PowerShell/tasklist
 检查实例。私有 CDP 仍在两个平台都关闭，不属于发布能力。
 
-0.5.3 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
+0.6.0 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
 必须先运行完整 typecheck/test，再生成辅助式 NSIS 包，并执行：
 
 ```powershell
@@ -272,7 +275,7 @@ npm run test:webrtc:native
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
 WSS 全部通过的平台才能标记“可分发”。
 
-V0.5.3 必须同时生成本机稳定签名 DMG、Windows NSIS `Setup.exe` 与
+V0.6.0 必须同时生成本机稳定签名 DMG、Windows NSIS `Setup.exe` 与
 Android APK，并记录版本、SHA-256、签名校验、打包态 CDP/配对结果和真机状态。
 Windows 正式分发必须有有效 Authenticode；CI 会生成
 `windows-release-evidence.json`，没有证书时只能标记为未签名验收包。没有 Anthropic

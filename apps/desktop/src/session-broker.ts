@@ -599,6 +599,7 @@ export class SessionBroker extends EventEmitter {
           runningCount: Number(session.turnState === "running" || session.turnState === "waiting"),
           pendingCount: session.pendingCount,
           lastActivityAt: session.lastActivityAt,
+          runtimeId: "claude-desktop",
         });
       }
     }
@@ -669,6 +670,8 @@ export class SessionBroker extends EventEmitter {
       const route = this.options.conversationState?.route(sessionId);
       const item: BridgeSessionInfo = {
         sessionId,
+        runtimeId: "claude-desktop",
+        nativeSessionId: sessionId,
         ...(desktopSessionId ? { desktopSessionId } : {}),
         projectId: projectIdForCwd(cwd),
         projectName: basename(cwd) || cwd,

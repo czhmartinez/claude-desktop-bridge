@@ -44,6 +44,10 @@ import { ConversationStateStore } from "./conversation-state-store.js";
 import { ProviderRegistry } from "./provider-registry.js";
 import { ProviderRuntimePool } from "./provider-runtime-pool.js";
 import { HandoffService } from "./handoff-service.js";
+import { CodexAppServerAdapter } from "./codex-app-server-adapter.js";
+import { HermesGatewayAdapter } from "./hermes-gateway-adapter.js";
+import { RuntimeAdapterRegistry } from "./runtime-adapter.js";
+import { RuntimeSessionBroker } from "./runtime-session-broker.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -188,6 +192,11 @@ async function desktopMain(): Promise<void> {
     desktopRegistrar,
   });
   runtimeStatus = () => broker.runtimeStatus();
+  const runtimeRegistry = new RuntimeAdapterRegistry([
+    new CodexAppServerAdapter(),
+    new HermesGatewayAdapter(),
+  ]);
+  const runtimeSessions = new RuntimeSessionBroker(runtimeRegistry, eventLog);
   const handoffs = new HandoffService({
     state: conversationState,
     broker,
@@ -222,6 +231,7 @@ async function desktopMain(): Promise<void> {
     RTCPeerConnectionImpl,
     providers,
     handoffs,
+    runtimeSessions,
   );
 
   let mainWindow: BrowserWindow | undefined;

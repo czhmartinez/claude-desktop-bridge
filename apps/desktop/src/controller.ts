@@ -13,14 +13,18 @@ import {
   cryptoWithRelayEndpoint,
   relayPathForUrl,
   type BridgeAttachment,
+  type BridgeDesktopRuntime,
+  type BridgeDesktopRuntimeId,
   type BridgeDeviceInfo,
   type BridgeEndpoint,
   type BridgeEffort,
   type BridgeEvent,
+  type BridgePermissionInfo,
   type BridgePermissionMode,
   type BridgePayload,
   type BridgeRequest,
   type BridgeResponse,
+  type BridgeSessionInfo,
   type BridgeTransport,
   type BridgeTransportCandidate,
   type BridgeTransportMetrics,
@@ -43,6 +47,7 @@ import type { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
 import type { ProviderRegistry } from "./provider-registry.js";
 import type { HandoffService } from "./handoff-service.js";
+import type { RuntimeSessionBroker } from "./runtime-session-broker.js";
 
 export interface LocalBridgeRequest {
   method: BridgeRequest["method"];
@@ -66,6 +71,17 @@ function stringParam(params: Record<string, unknown>, key: string, required = tr
   if (typeof value === "string" && value.trim()) return value;
   if (required) throw new Error(`${key} is required`);
   return undefined;
+}
+
+function runtimeIdParam(
+  params: Record<string, unknown>,
+  key: string,
+  required = false,
+): BridgeDesktopRuntimeId | undefined {
+  const value = stringParam(params, key, required);
+  if (!value) return undefined;
+  if (value === "claude-desktop" || value === "codex-desktop" || value === "hermes-desktop") return value;
+  throw new Error("Unknown Desktop runtime");
 }
 
 function numberParam(params: Record<string, unknown>, key: string, fallback: number): number {
@@ -215,6 +231,7 @@ export class DesktopController extends EventEmitter {
     private readonly RTCPeerConnectionImpl?: typeof RTCPeerConnection,
     private readonly providers?: ProviderRegistry,
     private readonly handoffs?: HandoffService,
+    private readonly runtimeSessions?: RuntimeSessionBroker,
   ) {
     super();
   }
@@ -248,6 +265,10 @@ export class DesktopController extends EventEmitter {
     });
     this.broker.on("changed", () => void this.publish());
     await this.broker.initialize();
+    if (this.runtimeSessions) {
+      this.runtimeSessions.on("changed", () => void this.publish());
+      await this.runtimeSessions.initialize();
+    }
     if (this.providers) {
       this.providers.on("updated", (profile) => {
         void this.eventLog.append({
@@ -290,13 +311,15 @@ export class DesktopController extends EventEmitter {
           "conversation.lanes.v1",
           "conversation.handoff.v1",
           "permission.policy.v1",
+          "runtime.adapter.v1",
         ],
         defaultPermissionMode: this.config.defaultPermissionMode,
       },
-      projects: this.broker.listProjects(),
-      sessions: this.broker.listSessions(),
+      projects: this.allProjects(),
+      sessions: this.allSessions(),
       devices: this.deviceSnapshots(),
       runtime: this.broker.runtimeStatus(),
+      runtimes: this.desktopRuntimes(),
       transport: {
         path: this.socket?.path ?? relayPathForUrl(this.config.relayUrl),
         state: this.connection,
@@ -307,18 +330,8 @@ export class DesktopController extends EventEmitter {
           ? { lastConnectedAt: this.transportMetrics.lastConnectedAt }
           : {}),
       },
-      permissions: this.broker.permissionBroker.list().map((request) => ({
-        requestId: request.requestId,
-        sessionId: request.sessionId,
-        toolUseId: request.toolUseId,
-        toolName: request.toolName,
-        input: request.input,
-        createdAt: request.createdAt,
-        ...(request.title ? { title: request.title } : {}),
-        ...(request.displayName ? { displayName: request.displayName } : {}),
-        ...(request.description ? { description: request.description } : {}),
-        canAllowAlways: request.suggestions.some((suggestion) => suggestion.destination === "localSettings"),
-      })),
+      permissions: [...this.claudePermissions(), ...(this.runtimeSessions?.listPermissions() ?? [])]
+        .sort((left, right) => left.createdAt - right.createdAt),
       ...(this.providers ? { providers: this.providers.list() } : {}),
       latestSeq: this.eventLog.latestSeq(),
       connection: this.connection,
@@ -451,11 +464,12 @@ export class DesktopController extends EventEmitter {
         healthy: this.relayHealthy,
       },
       runtime: this.broker.runtimeStatus(),
+      runtimes: this.desktopRuntimes(),
       counts: {
-        projects: this.broker.listProjects().length,
-        sessions: this.broker.listSessions().length,
+        projects: this.allProjects().length,
+        sessions: this.allSessions().length,
         devices: this.config.devices.filter((device) => !device.revokedAt).length,
-        pendingPermissions: this.broker.permissionBroker.list().length,
+        pendingPermissions: this.claudePermissions().length + (this.runtimeSessions?.listPermissions().length ?? 0),
       },
       latestEventSeq: this.eventLog.latestSeq(),
     };
@@ -464,6 +478,7 @@ export class DesktopController extends EventEmitter {
   async close(): Promise<void> {
     this.socket?.close();
     await this.handoffs?.close();
+    await this.runtimeSessions?.close();
   }
 
   pauseForSleep(): void {
@@ -480,12 +495,93 @@ export class DesktopController extends EventEmitter {
     this.connection = "reconnecting";
     await this.publish();
     await this.broker.refreshRuntime();
+    await this.runtimeSessions?.refresh();
     await this.connect();
   }
 
   async refreshRuntime(): Promise<void> {
     await this.broker.refreshRuntime();
+    await this.runtimeSessions?.refresh();
     await this.publish();
+  }
+
+  private desktopRuntimes(): BridgeDesktopRuntime[] {
+    const claude = this.broker.runtimeStatus();
+    const claudeRuntime: BridgeDesktopRuntime = {
+      id: "claude-desktop",
+      name: "Claude Desktop",
+      state: claude.state === "ready" || claude.state === "working"
+        ? "ready"
+        : claude.state === "unavailable" || claude.state === "auth-required"
+          ? "unavailable"
+          : "error",
+      detail: claude.detail,
+      capabilities: [
+        "session.list",
+        "session.create",
+        "session.history",
+        "turn.start",
+        "turn.steer",
+        "turn.interrupt",
+        "permission.resolve",
+        "tool.events",
+        "attachment.image",
+      ],
+      sessionIsolation: "independent",
+      sessionCount: this.broker.listSessions().length,
+      updatedAt: Date.now(),
+      ...(claude.version ? { appVersion: claude.version } : {}),
+    };
+    return [claudeRuntime, ...(this.runtimeSessions?.runtimes() ?? [])];
+  }
+
+  private allProjects() {
+    return [...this.broker.listProjects(), ...(this.runtimeSessions?.listProjects() ?? [])]
+      .sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.projectId.localeCompare(right.projectId));
+  }
+
+  private allSessions(): BridgeSessionInfo[] {
+    const priority = (state: BridgeSessionInfo["turnState"]): number => (
+      state === "waiting" ? 3 : state === "running" ? 2 : state === "queued" ? 1 : 0
+    );
+    return [...this.broker.listSessions(), ...(this.runtimeSessions?.listSessions() ?? [])]
+      .sort((left, right) => (
+        priority(right.turnState) - priority(left.turnState)
+        || right.lastActivityAt - left.lastActivityAt
+        || left.sessionId.localeCompare(right.sessionId)
+      ));
+  }
+
+  private listedSessions(
+    projectId?: string,
+    search?: string,
+    runtimeId?: BridgeDesktopRuntimeId,
+  ): BridgeSessionInfo[] {
+    const query = search?.trim().toLocaleLowerCase();
+    return this.allSessions().filter((session) => {
+      if (runtimeId && session.runtimeId !== runtimeId) return false;
+      if (projectId && session.projectId !== projectId) return false;
+      return !query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query);
+    });
+  }
+
+  private claudePermissions(): BridgePermissionInfo[] {
+    return this.broker.permissionBroker.list().map((request) => ({
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      toolUseId: request.toolUseId,
+      toolName: request.toolName,
+      input: request.input,
+      createdAt: request.createdAt,
+      ...(request.title ? { title: request.title } : {}),
+      ...(request.displayName ? { displayName: request.displayName } : {}),
+      ...(request.description ? { description: request.description } : {}),
+      canAllowAlways: request.suggestions.some((suggestion) => suggestion.destination === "localSettings"),
+    }));
+  }
+
+  private externalSession(sessionId: string): BridgeSessionInfo | undefined {
+    return this.runtimeSessions?.session(sessionId);
   }
 
   private async connect(): Promise<void> {
@@ -648,7 +744,14 @@ export class DesktopController extends EventEmitter {
       return { claudeDesktop: (await this.quitClaudeDesktop()).claudeDesktop };
     }
     if (request.method === "snapshot.get") return { snapshot: await this.snapshot() };
-    if (request.method === "project.list") return { projects: this.broker.listProjects() };
+    if (request.method === "runtime.list") return { runtimes: this.desktopRuntimes() };
+    if (request.method === "runtime.refresh") {
+      const runtimeId = runtimeIdParam(params, "runtimeId");
+      if (!runtimeId || runtimeId === "claude-desktop") await this.broker.refreshRuntime();
+      if (!runtimeId || runtimeId !== "claude-desktop") await this.runtimeSessions?.refresh(runtimeId);
+      return { runtimes: this.desktopRuntimes() };
+    }
+    if (request.method === "project.list") return { projects: this.allProjects() };
     if (request.method === "provider.list") {
       if (!this.providers) throw new Error("Provider registry is unavailable");
       return { providers: this.providers.list() };
@@ -660,15 +763,23 @@ export class DesktopController extends EventEmitter {
       };
     }
     if (request.method === "conversation.route.get") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        throw new Error("各 Desktop 的会话彼此独立，不能在 Bridge 中迁移或合并。");
+      }
       return {
-        route: this.broker.conversationRoute(stringParam(params, "sessionId")!),
+        route: this.broker.conversationRoute(sessionId),
       };
     }
     if (request.method === "conversation.switch.preview") {
       if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        throw new Error("各 Desktop 的会话彼此独立，不能在 Bridge 中迁移或合并。");
+      }
       const model = stringParam(params, "model", false);
       return this.handoffs.preview({
-        sessionId: stringParam(params, "sessionId")!,
+        sessionId,
         targetProviderProfileId: stringParam(params, "targetProviderProfileId")!,
         ...(model ? { model } : {}),
       });
@@ -693,14 +804,23 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "session.list") {
       return {
-        sessions: this.broker.listSessions(
+        sessions: this.listedSessions(
           stringParam(params, "projectId", false),
           stringParam(params, "search", false),
+          runtimeIdParam(params, "runtimeId"),
         ),
       };
     }
     if (request.method === "session.open") {
       const sessionId = stringParam(params, "sessionId")!;
+      const external = this.externalSession(sessionId);
+      if (external) {
+        return {
+          session: external,
+          history: await this.runtimeSessions!.history(sessionId),
+          latestSeq: this.eventLog.latestSeq(),
+        };
+      }
       const session = this.broker.session(sessionId);
       if (!session) throw new Error("Session not found");
       return {
@@ -710,6 +830,17 @@ export class DesktopController extends EventEmitter {
       };
     }
     if (request.method === "session.create") {
+      const runtimeId = runtimeIdParam(params, "runtimeId") ?? "claude-desktop";
+      if (runtimeId !== "claude-desktop") {
+        if (!this.runtimeSessions) throw new Error("External Desktop runtimes are unavailable");
+        return {
+          session: await this.runtimeSessions.createSession(
+            runtimeId,
+            stringParam(params, "cwd")!,
+            stringParam(params, "title", false),
+          ),
+        };
+      }
       return {
         session: await this.broker.createSession(
           stringParam(params, "cwd")!,
@@ -718,21 +849,32 @@ export class DesktopController extends EventEmitter {
       };
     }
     if (request.method === "session.history") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        return { history: await this.runtimeSessions!.history(sessionId) };
+      }
       return {
         history: await this.broker.history(
-          stringParam(params, "sessionId")!,
+          sessionId,
           stringParam(params, "cursor", false),
           numberParam(params, "limit", 50),
         ),
       };
     }
     if (request.method === "session.configuration") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        return { configuration: this.runtimeSessions!.configuration(sessionId) };
+      }
       return {
-        configuration: await this.broker.configuration(stringParam(params, "sessionId")!),
+        configuration: await this.broker.configuration(sessionId),
       };
     }
     if (request.method === "session.configure") {
       const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        throw new Error("请在对应的 Desktop 应用中修改模型与任务配置。");
+      }
       const input: Parameters<SessionBroker["configureSession"]>[0] = { sessionId };
       if (Object.prototype.hasOwnProperty.call(params, "model")) {
         const model = nullableStringParam(params, "model");
@@ -746,15 +888,21 @@ export class DesktopController extends EventEmitter {
       return { configuration, session: this.broker.session(sessionId) };
     }
     if (request.method === "session.desktop.register") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        throw new Error("外部 Desktop 会话由其原生应用管理，不需要 Claude 登记。");
+      }
       return {
-        session: await this.broker.registerDesktopSession(
-          stringParam(params, "sessionId")!,
-        ),
+        session: await this.broker.registerDesktopSession(sessionId),
       };
     }
     if (request.method === "session.fallback.confirm") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        throw new Error("外部 Desktop 会话没有 Claude 回退流程。");
+      }
       return {
-        session: await this.broker.confirmFallback(stringParam(params, "sessionId")!),
+        session: await this.broker.confirmFallback(sessionId),
       };
     }
     if (request.method === "message.delivery.resolve") {
@@ -767,12 +915,30 @@ export class DesktopController extends EventEmitter {
       return { commandId: turn.commandId, state: turn.state };
     }
     if (request.method === "turn.start" || request.method === "turn.steer") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const text = stringParam(params, "text", false) ?? "";
+      const attachments = attachmentsParam(params);
+      if (this.externalSession(sessionId)) {
+        if (!text.trim()) throw new Error("Message cannot be empty");
+        if (attachments.length > 0) {
+          throw new Error("当前 Desktop 适配器暂不支持从 Bridge 发送图片附件。");
+        }
+        const turn = await this.runtimeSessions!.startTurn({
+          sessionId,
+          text,
+          commandId: request.idempotencyKey,
+          requestId: request.requestId,
+          ...(sourceDeviceId ? { sourceDeviceId } : {}),
+          ...(request.method === "turn.steer" ? { steer: true } : {}),
+        });
+        return { commandId: turn.commandId, state: turn.state };
+      }
       const input = {
         requestId: request.requestId,
         idempotencyKey: request.idempotencyKey,
-        sessionId: stringParam(params, "sessionId")!,
-        text: stringParam(params, "text", false) ?? "",
-        attachments: attachmentsParam(params),
+        sessionId,
+        text,
+        attachments,
         origin,
         ...(sourceDeviceId ? { sourceDeviceId } : {}),
       };
@@ -782,9 +948,13 @@ export class DesktopController extends EventEmitter {
       return { commandId: turn.commandId, state: turn.state };
     }
     if (request.method === "turn.interrupt") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        return { interrupted: await this.runtimeSessions!.interruptTurn(sessionId) };
+      }
       return {
         interrupted: await this.broker.interruptTurn(
-          stringParam(params, "sessionId")!,
+          sessionId,
           stringParam(params, "commandId", false),
           params.force === true,
         ),
@@ -793,6 +963,16 @@ export class DesktopController extends EventEmitter {
     if (request.method === "permission.resolve") {
       const decision = stringParam(params, "decision")!;
       if (!["allow-once", "allow-always", "deny"].includes(decision)) throw new Error("Invalid permission decision");
+      const requestId = stringParam(params, "requestId")!;
+      const updatedInput = params.updatedInput && typeof params.updatedInput === "object" && !Array.isArray(params.updatedInput)
+        ? params.updatedInput as Record<string, unknown>
+        : undefined;
+      const externalResolved = await this.runtimeSessions?.resolvePermission(
+        requestId,
+        decision as "allow-once" | "allow-always" | "deny",
+        updatedInput,
+      );
+      if (externalResolved) return { resolved: true };
       const resolver = origin === "mobile"
         ? {
             deviceId: sourceDeviceId ?? "mobile",
@@ -803,12 +983,10 @@ export class DesktopController extends EventEmitter {
             name: this.config?.desktopName ?? "电脑端 Bridge",
           };
       const resolved = this.broker.resolvePermission(
-        stringParam(params, "requestId")!,
+        requestId,
         decision as "allow-once" | "allow-always" | "deny",
         stringParam(params, "message", false),
-        params.updatedInput && typeof params.updatedInput === "object" && !Array.isArray(params.updatedInput)
-          ? params.updatedInput as Record<string, unknown>
-          : undefined,
+        updatedInput,
         resolver,
       );
       if (!resolved) {
@@ -865,6 +1043,9 @@ export class DesktopController extends EventEmitter {
       }
       if (!sessionId) throw new Error("sessionId is required");
       if (mode === undefined) throw new Error("mode is required");
+      if (this.externalSession(sessionId)) {
+        throw new Error("该权限策略由对应的 Desktop 应用管理。");
+      }
       const configured = await this.broker.configurePermissionPolicy(sessionId, mode);
       await this.eventLog.append({
         sessionId,
@@ -909,6 +1090,15 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "evidence.list") {
       const sessionId = stringParam(params, "sessionId")!;
+      if (this.externalSession(sessionId)) {
+        return {
+          evidence: {
+            sessionId,
+            items: [],
+            hasMore: false,
+          },
+        };
+      }
       if (!this.broker.session(sessionId)) throw new Error("Session not found");
       return {
         evidence: this.evidence.list(

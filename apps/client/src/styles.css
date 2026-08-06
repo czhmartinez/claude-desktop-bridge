@@ -2338,6 +2338,38 @@ button:disabled {
   line-height: 1.15;
 }
 
+.runtime-filter {
+  display: flex;
+  min-width: 0;
+  gap: 5px;
+  margin: 0 0 12px;
+  overflow-x: auto;
+}
+
+.runtime-filter button {
+  flex: none;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.runtime-filter button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.runtime-filter button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .mobile-desktop-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3908,7 +3940,7 @@ button:disabled {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
   border-right: 1px solid var(--line);
   background: var(--surface);
 }
@@ -3945,6 +3977,23 @@ button:disabled {
 .desktop-sidebar-actions .icon-button {
   width: 32px;
   height: 32px;
+}
+
+.desktop-runtime-filter {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0;
+  overflow: visible;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.desktop-runtime-filter button {
+  min-width: 0;
+  padding: 0 6px;
+  white-space: normal;
 }
 
 .desktop-project-list {

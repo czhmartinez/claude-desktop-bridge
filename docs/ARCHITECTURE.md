@@ -1,9 +1,11 @@
-# Bridge 0.5.3 架构
+# Bridge 0.6 架构
 
 ## 产品边界
 
-Bridge 是 Claude 会话客户端，不是远程桌面，也不是 Claude Desktop 输入框
-自动化。它只建立出站连接，不要求公网 IP、端口映射或额外组网客户端。
+Bridge 是独立的多 Desktop 协作产品，不是远程桌面，也不是任何一个 Desktop 输入框
+自动化。它统一手机与桌面上的会话列表、发送、流式输出、工具状态、审批、追问、中断和
+恢复体验；Claude Desktop、Codex Desktop 与 Hermes Desktop 的账户、原生会话、模型、
+权限与历史始终各自独立。Bridge 只建立出站连接，不要求公网 IP、端口映射或额外组网客户端。
 
 ```mermaid
 flowchart LR
@@ -13,7 +15,10 @@ flowchart LR
   T <-->|"协议 V3 加密信封"| R["Relay"]
   M -.->|"STUN Binding"| S["STUN"]
   D -.->|"STUN Binding"| S
-  D --> B["SessionBroker"]
+  D --> RA["RuntimeAdapterRegistry"]
+  RA --> B["Claude SessionBroker"]
+  RA --> CA["Codex app-server adapter"]
+  RA --> HG["Hermes Gateway adapter"]
   B --> CS[("conversation-state-v1.sqlite")]
   B --> PR["ProviderRegistry / RuntimePool"]
   PR --> H["Claude-3p / API SessionHost"]
@@ -38,12 +43,39 @@ Bridge 接管 Claude Desktop 已有会话后，电脑端 Bridge 和手机共享�
 Claude Desktop 的本地会话清单。重启 Claude Desktop 后，侧边栏从该映射打开原始
 transcript，不复制历史，也不改变 Bridge 的执行归属。
 
+## 0.6 多 Desktop 运行时
+
+Bridge 0.6 的统一对象是操作体验，不是对话本体。每个原生会话以
+`(runtimeId, nativeSessionId)` 作为不可跨运行时的唯一身份；Bridge 对外使用编码后的
+`BridgeSessionInfo.sessionId`，例如 `codex-desktop:<native-id>`。因此 Codex、Hermes
+和 Claude 恰好有相同原生 ID 时仍不会碰撞，也不会被放进同一段上下文。
+
+| 运行时 | 本地适配方式 | Bridge 可统一的操作 | 明确边界 |
+|---|---|---|---|
+| Claude Desktop | 既有 `SessionBroker`、Agent SDK 与只读 transcript 观察 | 会话、发送、流、审批、追问、中断、证据 | Claude 内部 lane/handoff 仅属于 Claude 域 |
+| Codex Desktop | Bridge 自己启动的本地 `codex app-server --stdio` | 会话、发送、steer、流、工具、审批、追问、中断 | 不附着或篡改已运行 Desktop 进程；不共享 Claude/Hermes 历史或授权 |
+| Hermes Desktop | Bridge 自己启动的仅环回 Hermes Gateway，使用进程级随机令牌 | 会话、发送、steer、流、工具、审批、追问、中断 | 不读取 Desktop token/keychain；不接受非环回 Gateway 地址 |
+
+`RuntimeAdapterRegistry` 只注册能力和健康状态，`RuntimeSessionBroker` 只做协议归一化、
+事件落盘与权限路由。它们不保存跨运行时接力包，不执行会话迁移，也不为某个 Desktop
+自动故障转移到另一个 Desktop。统一会话列表只是索引；打开后始终回到拥有该任务的原生
+运行时。
+
+各 adapter 必须显式声明能力。当前共同基线为 `session.list/create/history`、
+`turn.start/steer/interrupt`、`permission.resolve` 和 `tool.events`；图片附件按 adapter
+能力单独开放，模型配置仍在对应的原生 Desktop 内完成。Bridge UI 对所有 ready runtime
+提供相同的会话、流、审批和中断操作，并在任务标题和筛选器中显示其归属。
+
 ## 组件
 
 | 组件 | 职责 |
 |---|---|
 | `ClaudeSessionHost` | Claude-3p / Anthropic API lane 的 Agent SDK 持久输入、流式事件、审批和中断 |
 | `SessionBroker` | 稳定逻辑会话、lane 固定队列、单写入者、所有权、两路并发和幂等 |
+| `RuntimeAdapterRegistry` | Codex/Hermes 本地 adapter 的发现、状态与能力注册 |
+| `RuntimeSessionBroker` | `(runtimeId, nativeSessionId)` 隔离、外部运行时事件与审批的归一化 |
+| `CodexAppServerAdapter` | 仅通过 Bridge 自己启动的官方 app-server JSON-RPC 访问 Codex 会话 |
+| `HermesGatewayAdapter` | 仅通过本机环回 Gateway 访问 Hermes 会话，并持有进程级临时令牌 |
 | `ConversationStateStore` | 独立 SQLite 中的 conversations、profiles、lanes、handoffs、queue、receipts 与迁移标记 |
 | `ProviderRegistry` | 三类 profile 状态、Anthropic API Key 验证与模型发现 |
 | `ProviderRuntimePool` | Claude-3p Host 凭据、Anthropic API 显式 Key、Claude 官方只读 adapter |
@@ -61,9 +93,9 @@ transcript，不复制历史，也不改变 Bridge 的执行归属。
 | `apps/relay` | 鉴权、SQLite 离线密文、分块、撤销、指标、备份和无正文推送 |
 | `apps/client` | 手机三层导航和电脑轻量控制台 |
 
-## 逻辑对话与提供方接力
+## Claude 域内逻辑对话与提供方接力
 
-`BridgeSessionInfo.sessionId` 是稳定逻辑对话 ID。每个对话可以保留多个
+本节只描述 Claude 运行时内的 legacy provider lane。`BridgeSessionInfo.sessionId` 是稳定逻辑对话 ID。每个对话可以保留多个
 `BridgeExecutionLane`，但 `conversations.active_lane_id` 始终只指向一个活动 lane。
 原生会话唯一键为 `(providerProfileId, nativeSessionId)`，避免 Claude 与 Claude-3p
 恰好出现相同原生 ID 时被错误合并。队列项在入队事务中固定 `laneId`，后续切换不会
@@ -215,5 +247,6 @@ Claude 官方 adapter 没有 Host 执行计划，只能生成公开 Deep Link；
 ## 明确不做
 
 Bridge 不展示、存储或从行为推断隐藏 CoT，不自动故障转移，不代理官方 OAuth，也不
-重新接入 Claude Desktop 私有 CDP。V0.5 不提供项目目录树、远程编辑器、动态站点
+重新接入 Claude Desktop 私有 CDP。Bridge 0.6 不合并 Claude、Codex 与 Hermes 的
+原生会话、历史、认证、模型或权限，也不在它们之间自动迁移或故障转移。V0.6 不提供项目目录树、远程编辑器、动态站点
 直播、自动启动开发服务、PDF 内嵌渲染或超过 20 MiB 的文件传输。
