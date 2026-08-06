@@ -154,6 +154,27 @@ describe("relay v3", () => {
     expect((await stored).type).toBe("stored");
   });
 
+  it("identifies a rejected envelope without dropping the authenticated connection", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    const envelope = await pair.mobileCrypto.encrypt(turnRequest("Stale metadata"), "mobile", "desktop");
+    const rejected = waitForFrame(pair.mobileSocket, (frame) => frame.type === "error");
+
+    await pair.mobileSocket.sendEnvelope({ ...envelope, fromDeviceId: "old-phone" });
+
+    expect(await rejected).toMatchObject({
+      type: "error",
+      code: "INVALID_ENVELOPE",
+      envelopeId: envelope.id,
+    });
+    expect(pair.mobileSocket.state).toBe("connected");
+  });
+
   it("rejects protocol v2 clients with an explicit re-pairing error", async () => {
     const relay = await startRelayServer({
       port: 0,

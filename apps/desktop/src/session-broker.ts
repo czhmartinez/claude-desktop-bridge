@@ -2214,10 +2214,12 @@ export class SessionBroker extends EventEmitter {
           ))
     ) ?? state?.active;
     if (event.type === "assistant.delta") {
+      // SDK stream event UUIDs identify chunks, not the assistant response stream.
+      const itemId = event.turnId ? `assistant:${event.turnId}` : event.itemId;
       this.options.eventLog.appendCoalescedDelta({
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
-        itemId: event.itemId,
+        itemId,
         timestamp: event.at,
         origin: eventOrigin,
         type: "assistant.delta",

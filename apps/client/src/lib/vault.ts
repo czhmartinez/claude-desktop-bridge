@@ -386,10 +386,11 @@ export class BridgeVault {
     await transactionDone(transaction);
   }
 
-  async removeOutbox(id: string): Promise<void> {
+  async removeOutbox(ids: string | string[]): Promise<void> {
     const database = await this.open();
     const transaction = database.transaction("outbox", "readwrite");
-    transaction.objectStore("outbox").delete(id);
+    const store = transaction.objectStore("outbox");
+    for (const id of Array.isArray(ids) ? ids : [ids]) store.delete(id);
     await transactionDone(transaction);
   }
 

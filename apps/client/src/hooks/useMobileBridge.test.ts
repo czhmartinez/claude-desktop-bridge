@@ -5,6 +5,7 @@ import {
   applyEventToSnapshot,
   applyPermissionEvent,
   mergeBridgeEvents,
+  rebaseSnapshot,
   type LocalTurn,
 } from "./useMobileBridge.js";
 
@@ -286,6 +287,44 @@ describe("mergeBridgeEvents", () => {
       turnState: "idle",
       pendingCount: 0,
     });
+  });
+});
+
+describe("rebaseSnapshot", () => {
+  it("uses the host snapshot as the cursor instead of retaining a stale cached cursor", () => {
+    const snapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.5.3",
+        capabilities: [],
+      },
+      projects: [],
+      sessions: [],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 3,
+    } as BridgeHostSnapshot;
+    const refreshed = rebaseSnapshot(snapshot, [event(2), event(4)]);
+
+    expect(refreshed.latestSeq).toBe(4);
+    expect(refreshed.snapshot.latestSeq).toBe(3);
   });
 });
 

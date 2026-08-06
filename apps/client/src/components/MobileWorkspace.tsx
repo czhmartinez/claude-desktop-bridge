@@ -250,7 +250,7 @@ export function conversationItems(
       .filter((event) => event.type === "assistant.completed" && event.turnId)
       .map((event) => event.turnId!),
   );
-  const deltaByItem = new Map<string, ConversationItem>();
+  const deltaByStream = new Map<string, ConversationItem>();
   const toolByItem = new Map<string, ConversationItem>();
   for (const event of sessionEvents) {
     if (event.type === "session.observed") {
@@ -291,10 +291,11 @@ export function conversationItems(
       });
     }
     if (event.type === "assistant.delta" && !(event.turnId && completedTurns.has(event.turnId))) {
-      const id = event.itemId ?? event.eventId;
-      const existing = deltaByItem.get(id);
+      // Provider stream events can use a new item id for every chunk. The turn is the stable stream identity.
+      const id = event.turnId ? `assistant:${event.turnId}` : event.itemId ?? event.eventId;
+      const existing = deltaByStream.get(id);
       const text = `${existing?.text ?? ""}${eventText(event)}`;
-      deltaByItem.set(id, {
+      deltaByStream.set(id, {
         id,
         sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -372,7 +373,7 @@ export function conversationItems(
       });
     }
   }
-  for (const item of deltaByItem.values()) items.set(item.id, item);
+  for (const item of deltaByStream.values()) items.set(item.id, item);
   for (const item of toolByItem.values()) items.set(item.id, item);
   return [...items.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
 }
@@ -846,7 +847,7 @@ export function MobileWorkspace({
   onRefreshProviders(): Promise<void>;
   onClaudeDesktopLaunch(): Promise<ClaudeDesktopAppStatus>;
   onClaudeDesktopQuit(): Promise<ClaudeDesktopAppStatus>;
-  onRefresh(): Promise<void>;
+  onRefresh(sessionId?: string): Promise<void>;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
 }) {
@@ -867,6 +868,7 @@ export function MobileWorkspace({
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
   const [permissionOpen, setPermissionOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [desktopAction, setDesktopAction] = useState<"launch" | "quit">();
   const [desktopActionError, setDesktopActionError] = useState("");
@@ -917,6 +919,16 @@ export function MobileWorkspace({
     && groupedProjectIds.every((projectId) => collapsedProjectIds.has(projectId));
   const allProjectsExpanded = groupedProjectIds.length > 0
     && groupedProjectIds.every((projectId) => !collapsedProjectIds.has(projectId));
+
+  async function runRefresh(sessionId?: string): Promise<void> {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh(sessionId);
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
     if (!snapshot || restoredSessionRef.current) return;
@@ -1168,6 +1180,13 @@ export function MobileWorkspace({
                 {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
               </IconButton>
             )}
+            <IconButton
+              label="强制同步"
+              disabled={refreshing}
+              onClick={() => void runRefresh(selectedSession.sessionId)}
+            >
+              {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : <RefreshCw size={19} />}
+            </IconButton>
           </div>
         </header>
 
@@ -1461,7 +1480,13 @@ export function MobileWorkspace({
           <strong>{desktopName}</strong>
           <span className={desktopOnline ? "online" : ""}><i />{desktopOnline ? "在线" : connection === "connecting" ? "正在连接" : "离线"}</span>
         </div>
-        <IconButton label="刷新" onClick={() => void onRefresh()}><RefreshCw size={19} /></IconButton>
+        <IconButton
+          label="强制同步"
+          disabled={refreshing}
+          onClick={() => void runRefresh(selectedSessionId)}
+        >
+          {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : <RefreshCw size={19} />}
+        </IconButton>
         <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
           {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
         </IconButton>

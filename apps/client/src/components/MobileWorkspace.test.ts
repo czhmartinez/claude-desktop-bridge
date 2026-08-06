@@ -296,6 +296,30 @@ describe("conversationTimeline", () => {
 });
 
 describe("conversationItems", () => {
+  it("merges streamed assistant chunks from one turn even when their provider item ids differ", () => {
+    const events: BridgeEvent[] = ["PO", "关键", "核查", "断", "几个"].map((text, index) => ({
+      eventId: `delta-${index}`,
+      sessionId: "session-1",
+      turnId: "turn-1",
+      itemId: `provider-stream-${index}`,
+      seq: index + 1,
+      timestamp: index + 1,
+      origin: "claude-host",
+      type: "assistant.delta",
+      data: { text },
+    }));
+
+    expect(conversationItems("session-1", undefined, events, [])).toEqual([
+      expect.objectContaining({
+        id: "assistant:turn-1",
+        role: "assistant",
+        text: "PO关键核查断几个",
+        turnId: "turn-1",
+        live: true,
+      }),
+    ]);
+  });
+
   it("does not render Claude interruption and resume sentinels from cached history or events", () => {
     const events: BridgeEvent[] = [
       {

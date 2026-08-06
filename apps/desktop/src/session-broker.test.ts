@@ -1380,6 +1380,22 @@ describe("SessionBroker", () => {
     desktopSession.activeProcesses = [];
     observer.publish();
     managedTransport.emitHost({
+      type: "assistant.delta",
+      sessionId,
+      turnId,
+      itemId: "provider-stream-1",
+      text: "PO",
+      at: 11.5,
+    });
+    managedTransport.emitHost({
+      type: "assistant.delta",
+      sessionId,
+      turnId,
+      itemId: "provider-stream-2",
+      text: "关键",
+      at: 11.6,
+    });
+    managedTransport.emitHost({
       type: "assistant.completed",
       sessionId,
       turnId,
@@ -1407,6 +1423,14 @@ describe("SessionBroker", () => {
         "assistant.completed",
         "turn.completed",
       ]));
+    expect(eventLog.replay().filter((event) => (
+      event.sessionId === sessionId && event.type === "assistant.delta"
+    ))).toEqual([
+      expect.objectContaining({
+        itemId: `assistant:${turnId}`,
+        data: { text: "PO关键" },
+      }),
+    ]);
     await broker.close();
     await eventLog.close();
   });

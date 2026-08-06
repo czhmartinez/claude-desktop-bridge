@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
+  isEnvelopeFromConnection,
   PROTOCOL_VERSION,
   parseClientFrame,
   type BridgeRole,
@@ -14,8 +15,6 @@ import { EnvironmentPushDispatcher, type PushDispatcher } from "./push.js";
 import { MemoryRelayStore, relayItemId, type RelayStore } from "./store.js";
 
 const MAX_FRAME_BYTES = 1024 * 1024;
-const MAX_ENVELOPE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CLOCK_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 const MAX_PAIRING_WINDOW_MS = 10 * 60 * 1000;
 const MAX_MIGRATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const ROOM_RATE_WINDOW_MS = 60 * 60 * 1000;
@@ -80,8 +79,14 @@ function safeSend(ws: WebSocket, frame: unknown): void {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
 }
 
-function sendError(ws: WebSocket, code: string, message: string, closeCode?: number): void {
-  safeSend(ws, { type: "error", code, message });
+function sendError(
+  ws: WebSocket,
+  code: string,
+  message: string,
+  closeCode?: number,
+  envelopeId?: string,
+): void {
+  safeSend(ws, { type: "error", code, message, ...(envelopeId ? { envelopeId } : {}) });
   if (closeCode) ws.close(closeCode, code);
 }
 
@@ -299,14 +304,7 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
     envelope: RelayEnvelopeItem | EnvelopeChunkManifest,
   ): boolean {
     const now = Date.now();
-    if (
-      envelope.roomId !== client.roomId ||
-      envelope.from !== client.role ||
-      envelope.fromDeviceId !== client.deviceId ||
-      envelope.expiresAt <= envelope.sentAt ||
-      envelope.expiresAt - envelope.sentAt > MAX_ENVELOPE_TTL_MS ||
-      Math.abs(envelope.sentAt - now) > CLOCK_TOLERANCE_MS
-    ) return false;
+    if (!isEnvelopeFromConnection(envelope, client, now)) return false;
     if (envelope.to === "mobile") {
       if (!envelope.toDeviceId) return false;
       const device = store.getDevice(client.roomId, envelope.toDeviceId);
@@ -456,7 +454,13 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
         }
         if (frame.type === "chunk-query") {
           if (!validateEnvelope(client, frame.manifest)) {
-            sendError(ws, "INVALID_ENVELOPE", "Chunk metadata does not match this connection");
+            sendError(
+              ws,
+              "INVALID_ENVELOPE",
+              "Chunk metadata does not match this connection",
+              undefined,
+              frame.manifest.transferId,
+            );
             return;
           }
           const storedIndexes = frame.manifest.temporary
@@ -497,7 +501,13 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
         }
         const item = frame.type === "envelope-chunk" ? frame.chunk : frame.envelope;
         if (!validateEnvelope(client, item)) {
-          sendError(ws, "INVALID_ENVELOPE", "Envelope metadata does not match this connection");
+          sendError(
+            ws,
+            "INVALID_ENVELOPE",
+            "Envelope metadata does not match this connection",
+            undefined,
+            "transferId" in item ? item.transferId : item.id,
+          );
           return;
         }
         if (item.temporary) {

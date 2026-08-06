@@ -4291,6 +4291,19 @@ button:disabled {
   line-height: 1.6;
 }
 
+.device-pairing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+
+.device-pairing-actions .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .device-pairing-band small {
   color: var(--warm);
   font-size: 10px;

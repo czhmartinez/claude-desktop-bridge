@@ -16,6 +16,7 @@ import type {
 import {
   AlertTriangle,
   ArrowRightLeft,
+  Clipboard,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
@@ -962,6 +963,19 @@ function DesktopDevices({
   onRevoke(deviceId: string): Promise<void>;
 }) {
   const [revokeCandidate, setRevokeCandidate] = useState<string>();
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+
+  async function copyPairingLink(): Promise<void> {
+    if (!snapshot.pairingUrl) return;
+    try {
+      await navigator.clipboard.writeText(snapshot.pairingUrl);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 2_000);
+    } catch {
+      setCopyState("error");
+    }
+  }
+
   return (
     <section className="desktop-page">
       <header className="desktop-page-heading">
@@ -974,7 +988,13 @@ function DesktopDevices({
           <div>
             <span>一次性配对</span>
             <h2>使用手机 Bridge 扫描</h2>
-            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。V0.4.0 使用新配对密钥，旧设备需要重新扫码。</p>
+            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。也可以复制配对链接，在手机端粘贴完成配对。</p>
+            <div className="device-pairing-actions">
+              <button type="button" className="secondary-button" onClick={() => void copyPairingLink()}>
+                <Clipboard size={16} />
+                {copyState === "copied" ? "已复制配对链接" : copyState === "error" ? "复制失败，请扫码" : "复制配对链接"}
+              </button>
+            </div>
             <small>{Math.max(0, Math.ceil((snapshot.pairingExpiresAt - Date.now()) / 60_000))} 分钟后过期</small>
           </div>
         </section>

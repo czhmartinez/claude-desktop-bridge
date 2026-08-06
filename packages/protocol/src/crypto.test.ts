@@ -219,6 +219,7 @@ describe("BridgeCrypto v3", () => {
     expect(PROTOCOL_VERSION).toBe(3);
     expect(PAIRING_SCHEMA_VERSION).toBe(4);
     for (const method of [
+      "snapshot.get",
       "provider.list",
       "provider.refresh",
       "conversation.route.get",

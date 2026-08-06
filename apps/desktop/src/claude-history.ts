@@ -215,6 +215,7 @@ function transcriptEvidenceNode(
     type === "user" &&
     directToolResult === undefined &&
     value.isMeta !== true &&
+    value.isCompactSummary !== true &&
     message &&
     !isClaudeTranscriptControlMessage("user", text),
   );
@@ -413,7 +414,12 @@ function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "r
   if (!isRecord(value.message)) return undefined;
   if (
     value.type === "user" &&
-    (value.toolUseResult !== undefined || value.tool_use_result !== undefined || value.isMeta === true)
+    (
+      value.toolUseResult !== undefined ||
+      value.tool_use_result !== undefined ||
+      value.isMeta === true ||
+      value.isCompactSummary === true
+    )
   ) return undefined;
   const text = textFromContent(value.message.content);
   if (!text) return undefined;

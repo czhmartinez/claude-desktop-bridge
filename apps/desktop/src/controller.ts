@@ -647,6 +647,7 @@ export class DesktopController extends EventEmitter {
     if (request.method === "claude.desktop.quit") {
       return { claudeDesktop: (await this.quitClaudeDesktop()).claudeDesktop };
     }
+    if (request.method === "snapshot.get") return { snapshot: await this.snapshot() };
     if (request.method === "project.list") return { projects: this.broker.listProjects() };
     if (request.method === "provider.list") {
       if (!this.providers) throw new Error("Provider registry is unavailable");

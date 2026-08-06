@@ -568,6 +568,7 @@ export interface DesktopControlSnapshot extends BridgeHostSnapshot {
 }
 
 export type BridgeMethod =
+  | "snapshot.get"
   | "project.list"
   | "session.list"
   | "session.open"
@@ -889,6 +890,7 @@ export interface ServerError {
   type: "error";
   code: string;
   message: string;
+  envelopeId?: string;
 }
 
 export interface ServerPong {
