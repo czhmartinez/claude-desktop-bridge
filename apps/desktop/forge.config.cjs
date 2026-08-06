@@ -151,11 +151,6 @@ module.exports = {
     },
   },
   makers: [
-    {
-      name: "@electron-forge/maker-squirrel",
-      platforms: ["win32"],
-      config: { name: "bridge", setupIcon: path.join(__dirname, "assets", "icon.ico") },
-    },
     { name: "@electron-forge/maker-zip", platforms: ["darwin", "linux"] },
     { name: "@electron-forge/maker-dmg", platforms: ["darwin"], config: { name: "Bridge" } },
     { name: "@electron-forge/maker-deb", platforms: ["linux"], config: {} },

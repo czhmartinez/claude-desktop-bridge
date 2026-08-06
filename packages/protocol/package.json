@@ -1,6 +1,6 @@
 {
   "name": "@bridge/protocol",
-  "version": "0.4.2",
+  "version": "0.5.3",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -16,7 +16,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "clean": "rm -rf dist coverage",
+    "clean": "node ../../scripts/clean.mjs dist coverage",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit"

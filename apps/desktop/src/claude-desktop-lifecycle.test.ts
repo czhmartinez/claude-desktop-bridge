@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
+import {
+  ClaudeDesktopLifecycle,
+  findClaudeDesktopExecutable,
+  parseClaudeDesktopTasklist,
+} from "./claude-desktop-lifecycle.js";
 
 describe("Claude Desktop lifecycle", () => {
   it("launches the installed app and reports its running state", async () => {
@@ -51,6 +55,49 @@ describe("Claude Desktop lifecycle", () => {
       canQuit: false,
     });
     expect(signalProcess).toHaveBeenCalledOnce();
+  });
+
+  it("supports ordinary Claude Desktop launch and quit on Windows", async () => {
+    let running = false;
+    const launchApplication = vi.fn(async () => {
+      running = true;
+    });
+    const signalProcess = vi.fn((pid: number) => {
+      expect(pid).toBe(9136);
+      running = false;
+    });
+    const lifecycle = new ClaudeDesktopLifecycle({
+      platform: "win32",
+      applicationInstalled: async () => true,
+      listMainProcessIds: async () => running ? [9136] : [],
+      launchApplication,
+      signalProcess,
+      sleep: async () => undefined,
+      cacheTtlMs: 0,
+    });
+
+    await expect(lifecycle.launch()).resolves.toMatchObject({ state: "running" });
+    await expect(lifecycle.quit()).resolves.toMatchObject({ state: "stopped" });
+    expect(launchApplication).toHaveBeenCalledOnce();
+    expect(signalProcess).toHaveBeenCalledOnce();
+  });
+
+  it("parses tasklist CSV rows without treating the summary line as a process", () => {
+    expect(parseClaudeDesktopTasklist([
+      '"Claude.exe","9136","Console","1","123,456 K"',
+      '"other.exe","42","Console","1","8,192 K"',
+      "INFO: No tasks are running which match the specified criteria.",
+    ].join("\r\n"))).toEqual([9136]);
+  });
+
+  it("resolves the per-user Windows Claude Desktop install", () => {
+    expect(findClaudeDesktopExecutable({
+      LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local",
+      ProgramFiles: "C:\\Program Files",
+      "ProgramFiles(x86)": "C:\\Program Files (x86)",
+    }, "C:\\Users\\me", "win32")).toBe(
+      "C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude.exe",
+    );
   });
 
   it("does not expose controls when Claude Desktop is unavailable", async () => {

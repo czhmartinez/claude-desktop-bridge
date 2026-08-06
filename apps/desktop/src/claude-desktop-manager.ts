@@ -1,10 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { execFile as execFileCallback, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
   BridgeRuntimeStatus,
@@ -16,6 +16,7 @@ import type {
   ManagedDesktopHelperResponse,
   ManagedDesktopHelperStatus,
 } from "./claude-desktop-helper-protocol.js";
+import { findClaudeDesktopExecutable, parseClaudeDesktopTasklist } from "./claude-desktop-lifecycle.js";
 
 const execFile = promisify(execFileCallback);
 const CLAUDE_EXECUTABLE = "/Applications/Claude.app/Contents/MacOS/Claude";
@@ -45,6 +46,8 @@ export interface ClaudeDesktopManagerOptions {
   hasActiveDesktopTask(): boolean;
   executablePath?: string;
   bridgeExecutablePath?: string;
+  platform?: NodeJS.Platform;
+  environment?: NodeJS.ProcessEnv;
 }
 
 export interface ClaudeDesktopIntegrationSnapshot {
@@ -102,13 +105,14 @@ export class ClaudeDesktopManager extends EventEmitter {
   }
 
   status(): ClaudeDesktopIntegrationSnapshot {
+    const platform = this.options.platform ?? process.platform;
     return {
       state: this.enabledValue ? this.statusValue.state : "not-managed",
       detail: this.enabledValue
         ? this.statusValue.detail
         : "实验性 Claude Desktop 同步控制尚未启用。",
       enabled: this.enabledValue,
-      canRestart: process.platform === "darwin" && !this.options.hasActiveDesktopTask(),
+      canRestart: (platform === "darwin" || platform === "win32") && !this.options.hasActiveDesktopTask(),
       ...(this.statusValue.appVersion ? { appVersion: this.statusValue.appVersion } : {}),
       ...(this.statusValue.buildFingerprint ? { buildFingerprint: this.statusValue.buildFingerprint } : {}),
       ...(this.statusValue.lastError ? { lastError: this.statusValue.lastError } : {}),
@@ -154,7 +158,10 @@ export class ClaudeDesktopManager extends EventEmitter {
 
   async restartManaged(): Promise<ClaudeDesktopIntegrationSnapshot> {
     if (!this.enabledValue) throw new Error("请先启用 Claude Desktop 同步控制实验功能。");
-    if (process.platform !== "darwin") throw new Error("Claude Desktop 同步控制首发仅支持 macOS。");
+    const platform = this.options.platform ?? process.platform;
+    if (platform !== "darwin" && platform !== "win32") {
+      throw new Error("当前平台不支持 Claude Desktop 同步控制。");
+    }
     if (this.options.hasActiveDesktopTask()) {
       throw new Error("Claude Desktop 仍有任务正在执行。请等待完成或在 Claude 中停止后再重启。");
     }
@@ -177,7 +184,7 @@ export class ClaudeDesktopManager extends EventEmitter {
     const status = parseStatus(await this.request({
       method: "launch",
       params: {
-        executablePath: this.options.executablePath ?? CLAUDE_EXECUTABLE,
+        executablePath: this.options.executablePath ?? this.defaultExecutablePath(platform),
         appVersion,
       },
     }, 45_000));
@@ -240,6 +247,7 @@ export class ClaudeDesktopManager extends EventEmitter {
         await this.clearStaleHelper();
       }
     }
+    const platform = this.options.platform ?? process.platform;
     const directory = join(this.options.userDataPath, "managed-claude");
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const token = randomBytes(32).toString("base64url");
@@ -250,9 +258,16 @@ export class ClaudeDesktopManager extends EventEmitter {
       tmpdir(),
       `bridge-${createHash("sha256").update(this.options.userDataPath).digest("hex").slice(0, 10)}`,
     );
-    await mkdir(socketDirectory, { recursive: true, mode: 0o700 });
-    await chmod(socketDirectory, 0o700);
-    const socketPath = join(socketDirectory, `h-${randomBytes(8).toString("hex")}.sock`);
+    const socketPath = platform === "win32"
+      ? `\\\\.\\pipe\\bridge-${createHash("sha256")
+          .update(this.options.userDataPath)
+          .digest("hex")
+          .slice(0, 10)}-${randomBytes(8).toString("hex")}`
+      : join(socketDirectory, `h-${randomBytes(8).toString("hex")}.sock`);
+    if (platform !== "win32") {
+      await mkdir(socketDirectory, { recursive: true, mode: 0o700 });
+      await chmod(socketDirectory, 0o700);
+    }
     const bridgeExecutable = this.options.bridgeExecutablePath ?? process.execPath;
     const child = spawn(bridgeExecutable, [
       this.options.helperEntryPath,
@@ -261,7 +276,8 @@ export class ClaudeDesktopManager extends EventEmitter {
     ], {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      windowsHide: true,
+      env: { ...(this.options.environment ?? process.env), ELECTRON_RUN_AS_NODE: "1" },
     });
     if (!child.pid) throw new Error("无法启动 Claude Desktop 受管 helper");
     child.unref();
@@ -295,7 +311,9 @@ export class ClaudeDesktopManager extends EventEmitter {
     const helper = this.helper;
     this.helper = undefined;
     await rm(this.helperFilePath(), { force: true });
-    if (helper) await rm(helper.socketPath, { force: true });
+    if (helper && !helper.socketPath.startsWith("\\\\.\\pipe\\")) {
+      await rm(helper.socketPath, { force: true });
+    }
   }
 
   private request(
@@ -399,7 +417,9 @@ export class ClaudeDesktopManager extends EventEmitter {
   }
 
   private async verifyClaudeApplication(): Promise<string> {
-    const executable = this.options.executablePath ?? CLAUDE_EXECUTABLE;
+    const platform = this.options.platform ?? process.platform;
+    const executable = this.options.executablePath ?? this.defaultExecutablePath(platform);
+    if (platform === "win32") return this.verifyWindowsClaudeApplication(executable);
     if (executable !== CLAUDE_EXECUTABLE) throw new Error("Claude Desktop 必须安装在 /Applications。");
     const [{ stdout: identifier }, { stdout: version }, signature] = await Promise.all([
       execFile("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", `${CLAUDE_BUNDLE}/Contents/Info.plist`], {
@@ -422,15 +442,21 @@ export class ClaudeDesktopManager extends EventEmitter {
   }
 
   private async requiresSignedCdpAuthorization(): Promise<boolean> {
+    const asarPath = this.claudeAsarPath();
     try {
-      return requiresAnthropicSignedCdpAuthorization(await readFile(CLAUDE_ASAR));
+      return requiresAnthropicSignedCdpAuthorization(await readFile(asarPath));
     } catch (readError) {
       // Electron's patched fs treats a path ending in .asar as a virtual
       // directory. Use the system grep as a read-only raw archive fallback.
       try {
         const matches = await Promise.all(SIGNED_CDP_MARKERS.map(async (marker) => {
           try {
-            await execFile("/usr/bin/grep", ["-a", "-F", "-q", marker, CLAUDE_ASAR]);
+            if ((this.options.platform ?? process.platform) === "win32") {
+              const contents = await readFile(asarPath, "utf8");
+              if (!contents.includes(marker)) throw Object.assign(new Error("marker missing"), { code: 1 });
+              return true;
+            }
+            await execFile("/usr/bin/grep", ["-a", "-F", "-q", marker, asarPath]);
             return true;
           } catch (error) {
             if (isRecord(error) && (error.code === 1 || error.code === "1")) return false;
@@ -474,6 +500,26 @@ export class ClaudeDesktopManager extends EventEmitter {
   }
 
   private async ordinaryClaudePids(): Promise<number[]> {
+    const platform = this.options.platform ?? process.platform;
+    if (platform === "win32") {
+      try {
+        const executable = this.options.executablePath ?? this.defaultExecutablePath(platform);
+        const { stdout } = await execFile("tasklist", [
+          "/FI",
+          `IMAGENAME eq ${basename(executable)}`,
+          "/FO",
+          "CSV",
+          "/NH",
+        ], {
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        const managedPid = this.statusValue.claudePid;
+        return parseClaudeDesktopTasklist(stdout).filter((pid) => pid !== managedPid);
+      } catch {
+        return [];
+      }
+    }
     let stdout = "";
     try {
       ({ stdout } = await execFile("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" }));
@@ -495,7 +541,15 @@ export class ClaudeDesktopManager extends EventEmitter {
     if (!pids.length) return;
     for (const pid of pids) {
       try {
-        process.kill(pid, "SIGTERM");
+        if ((this.options.platform ?? process.platform) === "win32") {
+          const result = spawnSync("taskkill", ["/PID", String(pid), "/T"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+          if (result.error) throw result.error;
+        } else {
+          process.kill(pid, "SIGTERM");
+        }
       } catch {
         // A process that exited between discovery and signalling is already stopped.
       }
@@ -507,5 +561,61 @@ export class ClaudeDesktopManager extends EventEmitter {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     throw new Error("Claude Desktop 未能正常退出，请在电脑上手动关闭；Bridge 不会强制结束它。");
+  }
+
+  private defaultExecutablePath(platform: NodeJS.Platform): string {
+    if (platform === "win32") {
+      const executable = findClaudeDesktopExecutable(
+        this.options.environment ?? process.env,
+        undefined,
+        platform,
+      );
+      if (!executable) throw new Error("未找到 Claude Desktop 可执行文件。");
+      return executable;
+    }
+    return CLAUDE_EXECUTABLE;
+  }
+
+  private claudeAsarPath(): string {
+    const platform = this.options.platform ?? process.platform;
+    if (platform === "win32") {
+      const executable = this.options.executablePath ?? this.defaultExecutablePath(platform);
+      return join(dirname(executable), "resources", "app.asar");
+    }
+    return CLAUDE_ASAR;
+  }
+
+  private async verifyWindowsClaudeApplication(executable: string): Promise<string> {
+    if (basename(executable).toLowerCase() !== "claude.exe") {
+      throw new Error("Claude Desktop 必须使用 Claude.exe。");
+    }
+    const environment = this.options.environment ?? process.env;
+    const resources = join(dirname(executable), "resources");
+    const asarPath = join(resources, "app.asar");
+    const contents = await readFile(asarPath);
+    if (!contents.length) throw new Error("Claude Desktop resources/app.asar 为空。");
+    const version = /"version"\s*:\s*"([0-9A-Za-z.+-]+)"/u.exec(contents.toString("utf8"))?.[1];
+    if (!version) throw new Error("无法读取 Claude Desktop 版本。");
+    try {
+      const { stdout } = await execFile("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$s = Get-AuthenticodeSignature -LiteralPath $env:BRIDGE_CLAUDE_PATH; [pscustomobject]@{Status=$s.Status; Subject=$s.SignerCertificate.Subject} | ConvertTo-Json -Compress",
+      ], {
+        encoding: "utf8",
+        windowsHide: true,
+        env: { ...environment, BRIDGE_CLAUDE_PATH: executable },
+      });
+      const signature = JSON.parse(stdout) as { Status?: unknown; Subject?: unknown };
+      if (signature.Status !== "Valid" || typeof signature.Subject !== "string" || !signature.Subject.trim()) {
+        throw new Error("Claude Desktop Authenticode 签名无效");
+      }
+    } catch (error) {
+      throw new Error(`无法验证 Claude Desktop Authenticode 签名：${error instanceof Error ? error.message : String(error)}`);
+    }
+    return version;
   }
 }

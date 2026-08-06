@@ -1,11 +1,11 @@
 {
   "name": "@bridge/client",
-  "version": "0.4.2",
+  "version": "0.5.3",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "clean": "rm -rf dist coverage",
+    "clean": "node ../../scripts/clean.mjs dist coverage",
     "dev": "vite --host 0.0.0.0",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run --passWithNoTests",
@@ -13,7 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@bridge/protocol": "0.4.2",
+    "@bridge/protocol": "0.5.3",
     "@capacitor/app": "^8.1.1",
     "@capacitor/core": "^8.4.2",
     "@capacitor/filesystem": "^8.1.2",

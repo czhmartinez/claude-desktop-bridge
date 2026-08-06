@@ -241,6 +241,8 @@ export class EvidenceManager {
     sessionId: string;
     cwd: string;
     commandId: string;
+    laneId?: string;
+    providerProfileId?: string;
     startedAt?: number;
   }): Promise<string> {
     const id = randomUUID();
@@ -248,6 +250,8 @@ export class EvidenceManager {
     const initialBundle: BridgeEvidenceBundle = {
       id,
       sessionId: input.sessionId,
+      ...(input.laneId ? { laneId: input.laneId } : {}),
+      ...(input.providerProfileId ? { providerProfileId: input.providerProfileId } : {}),
       source: "bridge-host",
       confidence: "partial",
       state: "collecting",

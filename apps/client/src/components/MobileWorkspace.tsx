@@ -8,6 +8,7 @@ import type {
   BridgeHistoryItem,
   BridgeHostSnapshot,
   BridgePermissionInfo,
+  BridgePermissionMode,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
   BridgeTransportMetrics,
@@ -18,6 +19,7 @@ import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowRightLeft,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
@@ -34,6 +36,7 @@ import {
   Search,
   Send,
   Settings2,
+  ShieldCheck,
   Sun,
   Terminal,
   Wrench,
@@ -61,12 +64,48 @@ import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
+import {
+  ProviderSwitchDialog,
+  providerName,
+  type ProviderSwitchPreview,
+  type ProviderSwitchResult,
+} from "./ProviderSwitchDialog.js";
 
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
   requestId?: string;
   commandId?: string;
   live?: boolean;
+}
+
+function lastSessionKey(hostId: string): string {
+  return `bridge.mobile.last-session.v1:${hostId}`;
+}
+
+function readLastSession(hostId: string): string | undefined {
+  try {
+    return localStorage.getItem(lastSessionKey(hostId)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeLastSession(hostId: string, sessionId?: string): void {
+  try {
+    if (sessionId) localStorage.setItem(lastSessionKey(hostId), sessionId);
+    else localStorage.removeItem(lastSessionKey(hostId));
+  } catch {
+    // Session restoration is optional when browser storage is unavailable.
+  }
+}
+
+export function restorableSessionId(
+  candidate: string | undefined,
+  sessions: BridgeSessionInfo[],
+): string | undefined {
+  return candidate && sessions.some((session) => session.sessionId === candidate)
+    ? candidate
+    : undefined;
 }
 
 export type ConversationTimelineEntry =
@@ -124,6 +163,23 @@ export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
   if (session.turnState !== "running" && session.turnState !== "waiting") return false;
   return session.ownership === "BRIDGE_RUNNING"
     || session.ownership === "DESKTOP_MANAGED_RUNNING";
+}
+
+export function supportsProviderSwitching(
+  snapshot: BridgeHostSnapshot | undefined,
+): boolean {
+  return Boolean(
+    snapshot?.host.capabilities.includes("provider.profile.v1") &&
+    snapshot.host.capabilities.includes("conversation.handoff.v1"),
+  );
+}
+
+export function usesOfficialComposer(
+  session: BridgeSessionInfo,
+  providers: NonNullable<BridgeHostSnapshot["providers"]>,
+): boolean {
+  return providers.find((profile) => profile.id === session.activeProviderProfileId)?.kind
+    === "claude-official";
 }
 
 export function stoppableBridgeTask(
@@ -194,7 +250,7 @@ export function conversationItems(
       .filter((event) => event.type === "assistant.completed" && event.turnId)
       .map((event) => event.turnId!),
   );
-  const deltaByItem = new Map<string, ConversationItem>();
+  const deltaByStream = new Map<string, ConversationItem>();
   const toolByItem = new Map<string, ConversationItem>();
   for (const event of sessionEvents) {
     if (event.type === "session.observed") {
@@ -235,10 +291,11 @@ export function conversationItems(
       });
     }
     if (event.type === "assistant.delta" && !(event.turnId && completedTurns.has(event.turnId))) {
-      const id = event.itemId ?? event.eventId;
-      const existing = deltaByItem.get(id);
+      // Provider stream events can use a new item id for every chunk. The turn is the stable stream identity.
+      const id = event.turnId ? `assistant:${event.turnId}` : event.itemId ?? event.eventId;
+      const existing = deltaByStream.get(id);
       const text = `${existing?.text ?? ""}${eventText(event)}`;
-      deltaByItem.set(id, {
+      deltaByStream.set(id, {
         id,
         sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -294,6 +351,7 @@ export function conversationItems(
       });
     }
     if (event.type === "permission.resolved" || event.type === "question.resolved") {
+      if (event.data.automatic === true) continue;
       const resolver = typeof event.data.resolvedByName === "string"
         ? event.data.resolvedByName
         : "另一台设备";
@@ -315,7 +373,7 @@ export function conversationItems(
       });
     }
   }
-  for (const item of deltaByItem.values()) items.set(item.id, item);
+  for (const item of deltaByStream.values()) items.set(item.id, item);
   for (const item of toolByItem.values()) items.set(item.id, item);
   return [...items.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
 }
@@ -562,6 +620,7 @@ function QuestionPrompt({
 function ToolPermissionPrompt({
   permission,
   onResolve,
+  onEnableFullAccess,
 }: {
   permission: BridgePermissionInfo;
   onResolve(
@@ -570,10 +629,12 @@ function ToolPermissionPrompt({
     message?: string,
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
+  onEnableFullAccess?(sessionId: string): Promise<void>;
 }) {
   const presentation = permissionPresentation(permission);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
 
   async function decide(decision: "allow-once" | "allow-always" | "deny"): Promise<void> {
     if (busy) return;
@@ -588,7 +649,22 @@ function ToolPermissionPrompt({
     }
   }
 
+  async function enableFullAccess(): Promise<void> {
+    if (!onEnableFullAccess || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await onEnableFullAccess(permission.sessionId);
+    } catch (resolveError) {
+      setError(resolveError instanceof Error ? resolveError.message : "完全授权设置失败");
+    } finally {
+      setBusy(false);
+      setConfirmFullAccess(false);
+    }
+  }
+
   return (
+    <>
     <section className="permission-prompt">
       <div className="permission-title">
         <strong>{permission.title || `${permission.toolName} 请求权限`}</strong>
@@ -627,14 +703,30 @@ function ToolPermissionPrompt({
         {permission.canAllowAlways && (
           <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
         )}
+        {onEnableFullAccess && (
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess(true)}>
+            <ShieldCheck size={15} />完全授权
+          </button>
+        )}
       </div>
     </section>
+    <ConfirmationDialog
+      open={confirmFullAccess}
+      title="整台电脑启用完全授权"
+      description="Bridge 将自动批准命令和文件修改，并立即处理当前积压；Claude 的提问仍需你回答。"
+      confirmLabel="启用完全授权"
+      busy={busy}
+      onCancel={() => setConfirmFullAccess(false)}
+      onConfirm={() => void enableFullAccess()}
+    />
+    </>
   );
 }
 
 export function PermissionPrompt({
   permission,
   onResolve,
+  onEnableFullAccess,
 }: {
   permission: BridgePermissionInfo;
   onResolve(
@@ -643,13 +735,21 @@ export function PermissionPrompt({
     message?: string,
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
+  onEnableFullAccess?(sessionId: string): Promise<void>;
 }) {
   return permission.toolName === "AskUserQuestion"
     ? <QuestionPrompt permission={permission} onResolve={onResolve} />
-    : <ToolPermissionPrompt permission={permission} onResolve={onResolve} />;
+    : (
+      <ToolPermissionPrompt
+        permission={permission}
+        onResolve={onResolve}
+        {...(onEnableFullAccess ? { onEnableFullAccess } : {})}
+      />
+    );
 }
 
 export function MobileWorkspace({
+  activeHostId,
   desktopName,
   connection,
   desktopOnline,
@@ -679,12 +779,18 @@ export function MobileWorkspace({
   onCreateSession,
   onLoadSessionConfiguration,
   onConfigureSession,
+  onConfigurePermissionPolicy,
+  onPreviewProviderSwitch,
+  onCommitProviderSwitch,
+  onCancelProviderSwitch,
+  onRefreshProviders,
   onClaudeDesktopLaunch,
   onClaudeDesktopQuit,
   onRefresh,
   onBackToHosts,
   onRetry,
 }: {
+  activeHostId: string;
   desktopName: string;
   connection: SocketState;
   desktopOnline: boolean;
@@ -722,9 +828,26 @@ export function MobileWorkspace({
     sessionId: string,
     change: SessionConfigurationChange,
   ): Promise<BridgeSessionConfiguration>;
+  onConfigurePermissionPolicy?(
+    sessionId: string,
+    scope: "host" | "session",
+    mode: BridgePermissionMode | null,
+  ): Promise<BridgeSessionConfiguration>;
+  onPreviewProviderSwitch(
+    sessionId: string,
+    targetProviderProfileId: string,
+    model?: string,
+  ): Promise<ProviderSwitchPreview>;
+  onCommitProviderSwitch(
+    handoffId: string,
+    targetNativeSessionId?: string,
+    model?: string,
+  ): Promise<ProviderSwitchResult>;
+  onCancelProviderSwitch(handoffId: string): Promise<void>;
+  onRefreshProviders(): Promise<void>;
   onClaudeDesktopLaunch(): Promise<ClaudeDesktopAppStatus>;
   onClaudeDesktopQuit(): Promise<ClaudeDesktopAppStatus>;
-  onRefresh(): Promise<void>;
+  onRefresh(sessionId?: string): Promise<void>;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
 }) {
@@ -740,10 +863,12 @@ export function MobileWorkspace({
   const [createTitle, setCreateTitle] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [providerOpen, setProviderOpen] = useState(false);
   const [imageError, setImageError] = useState<string>();
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
   const [permissionOpen, setPermissionOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [desktopAction, setDesktopAction] = useState<"launch" | "quit">();
   const [desktopActionError, setDesktopActionError] = useState("");
@@ -751,10 +876,13 @@ export function MobileWorkspace({
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
+  const restoredSessionRef = useRef(false);
   const announcedPermissionsRef = useRef(new Set<string>());
 
   const sessions = snapshot?.sessions ?? [];
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
+  const providers = snapshot?.providers ?? [];
+  const providerSwitchingAvailable = supportsProviderSwitching(snapshot);
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
   const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
@@ -792,7 +920,41 @@ export function MobileWorkspace({
   const allProjectsExpanded = groupedProjectIds.length > 0
     && groupedProjectIds.every((projectId) => !collapsedProjectIds.has(projectId));
 
+  async function runRefresh(sessionId?: string): Promise<void> {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh(sessionId);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!snapshot || restoredSessionRef.current) return;
+    restoredSessionRef.current = true;
+    const storedSessionId = readLastSession(activeHostId);
+    if (!storedSessionId) return;
+    const sessionId = restorableSessionId(storedSessionId, sessions);
+    if (!sessionId) {
+      writeLastSession(activeHostId);
+      return;
+    }
+    void selectSession(sessionId);
+  }, [activeHostId, snapshot]);
+
+  useEffect(() => {
+    if (!snapshot || !selectedSessionId) return;
+    if (restorableSessionId(selectedSessionId, sessions)) return;
+    setSelectedSessionId(undefined);
+    writeLastSession(activeHostId);
+  }, [activeHostId, selectedSessionId, sessions, snapshot]);
+
   useEffect(() => registerMobileBackHandler(() => {
+    if (providerOpen) {
+      setProviderOpen(false);
+      return true;
+    }
     if (permissionOpen) {
       setPermissionOpen(false);
       return true;
@@ -818,6 +980,7 @@ export function MobileWorkspace({
     configurationOpen,
     createOpen,
     permissionOpen,
+    providerOpen,
     quitDesktopOpen,
     selectedSessionId,
   ]);
@@ -867,6 +1030,7 @@ export function MobileWorkspace({
     setSessionView("conversation");
     setStopError(undefined);
     setSelectedSessionId(sessionId);
+    writeLastSession(activeHostId, sessionId);
     await onOpenSession(sessionId);
   }
 
@@ -890,7 +1054,12 @@ export function MobileWorkspace({
   }
 
   async function sendMessage(): Promise<void> {
-    if (!selectedSession || sending || (!text.trim() && attachments.length === 0)) return;
+    if (
+      !selectedSession ||
+      selectedSession.allowedActions?.canSend === false ||
+      sending ||
+      (!text.trim() && attachments.length === 0)
+    ) return;
     const nextText = text.trim();
     const nextAttachments = attachments;
     setText("");
@@ -956,6 +1125,7 @@ export function MobileWorkspace({
   }
 
   if (selectedSession) {
+    const officialActive = usesOfficialComposer(selectedSession, providers);
     const bridgeRunning = selectedSession.turnState === "running"
       && (
         selectedSession.ownership === "BRIDGE_RUNNING" ||
@@ -982,7 +1152,19 @@ export function MobileWorkspace({
             </span>
           </div>
           <div className="topbar-actions">
-            <IconButton label="模型与 Effort" onClick={() => setConfigurationOpen(true)}>
+            {providerSwitchingAvailable && (
+              <IconButton
+                label={`切换执行提供方，当前 ${providerName(selectedSession.activeProviderProfileId, providers)}`}
+                onClick={() => setProviderOpen(true)}
+              >
+                <ArrowRightLeft size={19} />
+              </IconButton>
+            )}
+            <IconButton
+              label="模型与 Effort"
+              disabled={selectedSession.allowedActions?.canConfigure === false}
+              onClick={() => setConfigurationOpen(true)}
+            >
               <Settings2 size={19} />
             </IconButton>
             {canStop ? (
@@ -998,6 +1180,13 @@ export function MobileWorkspace({
                 {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
               </IconButton>
             )}
+            <IconButton
+              label="强制同步"
+              disabled={refreshing}
+              onClick={() => void runRefresh(selectedSession.sessionId)}
+            >
+              {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : <RefreshCw size={19} />}
+            </IconButton>
           </div>
         </header>
 
@@ -1018,6 +1207,25 @@ export function MobileWorkspace({
             <AlertTriangle size={17} />
             <span><strong>任务停止失败</strong>{stopError}</span>
           </div>
+        )}
+        {providerSwitchingAvailable && selectedSession.routeState && selectedSession.routeState !== "ready" && (
+          <button
+            type="button"
+            className="session-channel-warning provider-route-banner"
+            onClick={() => setProviderOpen(true)}
+          >
+            <ArrowRightLeft size={17} />
+            <span>
+              <strong>{selectedSession.routeState === "awaiting-user-confirmation"
+                ? "等待本机确认"
+                : selectedSession.routeState === "awaiting-target-selection"
+                  ? "选择 Claude 官方会话"
+                  : selectedSession.routeState === "failed"
+                    ? "提供方切换未完成"
+                    : "正在切换执行通道"}</strong>
+              {selectedSession.pendingHandoff?.summary ?? "原执行通道保持活动。"}
+            </span>
+          </button>
         )}
 
         <nav className="session-view-switch" aria-label="会话视图">
@@ -1127,6 +1335,17 @@ export function MobileWorkspace({
 
         {sessionView === "conversation" && (
         <section className="mobile-composer">
+          {officialActive ? (
+            <button
+              type="button"
+              className="official-continue-button"
+              onClick={() => void onClaudeDesktopLaunch()}
+            >
+              <ArrowRightLeft size={18} />
+              在 Claude 官方继续
+            </button>
+          ) : (
+          <>
           {connectionIssue && (
             <button type="button" className="composer-connection" onClick={() => void onRetry()}>
               {connectionIssue.message} 点击重试
@@ -1145,10 +1364,10 @@ export function MobileWorkspace({
             </div>
           )}
           {imageError && <div className="composer-error">{imageError}</div>}
-          {bridgeRunning && (
+          {bridgeRunning && selectedSession.allowedActions?.canSteer !== false && (
             <div className="composer-mode" role="group" aria-label="发送方式">
               <button type="button" className={!steer ? "active" : ""} onClick={() => setSteer(false)}>排到下一轮</button>
-                  <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
+              <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
             </div>
           )}
           <form onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
@@ -1160,29 +1379,67 @@ export function MobileWorkspace({
               hidden
               onChange={(event) => void addImages(event.target.files)}
             />
-            <IconButton label="添加图片" onClick={() => fileRef.current?.click()}><ImagePlus size={20} /></IconButton>
+            <IconButton
+              label="添加图片"
+              disabled={selectedSession.allowedActions?.canSend === false}
+              onClick={() => fileRef.current?.click()}
+            >
+              <ImagePlus size={20} />
+            </IconButton>
             <textarea
               value={text}
               onChange={(event) => setText(event.target.value)}
+              disabled={selectedSession.allowedActions?.canSend === false}
               placeholder={desktopOnline
-                ? selectedSession.source === "bridge"
-                  ? "给这个 Bridge 会话发指令"
-                  : "给这个 Claude Desktop 会话发指令"
+                ? selectedSession.allowedActions?.reason ?? (
+                    selectedSession.source === "bridge"
+                      ? "给这个 Bridge 会话发指令"
+                      : "给这个 Claude Desktop 会话发指令"
+                  )
                 : "电脑离线，消息会保存在手机并自动送达"}
               rows={1}
               aria-label="给 Claude 发指令"
             />
-            <button type="submit" className="send-button" aria-label="发送" disabled={sending || (!text.trim() && attachments.length === 0)}>
+            <button
+              type="submit"
+              className="send-button"
+              aria-label="发送"
+              disabled={selectedSession.allowedActions?.canSend === false || sending || (!text.trim() && attachments.length === 0)}
+            >
               {sending ? <LoaderCircle className="is-spinning" size={19} /> : <Send size={19} />}
             </button>
           </form>
+          </>
+          )}
         </section>
+        )}
+        {providerOpen && providerSwitchingAvailable && (
+          <ProviderSwitchDialog
+            session={selectedSession}
+            profiles={providers}
+            onPreview={(targetProviderProfileId, model) => (
+              onPreviewProviderSwitch(selectedSession.sessionId, targetProviderProfileId, model)
+            )}
+            onCommit={onCommitProviderSwitch}
+            onCancel={onCancelProviderSwitch}
+            onRefresh={async () => {
+              await onRefreshProviders();
+              await onRefresh();
+            }}
+            onChanged={onRefresh}
+            onClose={() => setProviderOpen(false)}
+          />
         )}
         {configurationOpen && (
           <SessionConfigurationDialog
             session={selectedSession}
             onLoad={() => onLoadSessionConfiguration(selectedSession.sessionId)}
             onSave={(change) => onConfigureSession(selectedSession.sessionId, change)}
+            {...(onConfigurePermissionPolicy ? {
+              onConfigurePermission: (scope: "host" | "session", mode: BridgePermissionMode | null) => (
+                onConfigurePermissionPolicy(selectedSession.sessionId, scope, mode)
+              ),
+            } : {})}
             onClose={() => setConfigurationOpen(false)}
           />
         )}
@@ -1199,7 +1456,15 @@ export function MobileWorkspace({
                 <IconButton label="暂时关闭" onClick={() => setPermissionOpen(false)}><X size={19} /></IconButton>
               </header>
               {sessionPermissions.length > 1 && <div className="permission-queue-count">还有 {sessionPermissions.length} 项待处理，提交后自动显示下一项。</div>}
-              <PermissionPrompt permission={activePermission} onResolve={onResolvePermission} />
+              <PermissionPrompt
+                permission={activePermission}
+                onResolve={onResolvePermission}
+                {...(onConfigurePermissionPolicy ? {
+                  onEnableFullAccess: (sessionId: string) => (
+                    onConfigurePermissionPolicy(sessionId, "host", "full-access").then(() => undefined)
+                  ),
+                } : {})}
+              />
             </section>
           </div>
         )}
@@ -1215,7 +1480,13 @@ export function MobileWorkspace({
           <strong>{desktopName}</strong>
           <span className={desktopOnline ? "online" : ""}><i />{desktopOnline ? "在线" : connection === "connecting" ? "正在连接" : "离线"}</span>
         </div>
-        <IconButton label="刷新" onClick={() => void onRefresh()}><RefreshCw size={19} /></IconButton>
+        <IconButton
+          label="强制同步"
+          disabled={refreshing}
+          onClick={() => void runRefresh(selectedSessionId)}
+        >
+          {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : <RefreshCw size={19} />}
+        </IconButton>
         <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
           {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
         </IconButton>

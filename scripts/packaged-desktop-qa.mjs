@@ -28,6 +28,9 @@ try {
   await page.waitForFunction(() => Boolean(window.bridgeDesktop));
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => Boolean(window.bridgeDesktop));
+  await page.waitForFunction(async () => (
+    (await window.bridgeDesktop.getSnapshot()).connection === "connected"
+  ));
   await page.getByRole("button", { name: "会话", exact: true }).waitFor();
   await page.waitForFunction(async () => (
     (await window.bridgeDesktop.getSnapshot()).connection === "connected"
@@ -37,18 +40,80 @@ try {
   assert.ok(Number.isInteger(snapshot.host.pairingEpoch) && snapshot.host.pairingEpoch >= 1);
   assert.deepEqual(
     [...snapshot.host.capabilities].sort(),
-    ["artifact.preview.v1", "artifact.transfer.v1", "evidence.v1"],
+    [
+      "artifact.preview.v1",
+      "artifact.transfer.v1",
+      "conversation.handoff.v1",
+      "conversation.lanes.v1",
+      "evidence.v1",
+      "permission.policy.v1",
+      "provider.profile.v1",
+    ],
   );
+  assert.ok(["standard", "full-access"].includes(snapshot.host.defaultPermissionMode));
   assert.ok(Array.isArray(snapshot.projects));
   assert.ok(Array.isArray(snapshot.sessions));
   assert.ok(Array.isArray(snapshot.devices));
+  assert.ok(Array.isArray(snapshot.providers));
   assert.equal(snapshot.connection, "connected");
   assert.ok(["ready", "working", "auth-required", "unavailable"].includes(snapshot.runtime.state));
 
+  const providerResponse = await page.evaluate(() => window.bridgeDesktop.request({
+    method: "provider.list",
+    params: {},
+  }));
+  assert.equal(providerResponse.ok, true, providerResponse.error?.message);
+  const providers = providerResponse.result.providers;
+  assert.deepEqual(
+    providers.map((provider) => provider.kind).sort(),
+    ["anthropic-api", "claude-3p", "claude-official"],
+  );
+  for (const provider of providers) {
+    assert.equal("apiKey" in provider, false);
+    assert.equal("authorization" in provider, false);
+    assert.equal("headers" in provider, false);
+  }
+
   let configurationProof;
   let evidenceProof;
+  let routeProof;
   const selectedSession = snapshot.sessions[0];
   if (selectedSession) {
+    const routeResponse = await page.evaluate(async (sessionId) => (
+      window.bridgeDesktop.request({
+        method: "conversation.route.get",
+        params: { sessionId },
+      })
+    ), selectedSession.sessionId);
+    assert.equal(routeResponse.ok, true, routeResponse.error?.message);
+    const route = routeResponse.result.route;
+    assert.equal(route.conversationId, selectedSession.sessionId);
+    assert.ok(route.lanes.some((lane) => lane.laneId === route.activeLaneId));
+    assert.ok(providers.some((provider) => provider.id === route.activeProviderProfileId));
+    routeProof = {
+      sessionId: selectedSession.sessionId,
+      laneCount: route.lanes.length,
+      activeProviderProfileId: route.activeProviderProfileId,
+      state: route.state,
+    };
+
+    const permissionConfigurationResponse = await page.evaluate(async (sessionId) => (
+      window.bridgeDesktop.request({
+        method: "session.configuration",
+        params: { sessionId },
+      })
+    ), selectedSession.sessionId);
+    assert.equal(
+      permissionConfigurationResponse.ok,
+      true,
+      permissionConfigurationResponse.error?.message,
+    );
+    assert.ok(
+      ["standard", "full-access"].includes(
+        permissionConfigurationResponse.result.configuration.permissionPolicy.effectiveMode,
+      ),
+    );
+
     const evidenceResponse = await page.evaluate(async (sessionId) => (
       window.bridgeDesktop.request({
         method: "evidence.list",
@@ -104,14 +169,18 @@ try {
     };
   }
 
-  const configurationButton = page.getByRole("button", { name: "模型与 Effort" });
-  await configurationButton.click();
-  const configurationDialog = page.getByRole("dialog");
-  await configurationDialog.waitFor();
-  await configurationDialog.getByText("上下文", { exact: true }).waitFor();
-  await configurationDialog.getByRole("button", { name: "关闭" }).click();
-  await page.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
-  await page.locator(".evidence-panel, .evidence-empty").waitFor();
+  if (selectedSession) {
+    const configurationButton = page.getByRole("button", { name: "模型与 Effort" });
+    await configurationButton.click();
+    const configurationDialog = page.getByRole("dialog");
+    await configurationDialog.waitFor();
+    await configurationDialog.getByText("上下文", { exact: true }).waitFor();
+    await configurationDialog.getByRole("button", { name: "关闭" }).click();
+    await page.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
+    await page.locator(".evidence-panel, .evidence-empty").waitFor();
+  } else {
+    await page.getByText("等待发现 Claude Desktop 会话", { exact: true }).waitFor();
+  }
   assert.deepEqual(errors, []);
   await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });
   process.stdout.write(`${JSON.stringify({
@@ -122,6 +191,14 @@ try {
     sessions: snapshot.sessions.length,
     devices: snapshot.devices.length,
     runtime: snapshot.runtime.state,
+    providers: providers.map(({ id, kind, status, configured, readOnly }) => ({
+      id,
+      kind,
+      status,
+      configured,
+      readOnly,
+    })),
+    route: routeProof,
     configuration: configurationProof,
     evidence: evidenceProof,
     screenshot: resolve(artifacts, "desktop-evidence.png"),

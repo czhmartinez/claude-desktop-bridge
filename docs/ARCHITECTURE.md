@@ -1,4 +1,4 @@
-# Bridge 0.4.2 架构
+# Bridge 0.5.3 架构
 
 ## 产品边界
 
@@ -14,9 +14,13 @@ flowchart LR
   M -.->|"STUN Binding"| S["STUN"]
   D -.->|"STUN Binding"| S
   D --> B["SessionBroker"]
-  B --> H["ClaudeSessionHost"]
+  B --> CS[("conversation-state-v1.sqlite")]
+  B --> PR["ProviderRegistry / RuntimePool"]
+  PR --> H["Claude-3p / API SessionHost"]
   H <-->|"Agent SDK Streaming Input"| C["Claude Host"]
+  PR -->|"公开 Deep Link + 本机确认"| CO["Claude 官方"]
   O["TranscriptObserver"] -->|"只读 JSONL 与元数据"| B
+  O -->|"严格关联官方首条消息"| CS
   B --> DR["ClaudeDesktopSessionRegistrar"]
   DR -->|"单文件会话 ID 映射"| DM["Claude Desktop 本地会话清单"]
   B --> EM["EvidenceManager"]
@@ -38,8 +42,12 @@ transcript，不复制历史，也不改变 Bridge 的执行归属。
 
 | 组件 | 职责 |
 |---|---|
-| `ClaudeSessionHost` | Agent SDK 持久输入、准确 resume、流式事件、工具审批和中断 |
-| `SessionBroker` | 单写入者、所有权状态、两路并发、持久队列和幂等 |
+| `ClaudeSessionHost` | Claude-3p / Anthropic API lane 的 Agent SDK 持久输入、流式事件、审批和中断 |
+| `SessionBroker` | 稳定逻辑会话、lane 固定队列、单写入者、所有权、两路并发和幂等 |
+| `ConversationStateStore` | 独立 SQLite 中的 conversations、profiles、lanes、handoffs、queue、receipts 与迁移标记 |
+| `ProviderRegistry` | 三类 profile 状态、Anthropic API Key 验证与模型发现 |
+| `ProviderRuntimePool` | Claude-3p Host 凭据、Anthropic API 显式 Key、Claude 官方只读 adapter |
+| `HandoffService` | 本机加密接力包、状态机、Deep Link、严格关联和原 lane 保留 |
 | `TranscriptObserver` | 只读观察 Claude Desktop 会话，并增量恢复事后工具记录 |
 | `ClaudeDesktopSessionRegistrar` | 动态识别 active profile，校验并登记 Bridge 会话 ID 映射 |
 | `SessionEventLog` | 追加式 JSONL、单调 `seq`、delta 合并、history/cursor |
@@ -52,6 +60,44 @@ transcript，不复制历史，也不改变 Bridge 的执行归属。
 | `WebRtcTransport` | 加密信令、五秒直连竞争、DataChannel 分块、ACK 与无缝回退 |
 | `apps/relay` | 鉴权、SQLite 离线密文、分块、撤销、指标、备份和无正文推送 |
 | `apps/client` | 手机三层导航和电脑轻量控制台 |
+
+## 逻辑对话与提供方接力
+
+`BridgeSessionInfo.sessionId` 是稳定逻辑对话 ID。每个对话可以保留多个
+`BridgeExecutionLane`，但 `conversations.active_lane_id` 始终只指向一个活动 lane。
+原生会话唯一键为 `(providerProfileId, nativeSessionId)`，避免 Claude 与 Claude-3p
+恰好出现相同原生 ID 时被错误合并。队列项在入队事务中固定 `laneId`，后续切换不会
+把已排队指令偷偷改投其他 provider。
+
+```mermaid
+stateDiagram-v2
+  [*] --> previewed
+  previewed --> preparing: "用户确认"
+  preparing --> activating: "可执行 lane 已准备"
+  preparing --> awaiting_user_confirmation: "打开 Claude 官方 Deep Link"
+  awaiting_user_confirmation --> activating: "唯一精确关联"
+  awaiting_user_confirmation --> awaiting_target: "多个精确关联"
+  awaiting_target --> activating: "用户选择"
+  activating --> applied: "目标接受首条接力消息"
+  previewed --> cancelled
+  preparing --> failed
+  activating --> failed
+  awaiting_user_confirmation --> expired
+```
+
+`preview` 只生成本机加密包并把 route 标为切换中，不改变活动 lane。可执行 lane 只有
+在 `user.message.accepted` 确认接力首条消息后才原子激活；断电恢复时处于
+`preparing/activating` 的接力直接失败并取消未确认队列，绝不自动重发。Claude 官方
+必须同时满足 official profile、`realpath` cwd、不透明 handoff ID、首条消息完整
+哈希与十分钟窗口；零匹配继续等待，多匹配进入人工选择。
+
+完整接力包只在 Host 本机以 AES-256-GCM 保存。它包含有界可见对话、明确目标、用户
+约束、未完成事项、工具/成果摘要、文件与哈希、cwd、Git HEAD/分支/脏状态、源事件
+序号和完整性哈希；不包含隐藏思维、OAuth/API Key/认证头、敏感正文、项目外内容或
+无界输出。Agent SDK 提示上限 48,000 字符，官方 Deep Link 上限 12,000 字符。
+
+旧 `sessions-v2.json` 与 `turn-queue-v2.json` 通过同一 SQLite 事务幂等导入。迁移
+标记保存源文件摘要；连续两次成功启动后旧文件只改名为 `.migrated`，不删除。
 
 ## 会话所有权
 
@@ -90,8 +136,10 @@ Bridge 自身事件写入 `events-v2.jsonl`，最终消息、工具结果、审�
 
 ## Claude Desktop 侧边栏登记
 
-Bridge 只为自身创建、且已经有可信 JSONL 的会话登记侧边栏。登记器从 Claude 主进程
-及其 Helper 的 `--user-data-dir` 动态识别当前 profile，不硬编码 `Claude-3p`；
+Bridge 只为自身创建、且已经有可信 JSONL 的会话登记侧边栏。登记器在 macOS 使用
+`ps`、在 Windows 使用 PowerShell，从 Claude 主进程及其 Helper 的
+`--user-data-dir` 动态识别当前 profile，不硬编码 `Claude-3p`；Windows 使用
+`%APPDATA%\Claude\claude-code-sessions` 作为标准会话根目录。
 随后要求本机仅有一个可识别的账号会话目录，并用现有 `local_*.json` 验证格式。
 
 目标 Desktop ID 固定为 `local_<Bridge sessionId>`。写入前同时校验 transcript 位于
@@ -153,15 +201,19 @@ ICE 五秒未成功即保持 WSS 路径。ICE 服务器为独立显式配置，�
 
 ## 运行时发现
 
-Bridge 只使用 Claude Desktop 已经存在的第三方 Host 凭据路径，不提供官方 OAuth
-登录，也不回退到官方账户存储。实际执行由 `@anthropic-ai/claude-agent-sdk`
-驱动，设置 `resume`、准确 `cwd` 和 `forkSession:false`。Bridge 同时从 Claude
-Desktop 会话元数据继承精确 `model` 与 `effort`，包括 `[1m]` 上下文后缀，避免
-恢复自定义模型别名时静默退回默认上下文通道。如果 SDK 将来不兼容，
-唯一允许的降级是持久 `stream-json` 进程，不能退回单次 `-p`。
+Claude-3p lane 只使用 Claude Desktop 已经存在的第三方 Host 凭据路径。Anthropic
+API lane 使用相同 Agent SDK 执行内核，但先清除 Host/OAuth、Base URL、Custom
+Headers 与 Bedrock/Vertex/Foundry 路由，再注入由本机 `safeStorage` 解密的显式
+Console API Key。两者都设置准确 `cwd`、`resume` 和 `forkSession:false`；模型来自
+对应 provider profile。Claude-3p 仍从会话元数据继承精确 `model`、`effort` 与
+`[1m]`/ultracode 上下文信号。
+
+Claude 官方 adapter 没有 Host 执行计划，只能生成公开 Deep Link；它不读取、复制或
+代理官方 OAuth。若 Agent SDK 将来不兼容，唯一允许的执行降级是持久
+`stream-json` 进程，不能退回单次 `-p`，也不能偷偷改用其他 provider。
 
 ## 明确不做
 
-Bridge 不展示、存储或从行为推断隐藏 CoT，也不重新接入 Claude Desktop 私有 CDP。
-V0.4 不提供项目目录树、远程编辑器、动态站点直播、自动启动开发服务、PDF 内嵌
-渲染或超过 20 MiB 的文件传输。
+Bridge 不展示、存储或从行为推断隐藏 CoT，不自动故障转移，不代理官方 OAuth，也不
+重新接入 Claude Desktop 私有 CDP。V0.5 不提供项目目录树、远程编辑器、动态站点
+直播、自动启动开发服务、PDF 内嵌渲染或超过 20 MiB 的文件传输。

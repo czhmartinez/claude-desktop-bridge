@@ -2,6 +2,7 @@ import type {
   BridgeEvent,
   BridgeEvidenceBundle,
   BridgeHistoryItem,
+  BridgeHostSnapshot,
   BridgePermissionInfo,
   BridgeSessionInfo,
 } from "@bridge/protocol";
@@ -12,8 +13,21 @@ import {
   conversationTimeline,
   ownershipLabel,
   permissionPresentation,
+  restorableSessionId,
   stoppableBridgeTask,
+  supportsProviderSwitching,
+  usesOfficialComposer,
 } from "./MobileWorkspace.js";
+
+describe("restorableSessionId", () => {
+  const sessions = [{ sessionId: "session-1" }] as BridgeSessionInfo[];
+
+  it("restores only a session that still belongs to the selected host", () => {
+    expect(restorableSessionId("session-1", sessions)).toBe("session-1");
+    expect(restorableSessionId("removed-session", sessions)).toBeUndefined();
+    expect(restorableSessionId(undefined, sessions)).toBeUndefined();
+  });
+});
 
 function evidence(
   id: string,
@@ -148,6 +162,51 @@ describe("canStopBridgeTask", () => {
   });
 });
 
+describe("provider switching presentation", () => {
+  const session: BridgeSessionInfo = {
+    sessionId: "session-1",
+    projectId: "project-1",
+    projectName: "Project",
+    cwd: "/tmp/project",
+    title: "Task",
+    source: "bridge",
+    ownership: "BRIDGE_IDLE",
+    transport: "bridge-host",
+    turnState: "idle",
+    lastActivityAt: 1,
+    pendingCount: 0,
+    activeProviderProfileId: "claude-official",
+  };
+
+  it("keeps provider controls hidden when a V0.4 host has no capability", () => {
+    const legacy = {
+      host: { capabilities: [] },
+    } as unknown as BridgeHostSnapshot;
+    const current = {
+      host: {
+        capabilities: ["provider.profile.v1", "conversation.handoff.v1"],
+      },
+    } as unknown as BridgeHostSnapshot;
+
+    expect(supportsProviderSwitching(legacy)).toBe(false);
+    expect(supportsProviderSwitching(current)).toBe(true);
+  });
+
+  it("replaces the writable composer for a Claude official lane", () => {
+    expect(usesOfficialComposer(session, [{
+      id: "claude-official",
+      kind: "claude-official",
+      name: "Claude 官方",
+      status: "ready",
+      detail: "Read-only",
+      configured: true,
+      localOnlyConfiguration: false,
+      readOnly: true,
+      models: [],
+    }])).toBe(true);
+  });
+});
+
 describe("conversationTimeline", () => {
   it("anchors archived Desktop evidence to its completed turn instead of the active tail", () => {
     const items: BridgeHistoryItem[] = [
@@ -237,6 +296,30 @@ describe("conversationTimeline", () => {
 });
 
 describe("conversationItems", () => {
+  it("merges streamed assistant chunks from one turn even when their provider item ids differ", () => {
+    const events: BridgeEvent[] = ["PO", "关键", "核查", "断", "几个"].map((text, index) => ({
+      eventId: `delta-${index}`,
+      sessionId: "session-1",
+      turnId: "turn-1",
+      itemId: `provider-stream-${index}`,
+      seq: index + 1,
+      timestamp: index + 1,
+      origin: "claude-host",
+      type: "assistant.delta",
+      data: { text },
+    }));
+
+    expect(conversationItems("session-1", undefined, events, [])).toEqual([
+      expect.objectContaining({
+        id: "assistant:turn-1",
+        role: "assistant",
+        text: "PO关键核查断几个",
+        turnId: "turn-1",
+        live: true,
+      }),
+    ]);
+  });
+
   it("does not render Claude interruption and resume sentinels from cached history or events", () => {
     const events: BridgeEvent[] = [
       {
@@ -284,6 +367,43 @@ describe("conversationItems", () => {
     }, events, []);
 
     expect(items.map((item) => item.text)).toEqual(["继续推进 P2", "继续处理 P2。"]);
+  });
+
+  it("keeps automatic approvals and turn-finished permission cleanup out of the conversation", () => {
+    const events: BridgeEvent[] = [
+      {
+        eventId: "automatic-allow",
+        seq: 1,
+        timestamp: 1,
+        origin: "system",
+        type: "permission.resolved",
+        sessionId: "session-1",
+        data: {
+          requestId: "permission-1",
+          decision: "allow-once",
+          resolvedByName: "Bridge 完全授权",
+          automatic: true,
+          reason: "policy-full-access",
+        },
+      },
+      {
+        eventId: "turn-cleanup",
+        seq: 2,
+        timestamp: 2,
+        origin: "system",
+        type: "permission.resolved",
+        sessionId: "session-1",
+        data: {
+          requestId: "permission-2",
+          decision: "deny",
+          resolvedByName: "Bridge",
+          automatic: true,
+          reason: "turn-finished",
+        },
+      },
+    ];
+
+    expect(conversationItems("session-1", undefined, events, [])).toEqual([]);
   });
 });
 

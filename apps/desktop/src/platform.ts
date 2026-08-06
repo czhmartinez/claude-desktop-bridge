@@ -8,6 +8,10 @@ export function defaultDesktopName(): string {
   return hostname().replace(/\.local$/u, "") || "My computer";
 }
 
+export function supportsClaudeDesktop(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "darwin" || platform === "win32";
+}
+
 export function localNetworkAddress(): string {
   for (const addresses of Object.values(networkInterfaces())) {
     for (const address of addresses ?? []) {
@@ -19,6 +23,14 @@ export function localNetworkAddress(): string {
   return "127.0.0.1";
 }
 
+export function firstNonEmpty(values: readonly (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    const configured = value?.trim();
+    if (configured) return configured;
+  }
+  return undefined;
+}
+
 export function networkReachableUrl(value: string): string {
   const url = new URL(value);
   if (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]") {
@@ -27,9 +39,12 @@ export function networkReachableUrl(value: string): string {
   return url.toString();
 }
 
-export function connectorPaths(): ConnectorPaths {
-  const home = homedir();
-  if (process.platform === "darwin") {
+export function connectorPaths(
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): ConnectorPaths {
+  if (platform === "darwin") {
     return {
       claudeDesktop: [
         join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
@@ -39,8 +54,8 @@ export function connectorPaths(): ConnectorPaths {
       claudeSettings: join(home, ".claude", "settings.json"),
     };
   }
-  if (process.platform === "win32") {
-    const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
+  if (platform === "win32") {
+    const appData = environment.APPDATA ?? join(home, "AppData", "Roaming");
     return {
       claudeDesktop: [
         join(appData, "Claude", "claude_desktop_config.json"),
@@ -50,7 +65,7 @@ export function connectorPaths(): ConnectorPaths {
       claudeSettings: join(home, ".claude", "settings.json"),
     };
   }
-  const configHome = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
+  const configHome = environment.XDG_CONFIG_HOME ?? join(home, ".config");
   return {
     claudeDesktop: [
       join(configHome, "Claude", "claude_desktop_config.json"),
@@ -68,10 +83,13 @@ export interface ClaudeRuntimePaths {
   desktopSessions: string[];
 }
 
-export function claudeRuntimePaths(): ClaudeRuntimePaths {
-  const home = homedir();
-  const root = join(homedir(), ".claude");
-  if (process.platform === "darwin") {
+export function claudeRuntimePaths(
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): ClaudeRuntimePaths {
+  const root = join(home, ".claude");
+  if (platform === "darwin") {
     return {
       sessions: join(root, "sessions"),
       tasks: join(root, "tasks"),
@@ -82,8 +100,8 @@ export function claudeRuntimePaths(): ClaudeRuntimePaths {
       ],
     };
   }
-  if (process.platform === "win32") {
-    const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
+  if (platform === "win32") {
+    const appData = environment.APPDATA ?? join(home, "AppData", "Roaming");
     return {
       sessions: join(root, "sessions"),
       tasks: join(root, "tasks"),
@@ -94,7 +112,7 @@ export function claudeRuntimePaths(): ClaudeRuntimePaths {
       ],
     };
   }
-  const configHome = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
+  const configHome = environment.XDG_CONFIG_HOME ?? join(home, ".config");
   return {
     sessions: join(root, "sessions"),
     tasks: join(root, "tasks"),

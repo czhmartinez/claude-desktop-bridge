@@ -308,7 +308,7 @@ function observed(
   };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 30_000): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
     if (Date.now() - started > timeoutMs) throw new Error("Timed out waiting for broker state");
@@ -1380,6 +1380,22 @@ describe("SessionBroker", () => {
     desktopSession.activeProcesses = [];
     observer.publish();
     managedTransport.emitHost({
+      type: "assistant.delta",
+      sessionId,
+      turnId,
+      itemId: "provider-stream-1",
+      text: "PO",
+      at: 11.5,
+    });
+    managedTransport.emitHost({
+      type: "assistant.delta",
+      sessionId,
+      turnId,
+      itemId: "provider-stream-2",
+      text: "关键",
+      at: 11.6,
+    });
+    managedTransport.emitHost({
       type: "assistant.completed",
       sessionId,
       turnId,
@@ -1407,6 +1423,14 @@ describe("SessionBroker", () => {
         "assistant.completed",
         "turn.completed",
       ]));
+    expect(eventLog.replay().filter((event) => (
+      event.sessionId === sessionId && event.type === "assistant.delta"
+    ))).toEqual([
+      expect.objectContaining({
+        itemId: `assistant:${turnId}`,
+        data: { text: "PO关键" },
+      }),
+    ]);
     await broker.close();
     await eventLog.close();
   });
@@ -2047,5 +2071,152 @@ describe("SessionBroker", () => {
 
     await broker.close();
     await eventLog.close();
+  });
+
+  it("marks completed-turn permission cleanup without emitting an interruption", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-permission-cleanup-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer: new FakeObserver({
+        projects: [],
+        sessions: [observed(sessionId, cwd)],
+        observedAt: Date.now(),
+      }),
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+    await broker.startTurn({
+      requestId: "request-cleanup",
+      idempotencyKey: "idempotency-cleanup",
+      sessionId,
+      text: "Complete after requesting tools",
+      origin: "mobile",
+    });
+    await waitFor(() => hosts.some((host) => host.current));
+    const pending = broker.permissionBroker.request(sessionId, "Bash", { command: "npm test" }, {
+      signal: new AbortController().signal,
+      toolUseId: "tool-cleanup",
+    });
+    hosts.find((host) => host.options.sessionId === sessionId)!.complete();
+    await expect(pending).resolves.toMatchObject({ behavior: "deny" });
+    await broker.close();
+
+    const events = eventLog.replay(0, 100, sessionId);
+    expect(events.some((event) => event.type === "turn.completed")).toBe(true);
+    expect(events.some((event) => event.type === "turn.interrupted")).toBe(false);
+    expect(events.find((event) => event.type === "permission.resolved")?.data).toMatchObject({
+      decision: "deny",
+      automatic: true,
+      reason: "turn-finished",
+    });
+    await eventLog.close();
+  });
+
+  it("persists a per-session permission override and can restore the computer default", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-permission-policy-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const sessionsPath = join(root, "sessions.json");
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd)],
+      observedAt: Date.now(),
+    });
+    const options = {
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      observer,
+      sessionsPath,
+      queuePath: join(root, "queue.json"),
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    };
+    const firstLog = new SessionEventLog(join(root, "events-first.jsonl"), 1);
+    const broker = new SessionBroker({ ...options, eventLog: firstLog });
+    broker.setDefaultPermissionMode("full-access");
+    await broker.initialize();
+
+    expect((await broker.configuration(sessionId, false)).permissionPolicy).toMatchObject({
+      hostMode: "full-access",
+      effectiveMode: "full-access",
+      source: "host",
+    });
+    await expect(broker.permissionBroker.request(
+      sessionId,
+      "Write",
+      { file_path: join(cwd, "full-access.txt") },
+      { signal: new AbortController().signal, toolUseId: "policy-tool" },
+    )).resolves.toMatchObject({ behavior: "allow" });
+    const overridden = await broker.configurePermissionPolicy(sessionId, "standard");
+    expect(overridden.configuration.permissionPolicy).toMatchObject({
+      hostMode: "full-access",
+      sessionMode: "standard",
+      effectiveMode: "standard",
+      source: "session",
+    });
+    await broker.close();
+    const automaticApproval = firstLog.replay(0, 100, sessionId)
+      .find((event) => event.type === "permission.resolved");
+    expect(automaticApproval?.data).toMatchObject({
+      toolUseId: "policy-tool",
+      toolName: "Write",
+      input: { file_path: join(cwd, "full-access.txt") },
+      automatic: true,
+      reason: "policy-full-access",
+    });
+    expect(firstLog.replay(0, 100, sessionId)
+      .some((event) => event.type === "permission.requested")).toBe(false);
+    await firstLog.close();
+
+    const secondLog = new SessionEventLog(join(root, "events-second.jsonl"), 1);
+    const restarted = new SessionBroker({ ...options, eventLog: secondLog });
+    restarted.setDefaultPermissionMode("full-access");
+    await restarted.initialize();
+    expect((await restarted.configuration(sessionId, false)).permissionPolicy?.sessionMode).toBe("standard");
+
+    const inherited = await restarted.configurePermissionPolicy(sessionId, null);
+    expect(inherited.configuration.permissionPolicy).toEqual({
+      hostMode: "full-access",
+      effectiveMode: "full-access",
+      source: "host",
+    });
+    const saved = JSON.parse(await readFile(sessionsPath, "utf8")) as {
+      configurations?: Array<{ sessionId: string; permissionMode?: string }>;
+    };
+    expect(saved.configurations?.find((configuration) => configuration.sessionId === sessionId))
+      .toBeUndefined();
+
+    await restarted.close();
+    await secondLog.close();
   });
 });

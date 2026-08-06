@@ -92,17 +92,17 @@ export function PairingScreen({
         </div>
         <div className="eyebrow">连接自己的电脑</div>
         <h1 id="pair-title">扫描电脑上的二维码</h1>
-        <p>打开相机对准电脑屏幕，识别后会自动完成安全配对。</p>
+        <p>打开相机对准电脑屏幕，或粘贴电脑端复制的配对链接。</p>
         <button type="button" className="primary-button full-button" onClick={scan} disabled={loading || scanning}>
           <ScanLine size={18} /><span>{scanning ? "正在扫描" : "扫描二维码"}</span>
         </button>
-        <div className="pairing-divider"><span>或者粘贴配对链接</span></div>
+        <div className="pairing-divider"><span>或者粘贴电脑端复制的链接</span></div>
         <div className="pairing-input-wrap">
           <Link2 size={18} aria-hidden="true" />
           <input
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            placeholder="粘贴配对链接"
+            placeholder="粘贴电脑端复制的配对链接"
             aria-label="配对链接"
             autoCapitalize="none"
             autoCorrect="off"
@@ -127,7 +127,7 @@ export function PairingScreen({
           onError={() => {
             setWebScannerOpen(false);
             setScanning(false);
-            setLocalError("无法使用相机，请粘贴配对链接");
+            setLocalError("无法使用相机，请在电脑端复制配对链接");
           }}
         />
       )}

@@ -107,7 +107,9 @@ function evidencePaths(value: unknown): string[] {
   const visit = (candidate: unknown, key = ""): void => {
     if (typeof candidate === "string") {
       if (key === "command") {
-        const matches = candidate.match(/(?:^|[\s"'=])((?:\.{0,2}\/|\/)[^\s"'<>|;&]+)/gu) ?? [];
+        const matches = candidate.match(
+          /(?:^|[\s"'=])((?:(?:[A-Za-z]:[\\/])|(?:\\\\)|(?:\.{0,2}[\\/])|\/)[^\s"'<>|;&]+)/gu,
+        ) ?? [];
         for (const match of matches) paths.push(match.trim().replace(/^[\s"'=]+/u, ""));
       } else if (/(^|_)(file_?path|path|notebook_?path|output_?path|destination|dest)$/iu.test(key)) {
         paths.push(candidate);
@@ -213,6 +215,7 @@ function transcriptEvidenceNode(
     type === "user" &&
     directToolResult === undefined &&
     value.isMeta !== true &&
+    value.isCompactSummary !== true &&
     message &&
     !isClaudeTranscriptControlMessage("user", text),
   );
@@ -411,7 +414,12 @@ function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "r
   if (!isRecord(value.message)) return undefined;
   if (
     value.type === "user" &&
-    (value.toolUseResult !== undefined || value.tool_use_result !== undefined || value.isMeta === true)
+    (
+      value.toolUseResult !== undefined ||
+      value.tool_use_result !== undefined ||
+      value.isMeta === true ||
+      value.isCompactSummary === true
+    )
   ) return undefined;
   const text = textFromContent(value.message.content);
   if (!text) return undefined;

@@ -82,6 +82,7 @@ describe("TranscriptObserver", () => {
     const observer = new TranscriptObserver({
       paths,
       eventLog,
+      platform: "linux",
       pollIntervalMs: 20,
       catalogIntervalMs: 20,
       idleGraceMs: 1_000,
@@ -252,6 +253,7 @@ describe("TranscriptObserver", () => {
     const observer = new TranscriptObserver({
       paths,
       eventLog,
+      platform: "linux",
       pollIntervalMs: 20,
       catalogIntervalMs: 20,
       idleGraceMs: 1,
@@ -324,6 +326,7 @@ describe("TranscriptObserver", () => {
     const observer = new TranscriptObserver({
       paths,
       eventLog,
+      platform: "linux",
       pollIntervalMs: 20,
     });
     await observer.start();
@@ -409,6 +412,7 @@ describe("TranscriptObserver", () => {
     const observer = new TranscriptObserver({
       paths,
       eventLog,
+      platform: "linux",
       pollIntervalMs: 20,
       catalogIntervalMs: 20,
     });
@@ -507,6 +511,7 @@ describe("TranscriptObserver", () => {
     const observer = new TranscriptObserver({
       paths,
       eventLog,
+      platform: "linux",
       pollIntervalMs: 20,
       catalogIntervalMs: 20,
       evidence: {

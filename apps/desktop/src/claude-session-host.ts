@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   query as createQuery,
@@ -8,6 +9,7 @@ import {
   type SDKControlGetContextUsageResponse,
   type SDKMessage,
   type SDKUserMessage,
+  type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   isClaudeTranscriptControlMessage,
@@ -45,6 +47,7 @@ export type SessionHostEvent =
 
 export interface ClaudeSessionHostOptions {
   sessionId: string;
+  eventSessionId?: string;
   cwd: string;
   executablePath: string;
   environment: NodeJS.ProcessEnv;
@@ -60,6 +63,24 @@ export interface ClaudeSessionHostOptions {
 export interface SessionHostInput {
   text: string;
   attachments?: BridgeAttachment[];
+}
+
+function needsWindowsShell(executablePath: string): boolean {
+  return process.platform === "win32" && /\.(?:cmd|bat)$/iu.test(executablePath);
+}
+
+function spawnWindowsShim(options: SpawnOptions) {
+  const child = spawn(options.command, options.args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    shell: true,
+  });
+  options.signal.addEventListener("abort", () => {
+    if (!child.killed) child.kill();
+  }, { once: true });
+  return child;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -117,6 +138,7 @@ export class ClaudeSessionHost extends EventEmitter {
   private retiring = false;
   private hasStartedQuery = false;
   private sessionIdValue: string;
+  private readonly eventSessionId: string;
   private currentTurnId: string | undefined;
   private modelValue: string | undefined;
   private effortValue: ClaudeSessionEffort | undefined;
@@ -126,6 +148,7 @@ export class ClaudeSessionHost extends EventEmitter {
     super();
     this.queryFactory = options.queryFactory ?? createQuery;
     this.sessionIdValue = options.sessionId;
+    this.eventSessionId = options.eventSessionId ?? options.sessionId;
     this.modelValue = options.model;
     this.effortValue = options.effort;
   }
@@ -151,7 +174,7 @@ export class ClaudeSessionHost extends EventEmitter {
     if (this.retiring) throw new Error("Session host is retiring its previous writer");
     if (this.streamTask) return;
     const canUseTool: CanUseTool = async (toolName, input, context) => (
-      this.options.permissionBroker.request(this.sessionIdValue, toolName, input, {
+      this.options.permissionBroker.request(this.eventSessionId, toolName, input, {
         signal: context.signal,
         toolUseId: context.toolUseID,
         ...(context.suggestions ? { suggestions: context.suggestions } : {}),
@@ -175,6 +198,9 @@ export class ClaudeSessionHost extends EventEmitter {
         persistSession: this.options.persistSession ?? true,
         ...(this.modelValue ? { model: this.modelValue } : {}),
         ...(this.effortValue ? { effort: this.effortValue } : {}),
+        ...(needsWindowsShell(this.options.executablePath)
+          ? { spawnClaudeCodeProcess: spawnWindowsShim }
+          : {}),
         ...(resumeExistingSession
           ? { resume: this.sessionIdValue, forkSession: false }
           : { sessionId: this.sessionIdValue }),
@@ -311,7 +337,7 @@ export class ClaudeSessionHost extends EventEmitter {
     this.closed = true;
     this.input.close();
     this.pendingTurns.length = 0;
-    this.options.permissionBroker.cancelSession(this.sessionIdValue);
+    this.options.permissionBroker.cancelSession(this.eventSessionId);
     this.queryProcess?.close();
     await this.streamTask?.catch(() => undefined);
     this.emitEvent({ type: "runtime.stopped", sessionId: this.sessionIdValue, at: Date.now() });
@@ -515,6 +541,8 @@ export class ClaudeSessionHost extends EventEmitter {
   }
 
   private emitEvent(event: SessionHostEvent): void {
-    this.emit("event", event);
+    this.emit("event", event.sessionId === this.eventSessionId
+      ? event
+      : { ...event, sessionId: this.eventSessionId });
   }
 }

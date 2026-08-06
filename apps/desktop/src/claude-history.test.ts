@@ -154,6 +154,58 @@ describe("Claude transcript history", () => {
     });
   });
 
+  it("hides Claude's internal compaction summary from the visible conversation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-compaction-"));
+    directories.push(root);
+    const transcript = join(root, "compaction.jsonl");
+    await writeFile(transcript, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "先开始工作" } }),
+      line({
+        type: "assistant",
+        uuid: "assistant-1",
+        parentUuid: "user-1",
+        message: { role: "assistant", content: "已经完成前置检查。" },
+      }),
+      line({
+        type: "user",
+        uuid: "compact-summary",
+        parentUuid: "assistant-1",
+        isCompactSummary: true,
+        message: {
+          role: "user",
+          content: "This session is being continued from a previous conversation that ran out of context.",
+        },
+      }),
+      line({
+        type: "assistant",
+        uuid: "assistant-2",
+        parentUuid: "compact-summary",
+        message: { role: "assistant", content: "继续处理后续工作。" },
+      }),
+      line({
+        type: "user",
+        uuid: "user-2",
+        parentUuid: "assistant-2",
+        message: { role: "user", content: "继续完成剩余内容" },
+      }),
+    ].join("\n"), "utf8");
+
+    const result = await parseClaudeTranscript(transcript);
+    expect(result.messages).toEqual([
+      expect.objectContaining({ id: "user-1", role: "user", text: "先开始工作" }),
+      expect.objectContaining({
+        id: "assistant-1",
+        role: "assistant",
+        text: "已经完成前置检查。\n\n继续处理后续工作。",
+      }),
+      expect.objectContaining({ id: "user-2", role: "user", text: "继续完成剩余内容" }),
+    ]);
+    await expect(readClaudeTranscriptUserMessages(transcript)).resolves.toEqual([
+      expect.objectContaining({ id: "user-1", text: "先开始工作" }),
+      expect.objectContaining({ id: "user-2", text: "继续完成剩余内容" }),
+    ]);
+  });
+
   it("hides a synthetic SDK failure while preserving normal assistant text", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-sdk-error-"));
     directories.push(root);

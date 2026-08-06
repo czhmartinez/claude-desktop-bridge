@@ -19,6 +19,7 @@ import type { SessionEventLog } from "./session-event-log.js";
 export interface TranscriptObserverOptions {
   paths: ClaudeRuntimePaths;
   eventLog: SessionEventLog;
+  platform?: NodeJS.Platform;
   pollIntervalMs?: number;
   catalogIntervalMs?: number;
   idleGraceMs?: number;
@@ -42,6 +43,7 @@ export class TranscriptObserver extends EventEmitter {
   private readonly transcriptTurnBoundaries = new Map<string, boolean>();
   private readonly externalWriteVersions = new Map<string, number>();
   private readonly knownEvidence = new Map<string, string>();
+  private readonly sessionAliases = new Map<string, string>();
   private evidenceFailureReported = false;
   private readonly evidenceCursors = new Map<string, {
     path: string;
@@ -100,6 +102,10 @@ export class TranscriptObserver extends EventEmitter {
     return this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
   }
 
+  setSessionAlias(nativeSessionId: string, logicalSessionId: string): void {
+    this.sessionAliases.set(nativeSessionId, logicalSessionId);
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
@@ -113,7 +119,7 @@ export class TranscriptObserver extends EventEmitter {
       const now = Date.now();
       let changed = false;
       if (!this.catalogValue.observedAt || now >= this.nextCatalogAt) {
-        const catalog = await scanClaudeCatalog(this.options.paths);
+        const catalog = await scanClaudeCatalog(this.options.paths, this.options.platform);
         const initialCandidates = new Set(
           catalog.sessions
             .filter((session, index) => index < 24 || session.processAlive || session.activeTask)
@@ -262,7 +268,7 @@ export class TranscriptObserver extends EventEmitter {
         .slice(0, 32)}`;
       const input: ObservedDesktopEvidence = {
         id: evidenceId,
-        sessionId: session.sessionId,
+        sessionId: this.sessionAliases.get(session.sessionId) ?? session.sessionId,
         cwd: session.cwd,
         turnId: turn.id,
         startedAt: turn.startedAt,
@@ -299,12 +305,13 @@ export class TranscriptObserver extends EventEmitter {
 
   private async appendObserved(session: ObservedClaudeSession, message: ClaudeHistoryMessage): Promise<void> {
     const type = "session.observed" as const;
+    const sessionId = this.sessionAliases.get(session.sessionId) ?? session.sessionId;
     if (
-      this.options.eventLog.hasItem(session.sessionId, "user.message.accepted", message.id) ||
-      this.options.eventLog.hasItem(session.sessionId, "assistant.completed", message.id)
+      this.options.eventLog.hasItem(sessionId, "user.message.accepted", message.id) ||
+      this.options.eventLog.hasItem(sessionId, "assistant.completed", message.id)
     ) return;
     await this.options.eventLog.append({
-      sessionId: session.sessionId,
+      sessionId,
       itemId: message.id,
       timestamp: message.createdAt || Date.now(),
       origin: "claude-desktop",

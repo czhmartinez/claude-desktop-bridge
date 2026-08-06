@@ -9,11 +9,15 @@ import {
   type EnvelopeChunkManifest,
   type MessageTarget,
   type ServerFrame,
+  type EnvelopeHeader,
 } from "./types.js";
 
 const ROLES = new Set<BridgeRole>(["desktop", "mobile", "agent"]);
 const TARGETS = new Set<MessageTarget>(["desktop", "mobile", "agent"]);
+export const MAX_ENVELOPE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const ENVELOPE_CLOCK_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 const METHODS = new Set([
+  "snapshot.get",
   "project.list",
   "session.list",
   "session.open",
@@ -31,6 +35,7 @@ const METHODS = new Set([
   "turn.steer",
   "turn.interrupt",
   "permission.resolve",
+  "permission.policy.configure",
   "events.resume",
   "evidence.list",
   "evidence.get",
@@ -38,6 +43,13 @@ const METHODS = new Set([
   "artifact.transfer.open",
   "artifact.transfer.read",
   "artifact.transfer.close",
+  "provider.list",
+  "provider.refresh",
+  "conversation.route.get",
+  "conversation.switch.preview",
+  "conversation.switch.commit",
+  "conversation.switch.cancel",
+  "handoff.get",
   "device.revoke",
 ]);
 
@@ -47,6 +59,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isBridgeRole(value: unknown): value is BridgeRole {
   return typeof value === "string" && ROLES.has(value as BridgeRole);
+}
+
+export interface EnvelopeConnectionIdentity {
+  roomId: string;
+  role: BridgeRole;
+  deviceId: string;
+}
+
+export function isEnvelopeFromConnection(
+  envelope: Pick<EnvelopeHeader, "version" | "roomId" | "from" | "fromDeviceId" | "sentAt" | "expiresAt">,
+  connection: EnvelopeConnectionIdentity,
+  now = Date.now(),
+): boolean {
+  return (
+    envelope.version === PROTOCOL_VERSION &&
+    envelope.roomId === connection.roomId &&
+    envelope.from === connection.role &&
+    envelope.fromDeviceId === connection.deviceId &&
+    Number.isFinite(envelope.sentAt) &&
+    Number.isFinite(envelope.expiresAt) &&
+    envelope.expiresAt > envelope.sentAt &&
+    envelope.expiresAt - envelope.sentAt <= MAX_ENVELOPE_TTL_MS &&
+    Math.abs(envelope.sentAt - now) <= ENVELOPE_CLOCK_TOLERANCE_MS
+  );
 }
 
 export function isEncryptedEnvelope(value: unknown): value is EncryptedEnvelope {

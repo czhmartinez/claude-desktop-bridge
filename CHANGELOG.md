@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.5.3
+
+- Replace the no-prompt Windows Squirrel installer with an assisted NSIS wizard that exposes the
+  installation directory page instead of silently forcing a policy-restricted user location.
+- Install the Windows package into a randomized custom directory in CI, then launch that installed
+  executable for cold-start, packaged UI, encrypted pairing and device-revocation checks.
+- Keep optional Authenticode signing through electron-builder certificate settings while retaining
+  protocol V3, pairing schema V4 and compatibility with existing 0.5 mobile clients.
+
+## 0.5.2
+
+- Treat blank release variables as absent so Windows packages retain the built-in Relay, pairing,
+  service-origin and ICE defaults instead of crashing in `networkReachableUrl` on first launch.
+- Add a packaged Windows cold-start gate with all Bridge transport variables removed before the
+  existing encrypted pairing and device-revocation checks.
+- Ship Windows Squirrel as an upgrade from 0.5.1; protocol V3, pairing schema V4 and existing
+  mobile pairings remain unchanged.
+
+## 0.5.1
+
+- Add computer-default and per-session `standard` / `full-access` permission policies behind the
+  additive `permission.policy.v1` capability while retaining protocol V3 and pairing schema V4.
+- Keep Agent SDK permission mode at `default`; auto-approve tools in Desktop `PermissionBroker`,
+  keep `AskUserQuestion` interactive, preserve managed denials, and audit automatic decisions.
+- Drain pending tool requests immediately after enabling full access, retain first-resolver-wins
+  behavior, and mark turn-end cleanup so automatic denials no longer flood conversation history.
+- Reconnect and resume events on native app activation, network recovery and push wake without
+  interrupting Desktop work. Restore the last valid host and session after a Mobile process restart.
+- Ship Android `versionCode` 31 alongside version 0.5.1 Desktop and Mobile artifacts.
+
+## 0.5.0
+
+- Promote Bridge `sessionId` to a stable logical conversation ID with durable provider profiles,
+  historical execution lanes, one active lane, route-level allowed actions and lane-scoped evidence.
+- Add an isolated `conversation-state-v1.sqlite` store for conversations, providers, lanes,
+  handoffs, queued turns, terminal receipts and idempotent legacy JSON migration. Rename legacy
+  files to `.migrated` only after two successful startups.
+- Keep Claude-3p on the existing Agent SDK and Host Credentials path. Add a separate Anthropic API
+  runtime that accepts a Console API Key only through local Desktop IPC, persists it only through
+  Electron `safeStorage`, validates it with `GET /v1/models`, strips inherited Host/OAuth/gateway
+  routing, and makes the separate API billing boundary explicit.
+- Add Claude official handoff through the public `claude://code/new` Deep Link only. Require one
+  local Mac confirmation and exact profile, realpath cwd, opaque handoff ID, first-message hash and
+  ten-minute-window association before activating a read-only observed lane.
+- Add encrypted, bounded structured handoff packages with visible goals, recent conversation,
+  constraints, incomplete work, tool and artifact summaries, hashes, workspace/Git state, source
+  event sequence and integrity hash. Exclude hidden thinking, credentials, sensitive bodies,
+  unbounded output and content outside the project.
+- Fail closed while work is active and preserve the source lane on cancellation, timeout, crash,
+  ambiguous official matches or uncertain first-message delivery. Never auto-failover or replay an
+  uncertain handoff message.
+- Add capability-gated provider switching to Desktop and Android. Official lanes replace the
+  composer with “在 Claude 官方继续”; API Key configuration remains unavailable over Mobile or Relay.
+- Preserve protocol V3 and pairing schema V4. V0.5 clients hide provider UI against V0.4 Hosts;
+  V0.4 clients keep normal writable-lane execution against V0.5 Hosts, while official read-only
+  lanes reject legacy writes before queueing and tell the client to upgrade.
+- Ship the shared-client release as paired macOS DMG and Android APK artifacts.
+
 ## 0.4.2
 
 - Refuse a native resume before writing any user message when the source session belongs to a

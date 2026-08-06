@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { scanClaudeCatalog } from "./claude-session-catalog.js";
+import { parseWindowsClaudeProcessSessions, projectIdForCwd, scanClaudeCatalog } from "./claude-session-catalog.js";
 
 const directories: string[] = [];
 const children: ChildProcess[] = [];
@@ -15,6 +15,51 @@ afterEach(async () => {
 });
 
 describe("Claude session process catalog", () => {
+  it("treats Windows path casing as the same project", () => {
+    expect(projectIdForCwd("C:\\Work\\Bridge", "win32"))
+      .toBe(projectIdForCwd("c:\\work\\bridge", "win32"));
+  });
+
+  it("discovers Windows Claude Code writers and preserves their Desktop ancestry", () => {
+    const sessionId = "33333333-3333-4333-8333-333333333333";
+    const output = JSON.stringify([
+      {
+        ProcessId: 500,
+        ParentProcessId: 400,
+        Name: "claude.exe",
+        CommandLine: `claude.exe --output-format stream-json --input-format stream-json --session-id ${sessionId}`,
+      },
+      {
+        ProcessId: 400,
+        ParentProcessId: 1,
+        Name: "Claude.exe",
+        CommandLine: "C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude.exe",
+      },
+    ]);
+
+    expect(parseWindowsClaudeProcessSessions(output).get(sessionId)).toEqual([
+      expect.objectContaining({
+        pid: 500,
+        entrypoint: "claude-desktop-3p",
+        processAlive: true,
+      }),
+    ]);
+  });
+
+  it("accepts quoted Windows session arguments emitted by process inspection", () => {
+    const sessionId = "44444444-4444-4444-8444-444444444444";
+    const output = JSON.stringify([{
+      ProcessId: 501,
+      ParentProcessId: 1,
+      Name: "claude.exe",
+      CommandLine: `claude.exe --output-format=\"stream-json\" --input-format=\"stream-json\" --resume=\"${sessionId}\"`,
+    }]);
+
+    expect(parseWindowsClaudeProcessSessions(output).get(sessionId)).toEqual([
+      expect.objectContaining({ pid: 501, entrypoint: "unknown" }),
+    ]);
+  });
+
   it("retains every live process registered for the same session without calling overlap a write conflict", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-session-catalog-"));
     directories.push(root);

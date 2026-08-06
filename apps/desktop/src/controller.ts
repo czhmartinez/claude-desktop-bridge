@@ -17,6 +17,7 @@ import {
   type BridgeEndpoint,
   type BridgeEffort,
   type BridgeEvent,
+  type BridgePermissionMode,
   type BridgePayload,
   type BridgeRequest,
   type BridgeResponse,
@@ -40,6 +41,8 @@ import type { EvidenceManager } from "./evidence-manager.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
+import type { ProviderRegistry } from "./provider-registry.js";
+import type { HandoffService } from "./handoff-service.js";
 
 export interface LocalBridgeRequest {
   method: BridgeRequest["method"];
@@ -89,6 +92,16 @@ function effortParam(params: Record<string, unknown>, key: string): BridgeEffort
   if (value === undefined || value === null) return value;
   if (["low", "medium", "high", "xhigh", "max"].includes(value)) return value as BridgeEffort;
   throw new Error("Invalid effort");
+}
+
+function permissionModeParam(
+  params: Record<string, unknown>,
+  key: string,
+): BridgePermissionMode | null | undefined {
+  const value = nullableStringParam(params, key);
+  if (value === undefined || value === null) return value;
+  if (value === "standard" || value === "full-access") return value;
+  throw new Error("Invalid permission mode");
 }
 
 function attachmentsParam(params: Record<string, unknown>): BridgeAttachment[] {
@@ -200,6 +213,8 @@ export class DesktopController extends EventEmitter {
     private readonly evidence: EvidenceManager,
     private readonly claudeDesktop: ClaudeDesktopLifecycle,
     private readonly RTCPeerConnectionImpl?: typeof RTCPeerConnection,
+    private readonly providers?: ProviderRegistry,
+    private readonly handoffs?: HandoffService,
   ) {
     super();
   }
@@ -209,6 +224,7 @@ export class DesktopController extends EventEmitter {
     this.config.managedDesktopEnabled = false;
     this.config.launchAtLogin = await isLaunchAtLoginEnabled(this.app);
     await this.repository.save(this.config);
+    this.broker.setDefaultPermissionMode(this.config.defaultPermissionMode);
     this.hostCrypto = await BridgeCrypto.fromHostSecret({
       hostId: this.config.hostDeviceId,
       pairingEpoch: this.config.pairingEpoch,
@@ -232,6 +248,18 @@ export class DesktopController extends EventEmitter {
     });
     this.broker.on("changed", () => void this.publish());
     await this.broker.initialize();
+    if (this.providers) {
+      this.providers.on("updated", (profile) => {
+        void this.eventLog.append({
+          origin: "system",
+          type: "provider.updated",
+          data: { profile },
+        });
+        void this.publish();
+      });
+      await this.providers.initialize();
+    }
+    await this.handoffs?.initialize();
     await this.connect();
     if (!this.config.devices.some((device) => (
       !device.revokedAt && (Boolean(device.pairedAt) || device.expiresAt > Date.now())
@@ -254,7 +282,16 @@ export class DesktopController extends EventEmitter {
         online: this.connection === "connected",
         lastSeenAt: this.lastSeenAt,
         version: this.app.getVersion(),
-        capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1"],
+        capabilities: [
+          "evidence.v1",
+          "artifact.preview.v1",
+          "artifact.transfer.v1",
+          "provider.profile.v1",
+          "conversation.lanes.v1",
+          "conversation.handoff.v1",
+          "permission.policy.v1",
+        ],
+        defaultPermissionMode: this.config.defaultPermissionMode,
       },
       projects: this.broker.listProjects(),
       sessions: this.broker.listSessions(),
@@ -282,6 +319,7 @@ export class DesktopController extends EventEmitter {
         ...(request.description ? { description: request.description } : {}),
         canAllowAlways: request.suggestions.some((suggestion) => suggestion.destination === "localSettings"),
       })),
+      ...(this.providers ? { providers: this.providers.list() } : {}),
       latestSeq: this.eventLog.latestSeq(),
       connection: this.connection,
       launchAtLogin: this.config.launchAtLogin,
@@ -324,6 +362,18 @@ export class DesktopController extends EventEmitter {
     await this.repository.save(this.config);
     this.registerPendingDevices();
     return this.publish();
+  }
+
+  async setAnthropicApiKey(value: string): Promise<DesktopControlSnapshot> {
+    if (!this.providers) throw new Error("Provider registry is unavailable");
+    await this.providers.setAnthropicApiKey(value);
+    return this.snapshot();
+  }
+
+  async removeAnthropicApiKey(): Promise<DesktopControlSnapshot> {
+    if (!this.providers) throw new Error("Provider registry is unavailable");
+    await this.providers.removeAnthropicApiKey();
+    return this.snapshot();
   }
 
   async revokeDevice(deviceId: string): Promise<DesktopControlSnapshot> {
@@ -411,8 +461,9 @@ export class DesktopController extends EventEmitter {
     };
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.socket?.close();
+    await this.handoffs?.close();
   }
 
   pauseForSleep(): void {
@@ -596,7 +647,50 @@ export class DesktopController extends EventEmitter {
     if (request.method === "claude.desktop.quit") {
       return { claudeDesktop: (await this.quitClaudeDesktop()).claudeDesktop };
     }
+    if (request.method === "snapshot.get") return { snapshot: await this.snapshot() };
     if (request.method === "project.list") return { projects: this.broker.listProjects() };
+    if (request.method === "provider.list") {
+      if (!this.providers) throw new Error("Provider registry is unavailable");
+      return { providers: this.providers.list() };
+    }
+    if (request.method === "provider.refresh") {
+      if (!this.providers) throw new Error("Provider registry is unavailable");
+      return {
+        providers: await this.providers.refresh(stringParam(params, "profileId", false)),
+      };
+    }
+    if (request.method === "conversation.route.get") {
+      return {
+        route: this.broker.conversationRoute(stringParam(params, "sessionId")!),
+      };
+    }
+    if (request.method === "conversation.switch.preview") {
+      if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      const model = stringParam(params, "model", false);
+      return this.handoffs.preview({
+        sessionId: stringParam(params, "sessionId")!,
+        targetProviderProfileId: stringParam(params, "targetProviderProfileId")!,
+        ...(model ? { model } : {}),
+      });
+    }
+    if (request.method === "conversation.switch.commit") {
+      if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      const targetNativeSessionId = stringParam(params, "targetNativeSessionId", false);
+      const model = stringParam(params, "model", false);
+      return this.handoffs.commit({
+        handoffId: stringParam(params, "handoffId")!,
+        ...(targetNativeSessionId ? { targetNativeSessionId } : {}),
+        ...(model ? { model } : {}),
+      });
+    }
+    if (request.method === "conversation.switch.cancel") {
+      if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      return this.handoffs.cancel(stringParam(params, "handoffId")!);
+    }
+    if (request.method === "handoff.get") {
+      if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
+      return { handoff: this.handoffs.get(stringParam(params, "handoffId")!) };
+    }
     if (request.method === "session.list") {
       return {
         sessions: this.broker.listSessions(
@@ -726,6 +820,66 @@ export class DesktopController extends EventEmitter {
       return {
         resolved: true,
       };
+    }
+    if (request.method === "permission.policy.configure") {
+      const scope = stringParam(params, "scope")!;
+      if (scope !== "host" && scope !== "session") throw new Error("Invalid permission policy scope");
+      const mode = permissionModeParam(params, "mode");
+      const sessionId = stringParam(params, "sessionId", false);
+      const actor = origin === "mobile"
+        ? {
+            deviceId: sourceDeviceId ?? "mobile",
+            name: this.config?.devices.find((device) => device.deviceId === sourceDeviceId)?.name ?? "手机 Bridge",
+          }
+        : {
+            deviceId: this.config?.hostDeviceId ?? "desktop",
+            name: this.config?.desktopName ?? "电脑端 Bridge",
+          };
+      if (scope === "host") {
+        if (!mode) throw new Error("Host permission mode is required");
+        if (!this.config) throw new Error("Desktop controller is not initialized");
+        this.config.defaultPermissionMode = mode;
+        await this.repository.save(this.config);
+        await this.eventLog.append({
+          ...(sessionId ? { sessionId } : {}),
+          origin,
+          type: "permission.policy.changed",
+          data: {
+            scope,
+            mode,
+            effectiveMode: mode,
+            source: "host",
+            changedByDeviceId: actor.deviceId,
+            changedByName: actor.name,
+          },
+        });
+        const resolvedPending = this.broker.setDefaultPermissionMode(mode);
+        const configuration = sessionId && this.broker.session(sessionId)
+          ? await this.broker.configuration(sessionId, false)
+          : undefined;
+        return {
+          defaultPermissionMode: mode,
+          resolvedPending,
+          ...(configuration ? { configuration } : {}),
+        };
+      }
+      if (!sessionId) throw new Error("sessionId is required");
+      if (mode === undefined) throw new Error("mode is required");
+      const configured = await this.broker.configurePermissionPolicy(sessionId, mode);
+      await this.eventLog.append({
+        sessionId,
+        origin,
+        type: "permission.policy.changed",
+        data: {
+          scope,
+          mode,
+          effectiveMode: configured.configuration.permissionPolicy?.effectiveMode ?? "standard",
+          source: configured.configuration.permissionPolicy?.source ?? "host",
+          changedByDeviceId: actor.deviceId,
+          changedByName: actor.name,
+        },
+      });
+      return configured;
     }
     if (request.method === "events.resume") {
       const afterSeq = numberParam(params, "afterSeq", 0);

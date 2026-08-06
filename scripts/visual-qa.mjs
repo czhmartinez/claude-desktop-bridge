@@ -1,5 +1,7 @@
 import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import {
   BridgeCrypto,
@@ -9,7 +11,24 @@ import {
 
 const baseUrl = process.env.BRIDGE_QA_URL ?? "http://127.0.0.1:5188";
 const relayUrl = process.env.BRIDGE_QA_RELAY ?? "ws://127.0.0.1:8788/ws";
-const chrome = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+function defaultChromePath() {
+  const candidates = process.platform === "win32"
+    ? [
+        join(process.env.PROGRAMFILES ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+        join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+        join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Google", "Chrome", "Application", "chrome.exe"),
+      ]
+    : process.platform === "darwin"
+      ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+      : [
+          "/usr/bin/google-chrome",
+          "/usr/bin/google-chrome-stable",
+          "/usr/bin/chromium",
+          "/usr/bin/chromium-browser",
+        ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+const chrome = process.env.CHROME_PATH ?? defaultChromePath();
 const artifactDir = resolve("artifacts", "visual-qa");
 const axePath = resolve("node_modules", "axe-core", "axe.min.js");
 const errors = [];
@@ -35,13 +54,66 @@ const secondaryProject = {
   pendingCount: 0,
   lastActivityAt: now - 3_600_000,
 };
+const providerProfiles = [
+  {
+    id: "provider:claude-3p:default",
+    kind: "claude-3p",
+    name: "Claude-3p",
+    status: "ready",
+    detail: "Agent SDK 与 Claude-3p Host Credentials 已就绪。",
+    configured: true,
+    localOnlyConfiguration: false,
+    readOnly: false,
+    models: [],
+    refreshedAt: now,
+  },
+  {
+    id: "provider:anthropic-api:default",
+    kind: "anthropic-api",
+    name: "Anthropic API",
+    status: "needs-configuration",
+    detail: "需要在电脑端输入 Claude Console API Key。",
+    configured: false,
+    localOnlyConfiguration: true,
+    readOnly: false,
+    models: [],
+    refreshedAt: now,
+  },
+  {
+    id: "provider:claude-official:default",
+    kind: "claude-official",
+    name: "Claude 官方订阅",
+    status: "ready",
+    detail: "通过 Claude 公开 Deep Link 接力；激活后 Bridge 只读观察。",
+    configured: true,
+    localOnlyConfiguration: false,
+    readOnly: true,
+    models: [],
+    refreshedAt: now,
+  },
+];
+function writableRoute(sessionId) {
+  return {
+    activeLaneId: `lane:claude-3p:${sessionId}`,
+    activeProviderProfileId: "provider:claude-3p:default",
+    routeState: "ready",
+    allowedActions: {
+      canSend: true,
+      canSteer: true,
+      canInterrupt: true,
+      canSwitchProvider: true,
+      canContinueOfficial: false,
+      canConfigure: true,
+    },
+  };
+}
 const sessions = [
   {
     sessionId: "session-running",
     projectId: project.projectId,
     projectName: project.name,
     cwd: project.cwd,
-    title: "Bridge 0.4.2 桌面热修联调",
+    title: "Bridge 0.5.3 Windows 安装目录选择",
     source: "desktop",
     ownership: "BRIDGE_RUNNING",
     turnState: "running",
@@ -51,6 +123,7 @@ const sessions = [
     currentSummary: "验证手机与电脑共享同一条事件流",
     model: "claude-fable-5[1m]",
     effort: "high",
+    ...writableRoute("session-running"),
   },
   {
     sessionId: "session-idle",
@@ -65,6 +138,7 @@ const sessions = [
     pendingCount: 0,
     model: "claude-sonnet-5",
     effort: "medium",
+    ...writableRoute("session-idle"),
   },
   {
     sessionId: "session-pms",
@@ -79,6 +153,7 @@ const sessions = [
     pendingCount: 0,
     model: "claude-opus-4-8",
     effort: "high",
+    ...writableRoute("session-pms"),
   },
 ];
 const history = {
@@ -299,6 +374,11 @@ let sessionConfiguration = {
   availableEffortLevels: ["low", "medium", "high", "xhigh"],
   modelsComplete: true,
   appliesAfterTurn: true,
+  permissionPolicy: {
+    hostMode: "standard",
+    effectiveMode: "standard",
+    source: "host",
+  },
   context: {
     totalTokens: 301_611,
     maxTokens: 1_000_000,
@@ -354,12 +434,22 @@ const hostSnapshot = {
     relayUrl,
     online: true,
     lastSeenAt: now,
-    version: "0.4.2",
+    version: "0.5.3",
     pairingEpoch: 1,
-    capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1"],
+    capabilities: [
+      "evidence.v1",
+      "artifact.preview.v1",
+      "artifact.transfer.v1",
+      "provider.profile.v1",
+      "conversation.lanes.v1",
+      "conversation.handoff.v1",
+      "permission.policy.v1",
+    ],
+    defaultPermissionMode: "standard",
   },
   projects: [project, secondaryProject],
   sessions,
+  providers: providerProfiles,
   devices: [{
     deviceId: pairing.deviceId,
     name: "Android 手机",
@@ -472,10 +562,34 @@ desktopSocket.onMessage((message, encrypted) => {
         ...(typeof request.params.effort === "string" ? { effort: request.params.effort, overrideEffort: request.params.effort } : {}),
       };
       result = { configuration: sessionConfiguration, session: sessions[0] };
+    } else if (request.method === "permission.policy.configure") {
+      const mode = request.params.mode;
+      const scope = request.params.scope;
+      const hostMode = scope === "host" && typeof mode === "string"
+        ? mode
+        : sessionConfiguration.permissionPolicy.hostMode;
+      const sessionMode = scope === "session" && typeof mode === "string" ? mode : undefined;
+      sessionConfiguration = {
+        ...sessionConfiguration,
+        permissionPolicy: {
+          hostMode,
+          ...(sessionMode ? { sessionMode } : {}),
+          effectiveMode: sessionMode ?? hostMode,
+          source: sessionMode ? "session" : "host",
+        },
+      };
+      hostSnapshot.host.defaultPermissionMode = hostMode;
+      result = {
+        configuration: sessionConfiguration,
+        defaultPermissionMode: hostMode,
+        resolvedPending: 0,
+      };
     } else if (request.method === "project.list") {
       result = { projects: hostSnapshot.projects };
     } else if (request.method === "session.list") {
       result = { sessions: hostSnapshot.sessions };
+    } else if (request.method === "provider.refresh" || request.method === "provider.list") {
+      result = { providers: hostSnapshot.providers };
     } else if (request.method === "claude.desktop.status") {
       result = { claudeDesktop: hostSnapshot.claudeDesktop };
     } else if (request.method === "claude.desktop.launch") {
@@ -569,7 +683,7 @@ try {
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
-  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.4.2 桌面热修联调" });
+  const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.5.3 Windows 安装目录选择" });
   await waitingSessionRow.waitFor();
   if (await mobile.locator(".session-row-v2").count() !== 3) {
     errors.push("mobile catalog: expected three expanded session rows");
@@ -630,10 +744,29 @@ try {
   await mobile.getByRole("button", { name: "允许一次" }).click();
   await livePermissionSheet.waitFor({ state: "detached" });
 
+  await mobile.getByLabel("切换执行提供方，当前 Claude-3p").click();
+  const mobileProviderDialog = mobile.getByRole("dialog", { name: "切换提供方" });
+  await mobileProviderDialog.locator(".provider-option").filter({ hasText: "Anthropic API" }).click();
+  await mobileProviderDialog.getByText("需要在电脑端配置 API Key", { exact: true }).waitFor();
+  await checkPage(mobile, "mobile provider switching");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-provider-switch-390x844.png"), fullPage: true });
+  await mobileProviderDialog.getByLabel("关闭").click();
+
   await mobile.getByRole("button", { name: "模型与 Effort" }).click();
   await mobile.getByText("Claude Host 实时用量").waitFor();
+  await mobile.getByText("授权模式", { exact: true }).waitFor();
   await checkPage(mobile, "mobile session configuration");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-session-configuration-390x844.png"), fullPage: true });
+  await mobile.setViewportSize({ width: 768, height: 1024 });
+  await checkPage(mobile, "wide Android session configuration");
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-session-configuration-768x1024.png"), fullPage: true });
+  await mobile.setViewportSize({ width: 390, height: 844 });
+  await mobile.getByRole("button", { name: "完全授权", exact: true }).click();
+  await mobile.getByRole("button", { name: "保存授权模式", exact: true }).click();
+  const fullAccessConfirmation = mobile.getByRole("alertdialog", { name: "启用完全授权" });
+  await fullAccessConfirmation.waitFor();
+  await fullAccessConfirmation.getByRole("button", { name: "启用完全授权", exact: true }).click();
+  await mobile.getByText("当前生效：完全授权 · 电脑默认", { exact: true }).waitFor();
   await mobile.getByRole("button", { name: "关闭" }).click();
 
   await mobile.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
@@ -686,6 +819,7 @@ try {
         activeTurnId: undefined,
         currentSummary: "恢复的未完成任务 · 覆盖安装前的任务",
         lastActivityAt: now - 10_000,
+        ...writableRoute("session-recovered-blocker"),
         desktopRegistration: {
           state: "restart-required",
           detail: "已写入 Claude Desktop 会话清单，重启后可见。",
@@ -750,6 +884,8 @@ try {
         current = { ...current, launchAtLogin: enabled };
         return current;
       },
+      setAnthropicApiKey: async () => current,
+      removeAnthropicApiKey: async () => current,
       launchClaudeDesktop: async () => {
         window.__bridgeQaClaudeActions.push("launch");
         current = {
@@ -802,6 +938,31 @@ try {
             ...(typeof request.params.effort === "string" ? { effort: request.params.effort, overrideEffort: request.params.effort } : {}),
           };
           return response(request, { configuration: currentConfiguration, session: current.sessions[0] });
+        }
+        if (request.method === "permission.policy.configure") {
+          const mode = request.params.mode;
+          const scope = request.params.scope;
+          const hostMode = scope === "host" && typeof mode === "string"
+            ? mode
+            : currentConfiguration.permissionPolicy.hostMode;
+          const sessionMode = scope === "session" && typeof mode === "string" ? mode : undefined;
+          currentConfiguration = {
+            ...currentConfiguration,
+            permissionPolicy: {
+              hostMode,
+              ...(sessionMode ? { sessionMode } : {}),
+              effectiveMode: sessionMode ?? hostMode,
+              source: sessionMode ? "session" : "host",
+            },
+          };
+          current = {
+            ...current,
+            host: { ...current.host, defaultPermissionMode: hostMode },
+          };
+          return response(request, { configuration: currentConfiguration, defaultPermissionMode: hostMode });
+        }
+        if (request.method === "provider.refresh" || request.method === "provider.list") {
+          return response(request, { providers: current.providers });
         }
         if (request.method === "turn.interrupt") return response(request, { interrupted: true });
         if (request.method === "permission.resolve") return response(request, { resolved: true });
@@ -866,8 +1027,16 @@ try {
   await desktop.locator(".desktop-session-row").first().waitFor();
   await checkPage(desktop, "desktop sessions");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-sessions-1200x800.png"), fullPage: true });
+  await desktop.getByRole("button", { name: "切换执行提供方" }).click();
+  const desktopProviderDialog = desktop.getByRole("dialog", { name: "切换提供方" });
+  await desktopProviderDialog.locator(".provider-option").filter({ hasText: "Anthropic API" }).click();
+  await desktopProviderDialog.getByText("在此电脑配置 API Key", { exact: true }).waitFor();
+  await checkPage(desktop, "desktop provider switching");
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-provider-switch-1200x800.png"), fullPage: true });
+  await desktopProviderDialog.getByLabel("关闭").click();
   await desktop.getByRole("button", { name: "模型与 Effort" }).click();
   await desktop.getByText("Claude Host 实时用量").waitFor();
+  await desktop.getByText("授权模式", { exact: true }).waitFor();
   await checkPage(desktop, "desktop session configuration");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-session-configuration-1200x800.png"), fullPage: true });
   await desktop.getByRole("button", { name: "关闭" }).click();

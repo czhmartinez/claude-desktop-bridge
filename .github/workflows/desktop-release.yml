@@ -14,10 +14,17 @@ jobs:
         include:
           - os: macos-15
             name: macOS
+            make_command: npm run make:adhoc -w @bridge/desktop
+            artifact_suffix: adhoc
+          - os: windows-2022
+            name: Windows
+            make_command: npm run make:windows -w @bridge/desktop
+            artifact_suffix: installer
     runs-on: ${{ matrix.os }}
     env:
       BRIDGE_RELAY_URL: ${{ vars.BRIDGE_RELAY_URL }}
       BRIDGE_PAIRING_BASE_URL: ${{ vars.BRIDGE_PAIRING_BASE_URL }}
+      BRIDGE_WIN_CERTIFICATE_BASE64: ${{ secrets.BRIDGE_WIN_CERTIFICATE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,9 +32,55 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
       - run: npm run build -w @bridge/protocol
-      - run: npm run make:adhoc -w @bridge/desktop
+      - name: Prepare Windows Authenticode certificate
+        if: matrix.os == 'windows-2022' && env.BRIDGE_WIN_CERTIFICATE_BASE64 != ''
+        shell: pwsh
+        env:
+          BRIDGE_WIN_CERTIFICATE_BASE64: ${{ secrets.BRIDGE_WIN_CERTIFICATE_BASE64 }}
+          BRIDGE_WIN_CERTIFICATE_PASSWORD: ${{ secrets.BRIDGE_WIN_CERTIFICATE_PASSWORD }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "bridge-signing.p12"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:BRIDGE_WIN_CERTIFICATE_BASE64))
+          "BRIDGE_WIN_CERTIFICATE_FILE=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BRIDGE_WIN_CERTIFICATE_PASSWORD=$env:BRIDGE_WIN_CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - run: ${{ matrix.make_command }}
+      - name: Build Relay for packaged Windows QA
+        if: matrix.os == 'windows-2022'
+        run: npm run build -w @bridge/relay
+      - name: Run packaged Windows QA and pairing
+        if: matrix.os == 'windows-2022'
+        run: npm run test:desktop:packaged:windows
+      - name: Assert Windows installer output
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
+          if ($null -eq $setup) { throw "Assisted NSIS Setup.exe was not produced" }
+      - name: Record Windows hashes and Authenticode status
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
+          $signature = Get-AuthenticodeSignature -FilePath $setup.FullName
+          if ($env:BRIDGE_WIN_CERTIFICATE_BASE64 -ne '' -and $signature.Status -ne 'Valid') {
+            throw "Signed Windows installer failed Authenticode validation: $($signature.Status)"
+          }
+          $evidence = [ordered]@{
+            version = (Get-Content "apps/desktop/package.json" | ConvertFrom-Json).version
+            installerType = "nsis-assisted"
+            directorySelection = $true
+            setup = $setup.FullName
+            setupSha256 = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLowerInvariant()
+            authenticode = $signature.Status.ToString()
+            signer = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+          }
+          $evidence | ConvertTo-Json | Set-Content -Encoding utf8 "apps/desktop/out/make/windows-release-evidence.json"
       - uses: actions/upload-artifact@v4
         with:
-          name: Bridge-${{ matrix.name }}-adhoc-ci
-          path: apps/desktop/out/make/**
+          name: Bridge-${{ matrix.name }}-${{ matrix.artifact_suffix }}-ci
+          path: |
+            apps/desktop/out/make/**
+            artifacts/packaged-desktop/**

@@ -58,8 +58,11 @@ class ClaudeDesktopHelper {
   ) {}
 
   async run(): Promise<void> {
-    await mkdir(dirname(this.socketPath), { recursive: true, mode: 0o700 });
-    await rm(this.socketPath, { force: true });
+    const windowsPipe = process.platform === "win32" && this.socketPath.startsWith("\\\\.\\pipe\\");
+    if (!windowsPipe) {
+      await mkdir(dirname(this.socketPath), { recursive: true, mode: 0o700 });
+      await rm(this.socketPath, { force: true });
+    }
     const server = createServer((socket) => this.accept(socket));
     server.on("error", (error) => {
       process.stderr.write(`Bridge Claude helper socket failed: ${error.message}\n`);
@@ -71,7 +74,7 @@ class ClaudeDesktopHelper {
         resolve();
       });
     });
-    await chmod(this.socketPath, 0o600);
+    if (!windowsPipe) await chmod(this.socketPath, 0o600);
 
     let cleaningUp = false;
     const cleanup = () => {
@@ -82,7 +85,7 @@ class ClaudeDesktopHelper {
       void this.adapter?.detach().catch(() => undefined);
       this.client?.shutdown();
       server.close();
-      void rm(this.socketPath, { force: true });
+      if (!windowsPipe) void rm(this.socketPath, { force: true });
     };
     process.once("SIGTERM", () => {
       cleanup();
@@ -164,9 +167,14 @@ class ClaudeDesktopHelper {
 
   private async launch(executablePath: string, appVersion: string): Promise<ManagedDesktopHelperStatus> {
     if (this.child?.exitCode === null && this.statusValue.state === "ready") return this.statusValue;
-    if (process.platform !== "darwin") throw new Error("Managed Claude Desktop currently supports macOS only");
-    if (executablePath !== "/Applications/Claude.app/Contents/MacOS/Claude") {
+    if (process.platform !== "darwin" && process.platform !== "win32") {
+      throw new Error("当前平台不支持 Claude Desktop 受管通道");
+    }
+    if (process.platform === "darwin" && executablePath !== "/Applications/Claude.app/Contents/MacOS/Claude") {
       throw new Error("Claude Desktop must be installed in /Applications");
+    }
+    if (process.platform === "win32" && !/\\Claude\.exe$/iu.test(executablePath.replaceAll("/", "\\"))) {
+      throw new Error("Claude Desktop must be installed as Claude.exe");
     }
     if (!appVersion.trim()) throw new Error("Claude Desktop version is required");
     this.updateStatus({ state: "starting", detail: "正在连接 Claude Desktop 私有会话通道。" });
@@ -178,6 +186,7 @@ class ClaudeDesktopHelper {
       detached: false,
       stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
       env: childEnv,
+      windowsHide: true,
     });
     this.child = child;
     let stderrTail = "";
@@ -283,6 +292,7 @@ class ClaudeDesktopHelper {
         detached: true,
         stdio: "ignore",
         env: childEnv,
+        windowsHide: true,
       });
       ordinary.unref();
     } finally {

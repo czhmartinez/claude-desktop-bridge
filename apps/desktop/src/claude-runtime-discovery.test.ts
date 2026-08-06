@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  findClaudeHostCredentials,
   findClaudeExecutable,
   isSafeForBackgroundRuntimeScan,
   prepareClaudeRuntime,
@@ -66,5 +67,30 @@ describe("Claude runtime discovery privacy", () => {
       version: "bridge-test",
     });
     await expect(readFile(cwdReport, "utf8")).resolves.toBe(`${homedir()}\n`);
+  });
+
+  it("discovers Windows CLI shims from a Windows-style PATH", async () => {
+    const home = await mkdtemp(join(tmpdir(), "bridge-runtime-windows-"));
+    directories.push(home);
+    const bin = join(home, "bin");
+    const executable = join(bin, "claude.cmd");
+    await mkdir(bin, { recursive: true });
+    await writeFile(executable, "@echo off\r\necho bridge-windows\r\n", "utf8");
+
+    await expect(findClaudeExecutable({ PATH: bin }, home, "win32"))
+      .resolves.toBe(executable);
+  });
+
+  it("finds the newest Windows Host Credentials file under roaming AppData", async () => {
+    const home = await mkdtemp(join(tmpdir(), "bridge-credentials-windows-"));
+    directories.push(home);
+    const appData = join(home, "AppData", "Roaming");
+    const root = join(appData, "Claude-3p");
+    const credential = join(root, "host-creds-windows.json");
+    await mkdir(root, { recursive: true });
+    await writeFile(credential, "{}\n", "utf8");
+
+    await expect(findClaudeHostCredentials({ APPDATA: appData }, home, undefined, "win32"))
+      .resolves.toBe(credential);
   });
 });

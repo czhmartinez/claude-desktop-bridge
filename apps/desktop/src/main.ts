@@ -21,7 +21,13 @@ import {
 } from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
 import { DesktopController, type LocalBridgeRequest } from "./controller.js";
-import { claudeRuntimePaths, connectorPaths, defaultDesktopName, networkReachableUrl } from "./platform.js";
+import {
+  claudeRuntimePaths,
+  connectorPaths,
+  defaultDesktopName,
+  firstNonEmpty,
+  networkReachableUrl,
+} from "./platform.js";
 import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
@@ -34,6 +40,10 @@ import {
   cleanupDesktopPeerConnection,
   loadDesktopPeerConnection,
 } from "./webrtc-runtime.js";
+import { ConversationStateStore } from "./conversation-state-store.js";
+import { ProviderRegistry } from "./provider-registry.js";
+import { ProviderRuntimePool } from "./provider-runtime-pool.js";
+import { HandoffService } from "./handoff-service.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -49,19 +59,33 @@ protocol.registerSchemesAsPrivileged([{
   },
 }]);
 
-const CONFIGURED_RELAY = process.env.BRIDGE_RELAY_URL
-  ?? __BRIDGE_DEFAULT_RELAY__;
+const CONFIGURED_RELAY = firstNonEmpty([
+  process.env.BRIDGE_RELAY_URL,
+  __BRIDGE_DEFAULT_RELAY__,
+  "ws://127.0.0.1:8788/ws",
+])!;
 const DEFAULT_RELAY = networkReachableUrl(CONFIGURED_RELAY);
-const DEFAULT_PAIRING_BASE = process.env.BRIDGE_PAIRING_BASE_URL
-  ?? networkReachableUrl(__BRIDGE_DEFAULT_PAIRING_BASE__);
+const DEFAULT_PAIRING_BASE = firstNonEmpty([process.env.BRIDGE_PAIRING_BASE_URL])
+  ?? networkReachableUrl(firstNonEmpty([
+    __BRIDGE_DEFAULT_PAIRING_BASE__,
+    "http://localhost:5188",
+  ])!);
 const CONFIGURED_PUBLIC_RELAY = (
-  process.env.BRIDGE_PUBLIC_RELAY_URL ?? __BRIDGE_DEFAULT_PUBLIC_RELAY__
-) || (relayPathForUrl(CONFIGURED_RELAY) === "public-relay" ? CONFIGURED_RELAY : undefined);
-const DEFAULT_SERVICE_ORIGIN = (
-  process.env.BRIDGE_SERVICE_ORIGIN ?? __BRIDGE_DEFAULT_SERVICE_ORIGIN__
-) || DEFAULT_PAIRING_BASE;
+  process.env.BRIDGE_PUBLIC_RELAY_URL === undefined
+    ? firstNonEmpty([__BRIDGE_DEFAULT_PUBLIC_RELAY__])
+    : firstNonEmpty([process.env.BRIDGE_PUBLIC_RELAY_URL])
+) ?? (relayPathForUrl(CONFIGURED_RELAY) === "public-relay" ? CONFIGURED_RELAY : undefined);
+const DEFAULT_SERVICE_ORIGIN = firstNonEmpty([
+  process.env.BRIDGE_SERVICE_ORIGIN,
+  __BRIDGE_DEFAULT_SERVICE_ORIGIN__,
+  DEFAULT_PAIRING_BASE,
+])!;
 const DEFAULT_ICE_SERVERS = parseBridgeIceServers(
-  process.env.BRIDGE_ICE_SERVERS ?? __BRIDGE_DEFAULT_ICE_SERVERS__,
+  firstNonEmpty([
+    process.env.BRIDGE_ICE_SERVERS,
+    __BRIDGE_DEFAULT_ICE_SERVERS__,
+    '[{"urls":"stun:stun.cloudflare.com:3478"}]',
+  ])!,
 );
 
 function configPath(): string {
@@ -111,6 +135,13 @@ async function desktopMain(): Promise<void> {
   );
   const pairingConfig = await repository.loadOrCreate();
   const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));
+  const conversationState = new ConversationStateStore({
+    databasePath: join(userDataPath, "conversation-state-v1.sqlite"),
+    sessionsPath: join(userDataPath, "sessions-v2.json"),
+    queuePath: join(userDataPath, "turn-queue-v2.json"),
+    masterSecret: pairingConfig.evidenceKey,
+  });
+  await conversationState.initialize();
   const evidenceStore = new EvidenceStore({
     databasePath: join(userDataPath, "evidence-v1.sqlite"),
     blobsPath: join(userDataPath, "evidence-blobs-v1"),
@@ -126,14 +157,47 @@ async function desktopMain(): Promise<void> {
   const observer = new TranscriptObserver({ paths: runtimePaths, eventLog, evidence });
   await observer.start();
   const desktopRegistrar = new ClaudeDesktopSessionRegistrar({ paths: runtimePaths });
+  let runtimeStatus = (): ReturnType<SessionBroker["runtimeStatus"]> => ({
+    state: "unavailable",
+    detail: "Claude-3p 运行时尚未初始化。",
+    activeTurns: 0,
+    maxParallelTurns: 2,
+    desktopIntegration: {
+      state: "not-managed",
+      detail: "尚未初始化。",
+      enabled: false,
+      canRestart: process.platform === "darwin" || process.platform === "win32",
+    },
+  });
+  const providers = new ProviderRegistry({
+    state: conversationState,
+    apiKeyPath: join(userDataPath, "anthropic-api-key-v1.json"),
+    safeStorage,
+    claude3pStatus: () => runtimeStatus(),
+  });
+  const runtimePool = new ProviderRuntimePool(providers);
   const broker = new SessionBroker({
     paths: runtimePaths,
     eventLog,
     observer,
     sessionsPath: join(userDataPath, "sessions-v2.json"),
     queuePath: join(userDataPath, "turn-queue-v2.json"),
+    conversationState,
+    runtimePool,
     evidence,
     desktopRegistrar,
+  });
+  runtimeStatus = () => broker.runtimeStatus();
+  const handoffs = new HandoffService({
+    state: conversationState,
+    broker,
+    eventLog,
+    evidence,
+    providers,
+    runtimePool,
+    observer,
+    paths: runtimePaths,
+    openExternal: (url) => shell.openExternal(url),
   });
   const claudeDesktop = new ClaudeDesktopLifecycle();
   let RTCPeerConnectionImpl: typeof RTCPeerConnection | undefined;
@@ -156,6 +220,8 @@ async function desktopMain(): Promise<void> {
     evidence,
     claudeDesktop,
     RTCPeerConnectionImpl,
+    providers,
+    handoffs,
   );
 
   let mainWindow: BrowserWindow | undefined;
@@ -188,6 +254,8 @@ async function desktopMain(): Promise<void> {
   handle("bridge:create-pairing", () => controller.createPairing());
   handle("bridge:revoke-device", (deviceId: string) => controller.revokeDevice(deviceId));
   handle("bridge:set-launch-at-login", (enabled: boolean) => controller.setLaunchAtLogin(Boolean(enabled)));
+  handle("bridge:set-anthropic-api-key", (value: string) => controller.setAnthropicApiKey(value));
+  handle("bridge:remove-anthropic-api-key", () => controller.removeAnthropicApiKey());
   handle("bridge:launch-claude-desktop", () => controller.launchClaudeDesktop());
   handle("bridge:quit-claude-desktop", async () => {
     const snapshot = await controller.snapshot();
@@ -282,6 +350,7 @@ async function desktopMain(): Promise<void> {
     }
   });
   await controller.initialize();
+  await conversationState.recordSuccessfulStartup();
   powerMonitor.on("suspend", () => controller.pauseForSleep());
   powerMonitor.on("resume", () => void controller.reconnect());
   app.on("second-instance", () => {
@@ -297,12 +366,13 @@ async function desktopMain(): Promise<void> {
     event.preventDefault();
     cleanupStarted = true;
     quitting = true;
-    controller.close();
     void (async () => {
+      await controller.close().catch(() => undefined);
       await broker.close().catch(() => undefined);
       await observer.close().catch(() => undefined);
       await evidence.close().catch(() => undefined);
       await eventLog.close().catch(() => undefined);
+      conversationState.close();
       cleanupDesktopPeerConnection();
       app.quit();
     })();

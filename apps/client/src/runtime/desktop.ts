@@ -18,6 +18,8 @@ export interface DesktopApi {
   createPairing(): Promise<DesktopControlSnapshot>;
   revokeDevice(deviceId: string): Promise<DesktopControlSnapshot>;
   setLaunchAtLogin(enabled: boolean): Promise<DesktopControlSnapshot>;
+  setAnthropicApiKey(value: string): Promise<DesktopControlSnapshot>;
+  removeAnthropicApiKey(): Promise<DesktopControlSnapshot>;
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;
   quitClaudeDesktop(): Promise<DesktopControlSnapshot>;
   request(request: LocalBridgeRequest): Promise<BridgeResponse>;

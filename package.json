@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "0.4.2",
+  "version": "0.5.3",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -11,6 +11,7 @@
     "build": "npm run build -w @bridge/protocol && npm run build -w @bridge/relay && npm run build -w @bridge/client && npm run build:bundle -w @bridge/desktop && npm run prepare:from-client -w @bridge/mobile",
     "build:android:debug": "npm run apk:debug -w @bridge/mobile",
     "make:local:desktop-android": "npm run make:local-signed -w @bridge/desktop && npm run build:android:debug",
+    "make:windows": "npm run make:windows -w @bridge/desktop",
     "dev": "concurrently -n relay,web -c green,cyan \"npm run dev -w @bridge/relay\" \"npm run dev -w @bridge/client\"",
     "dev:desktop": "concurrently -k -n relay,web,desktop -c green,cyan,magenta \"npm run dev -w @bridge/relay\" \"npm run dev -w @bridge/client\" \"wait-on tcp:5188 tcp:8788 && npm run dev -w @bridge/desktop\"",
     "lint": "npm run lint -ws --if-present",
@@ -20,6 +21,7 @@
     "test:html-preview": "node scripts/html-preview-qa.mjs",
     "test:webrtc:native": "cross-env BRIDGE_WEBRTC_REAL=1 npm test -w @bridge/desktop -- --run src/webrtc-runtime.test.ts",
     "test:desktop:packaged": "node scripts/packaged-desktop-qa.mjs",
+    "test:desktop:packaged:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-packaged-qa.ps1",
     "test:desktop:pairing": "node scripts/desktop-pairing-e2e.mjs",
     "test:android:installed": "node scripts/android-installed-e2e.mjs",
     "probe:relay": "node scripts/relay-contract-probe.mjs",

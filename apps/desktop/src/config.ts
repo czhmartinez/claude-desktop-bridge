@@ -13,6 +13,7 @@ import {
   selectBridgeEndpoint,
   type BridgeEndpoint,
   type BridgeIceServer,
+  type BridgePermissionMode,
 } from "@bridge/protocol";
 
 const CONFIG_VERSION = 4 as const;
@@ -107,6 +108,7 @@ interface DesktopConfigFileV4 extends Omit<DesktopConfigFileV3, "version" | "pro
   protocolVersion: typeof PROTOCOL_VERSION;
   pairingEpoch: number;
   protectedEvidenceKey?: string;
+  defaultPermissionMode?: BridgePermissionMode;
 }
 
 type DesktopConfigFile = DesktopConfigFileV2 | DesktopConfigFileV3 | DesktopConfigFileV4;
@@ -143,6 +145,7 @@ export interface LoadedDesktopConfig {
   createdAt: number;
   launchAtLogin: boolean;
   managedDesktopEnabled: boolean;
+  defaultPermissionMode: BridgePermissionMode;
   devices: LoadedDeviceConfig[];
 }
 
@@ -188,6 +191,7 @@ function assertConfig(value: unknown): DesktopConfigFile {
     createdAt?: unknown;
     launchAtLogin?: unknown;
     managedDesktopEnabled?: unknown;
+    defaultPermissionMode?: unknown;
     devices?: unknown;
   };
   if (
@@ -223,7 +227,12 @@ function assertConfig(value: unknown): DesktopConfigFile {
       typeof config.pairingEpoch !== "number" ||
       !Number.isInteger(config.pairingEpoch) ||
       config.pairingEpoch < 1 ||
-      (config.protectedEvidenceKey !== undefined && typeof config.protectedEvidenceKey !== "string")
+      (config.protectedEvidenceKey !== undefined && typeof config.protectedEvidenceKey !== "string") ||
+      (
+        config.defaultPermissionMode !== undefined &&
+        config.defaultPermissionMode !== "standard" &&
+        config.defaultPermissionMode !== "full-access"
+      )
     )
   ) throw new Error("Desktop pairing epoch is invalid");
   return config as unknown as DesktopConfigFile;
@@ -416,6 +425,7 @@ export class DesktopConfigRepository {
         createdAt: config.createdAt,
         launchAtLogin: config.launchAtLogin,
         managedDesktopEnabled: false,
+        defaultPermissionMode: "standard",
         devices: [],
       };
       await this.save(migrated);
@@ -442,6 +452,7 @@ export class DesktopConfigRepository {
       launchAtLogin: config.launchAtLogin,
       // The unsupported managed Desktop experiment remains disabled during upgrade.
       managedDesktopEnabled: false,
+      defaultPermissionMode: config.defaultPermissionMode ?? "standard",
       devices: config.devices.map((device) => loadDevice(device, this.protector)),
     };
     if (!config.protectedEvidenceKey) await this.save(loaded);
@@ -483,6 +494,7 @@ export class DesktopConfigRepository {
       createdAt: Date.now(),
       launchAtLogin,
       managedDesktopEnabled: false,
+      defaultPermissionMode: "standard",
       devices: [],
     };
     await this.save(loaded);
@@ -510,6 +522,7 @@ export class DesktopConfigRepository {
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
       managedDesktopEnabled: config.managedDesktopEnabled,
+      defaultPermissionMode: config.defaultPermissionMode,
       devices: config.devices.map((device) => ({
         deviceId: device.deviceId,
         name: device.name,

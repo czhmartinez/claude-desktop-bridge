@@ -1,10 +1,12 @@
 import type {
   BridgeEffort,
+  BridgePermissionMode,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
 } from "@bridge/protocol";
-import { LoaderCircle, Settings2, X } from "lucide-react";
+import { LoaderCircle, Settings2, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
 
 const EFFORT_LABELS: Record<BridgeEffort, string> = {
@@ -30,11 +32,16 @@ export function SessionConfigurationDialog({
   session,
   onLoad,
   onSave,
+  onConfigurePermission,
   onClose,
 }: {
   session: BridgeSessionInfo;
   onLoad(): Promise<BridgeSessionConfiguration>;
   onSave(change: SessionConfigurationChange): Promise<BridgeSessionConfiguration>;
+  onConfigurePermission?(
+    scope: "host" | "session",
+    mode: BridgePermissionMode | null,
+  ): Promise<BridgeSessionConfiguration>;
   onClose(): void;
 }) {
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
@@ -42,6 +49,10 @@ export function SessionConfigurationDialog({
   const [effort, setEffort] = useState<BridgeEffort>("medium");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [permissionScope, setPermissionScope] = useState<"host" | "session">("host");
+  const [permissionMode, setPermissionMode] = useState<BridgePermissionMode | "inherit">("standard");
+  const [savingPermission, setSavingPermission] = useState(false);
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
@@ -52,6 +63,8 @@ export function SessionConfigurationDialog({
         setConfiguration(next);
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
         setEffort(next.effort ?? next.availableEffortLevels[0] ?? "medium");
+        setPermissionScope("host");
+        setPermissionMode(next.permissionPolicy?.hostMode ?? "standard");
         setError(undefined);
       })
       .catch((reason: unknown) => {
@@ -95,6 +108,42 @@ export function SessionConfigurationDialog({
     } finally {
       setSaving(false);
     }
+  }
+
+  function choosePermissionScope(scope: "host" | "session"): void {
+    setPermissionScope(scope);
+    if (scope === "host") setPermissionMode(configuration?.permissionPolicy?.hostMode ?? "standard");
+    else setPermissionMode(configuration?.permissionPolicy?.sessionMode ?? "inherit");
+  }
+
+  async function savePermission(): Promise<void> {
+    if (!onConfigurePermission || savingPermission) return;
+    setSavingPermission(true);
+    setError(undefined);
+    try {
+      const next = await onConfigurePermission(
+        permissionScope,
+        permissionMode === "inherit" ? null : permissionMode,
+      );
+      setConfiguration(next);
+      setPermissionMode(permissionScope === "host"
+        ? next.permissionPolicy?.hostMode ?? "standard"
+        : next.permissionPolicy?.sessionMode ?? "inherit");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "授权模式保存失败");
+    } finally {
+      setSavingPermission(false);
+      setConfirmFullAccess(false);
+    }
+  }
+
+  function requestPermissionSave(): void {
+    const policy = configuration?.permissionPolicy;
+    const alreadyFull = permissionScope === "host"
+      ? policy?.hostMode === "full-access"
+      : policy?.sessionMode === "full-access";
+    if (permissionMode === "full-access" && !alreadyFull) setConfirmFullAccess(true);
+    else void savePermission();
   }
 
   const appliesAfterTurn = session.turnState === "running" || configuration?.appliesAfterTurn;
@@ -172,6 +221,61 @@ export function SessionConfigurationDialog({
               </div>
             </fieldset>
 
+            {onConfigurePermission && configuration?.permissionPolicy && (
+              <fieldset className="session-permission-field">
+                <legend><ShieldCheck size={15} />授权模式</legend>
+                <div className="permission-scope-segments" role="group" aria-label="授权范围">
+                  <button
+                    type="button"
+                    className={permissionScope === "host" ? "active" : ""}
+                    aria-pressed={permissionScope === "host"}
+                    onClick={() => choosePermissionScope("host")}
+                  >整台电脑</button>
+                  <button
+                    type="button"
+                    className={permissionScope === "session" ? "active" : ""}
+                    aria-pressed={permissionScope === "session"}
+                    onClick={() => choosePermissionScope("session")}
+                  >当前会话</button>
+                </div>
+                <div className={`permission-mode-segments ${permissionScope}`} role="group" aria-label="授权等级">
+                  {permissionScope === "session" && (
+                    <button
+                      type="button"
+                      className={permissionMode === "inherit" ? "active" : ""}
+                      aria-pressed={permissionMode === "inherit"}
+                      onClick={() => setPermissionMode("inherit")}
+                    >跟随电脑</button>
+                  )}
+                  <button
+                    type="button"
+                    className={permissionMode === "standard" ? "active" : ""}
+                    aria-pressed={permissionMode === "standard"}
+                    onClick={() => setPermissionMode("standard")}
+                  >标准授权</button>
+                  <button
+                    type="button"
+                    className={permissionMode === "full-access" ? "active" : ""}
+                    aria-pressed={permissionMode === "full-access"}
+                    onClick={() => setPermissionMode("full-access")}
+                  >完全授权</button>
+                </div>
+                <div className="session-permission-status">
+                  当前生效：{configuration.permissionPolicy.effectiveMode === "full-access" ? "完全授权" : "标准授权"}
+                  {configuration.permissionPolicy.source === "session" ? " · 会话覆盖" : " · 电脑默认"}
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button session-permission-save"
+                  disabled={savingPermission}
+                  onClick={requestPermissionSave}
+                >
+                  {savingPermission && <LoaderCircle className="is-spinning" size={15} />}
+                  保存授权模式
+                </button>
+              </fieldset>
+            )}
+
             {appliesAfterTurn && <div className="session-configuration-notice">当前任务不会中断，修改从下一轮生效。</div>}
             {error && <div className="session-configuration-error">{error}</div>}
 
@@ -197,6 +301,17 @@ export function SessionConfigurationDialog({
           </>
         )}
       </section>
+      <ConfirmationDialog
+        open={confirmFullAccess}
+        title="启用完全授权"
+        description={permissionScope === "host"
+          ? "这台电脑上的 Bridge 会话将自动批准命令和文件修改；Claude 的提问仍需你回答。"
+          : "当前会话将自动批准命令和文件修改；Claude 的提问仍需你回答。"}
+        confirmLabel="启用完全授权"
+        busy={savingPermission}
+        onCancel={() => setConfirmFullAccess(false)}
+        onConfirm={() => void savePermission()}
+      />
     </div>
   );
 }

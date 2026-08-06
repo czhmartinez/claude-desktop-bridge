@@ -1,11 +1,11 @@
 {
   "name": "@bridge/mobile",
-  "version": "0.4.2",
+  "version": "0.5.3",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "npm run build -w @bridge/client && node scripts/prepare-web.mjs",
-    "clean": "rm -rf dist coverage",
+    "clean": "node ../../scripts/clean.mjs dist coverage",
     "prepare:web": "npm run build -w @bridge/client && node scripts/prepare-web.mjs",
     "prepare:from-client": "node scripts/prepare-web.mjs",
     "add:android": "npm run prepare:web && cap add android",

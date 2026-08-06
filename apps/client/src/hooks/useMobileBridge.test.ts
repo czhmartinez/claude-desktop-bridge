@@ -5,6 +5,7 @@ import {
   applyEventToSnapshot,
   applyPermissionEvent,
   mergeBridgeEvents,
+  rebaseSnapshot,
   type LocalTurn,
 } from "./useMobileBridge.js";
 
@@ -51,6 +52,38 @@ describe("mergeBridgeEvents", () => {
     };
     expect(applyEventToTurns(turns, completed).map((turn) => turn.delivery))
       .toEqual(["completed", "host-received"]);
+  });
+
+  it("restores one completion when reconnect replay contains a duplicate event", () => {
+    const turn: LocalTurn = {
+      requestId: "request-1",
+      idempotencyKey: "key-1",
+      sessionId: "session-1",
+      text: "Long task",
+      attachments: [],
+      createdAt: 1,
+      delivery: "running",
+      commandId: "command-1",
+    };
+    const completed: BridgeEvent = {
+      eventId: "completed-1",
+      seq: 10,
+      timestamp: 10,
+      origin: "claude-host",
+      type: "turn.completed",
+      sessionId: "session-1",
+      data: { requestId: "request-1", commandId: "command-1" },
+    };
+    const replayed = mergeBridgeEvents([completed], [completed]);
+
+    expect(replayed).toHaveLength(1);
+    const restored = replayed.reduce<LocalTurn[]>(
+      (current, replayedEvent) => applyEventToTurns(current, replayedEvent),
+      [turn],
+    );
+    expect(restored).toEqual([
+      expect.objectContaining({ delivery: "completed", sessionId: "session-1" }),
+    ]);
   });
 
   it("upserts permission requests from events and removes them when resolved", () => {
@@ -253,6 +286,148 @@ describe("mergeBridgeEvents", () => {
     expect(applyEventToSnapshot(snapshot, interrupted, [])?.sessions[0]).toMatchObject({
       turnState: "idle",
       pendingCount: 0,
+    });
+  });
+});
+
+describe("rebaseSnapshot", () => {
+  it("uses the host snapshot as the cursor instead of retaining a stale cached cursor", () => {
+    const snapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.5.3",
+        capabilities: [],
+      },
+      projects: [],
+      sessions: [],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 3,
+    } as BridgeHostSnapshot;
+    const refreshed = rebaseSnapshot(snapshot, [event(2), event(4)]);
+
+    expect(refreshed.latestSeq).toBe(4);
+    expect(refreshed.snapshot.latestSeq).toBe(3);
+  });
+});
+
+describe("provider route events", () => {
+  it("updates provider status and the logical session route without replacing the session", () => {
+    const snapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.5.0",
+        capabilities: ["provider.profile.v1", "conversation.handoff.v1"],
+      },
+      projects: [],
+      sessions: [{
+        sessionId: "session-1",
+        projectId: "project-1",
+        projectName: "project",
+        cwd: "/tmp/project",
+        title: "Session",
+        source: "bridge",
+        transport: "bridge-host",
+        ownership: "BRIDGE_IDLE",
+        turnState: "idle",
+        lastActivityAt: 1,
+        pendingCount: 0,
+      }],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 1,
+    } as BridgeHostSnapshot;
+    const providerUpdated: BridgeEvent = {
+      eventId: "provider-updated",
+      seq: 2,
+      timestamp: 2,
+      origin: "system",
+      type: "provider.updated",
+      data: {
+        profile: {
+          id: "anthropic-api",
+          kind: "anthropic-api",
+          name: "Anthropic API",
+          status: "ready",
+          detail: "Ready",
+          configured: true,
+          localOnlyConfiguration: true,
+          readOnly: false,
+          models: [],
+        },
+      },
+    };
+    const withProvider = applyEventToSnapshot(snapshot, providerUpdated, []);
+    expect(withProvider?.providers?.[0]).toMatchObject({
+      id: "anthropic-api",
+      status: "ready",
+    });
+
+    const routeChanged: BridgeEvent = {
+      eventId: "route-changed",
+      seq: 3,
+      timestamp: 3,
+      origin: "system",
+      type: "conversation.route.changed",
+      sessionId: "session-1",
+      data: {
+        route: {
+          conversationId: "session-1",
+          activeLaneId: "lane-1",
+          activeProviderProfileId: "anthropic-api",
+          state: "ready",
+          lanes: [],
+          allowedActions: {
+            canSend: true,
+            canSteer: true,
+            canInterrupt: true,
+            canSwitchProvider: true,
+            canContinueOfficial: false,
+            canConfigure: true,
+          },
+        },
+      },
+    };
+    expect(applyEventToSnapshot(withProvider, routeChanged, [])?.sessions[0]).toMatchObject({
+      sessionId: "session-1",
+      activeLaneId: "lane-1",
+      activeProviderProfileId: "anthropic-api",
+      routeState: "ready",
+      allowedActions: { canSend: true },
     });
   });
 });

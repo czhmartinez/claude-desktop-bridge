@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   BridgeCrypto,
+  PAIRING_SCHEMA_VERSION,
+  PROTOCOL_VERSION,
   buildPairingUrl,
   decodeUtf8,
   decodePairingBundle,
@@ -211,6 +213,36 @@ describe("BridgeCrypto v3", () => {
         params: {},
       })).toBe(true);
     }
+  });
+
+  it("adds the V0.5 provider handoff surface without changing V3 pairing", () => {
+    expect(PROTOCOL_VERSION).toBe(3);
+    expect(PAIRING_SCHEMA_VERSION).toBe(4);
+    for (const method of [
+      "snapshot.get",
+      "provider.list",
+      "provider.refresh",
+      "conversation.route.get",
+      "conversation.switch.preview",
+      "conversation.switch.commit",
+      "conversation.switch.cancel",
+      "handoff.get",
+    ] as const) {
+      expect(isBridgePayload({
+        kind: "request",
+        requestId: `request:${method}`,
+        idempotencyKey: `idempotency:${method}`,
+        method,
+        params: {},
+      })).toBe(true);
+    }
+    expect(isBridgePayload({
+      kind: "request",
+      requestId: "request:secret",
+      idempotencyKey: "idempotency:secret",
+      method: "provider.api-key.set",
+      params: {},
+    })).toBe(false);
   });
 
   it("validates encrypted WebRTC signaling payloads", () => {

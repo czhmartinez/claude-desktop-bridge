@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ClaudeDesktopSessionRegistrar,
   parseClaudeDesktopProfiles,
+  parseWindowsClaudeDesktopProfiles,
 } from "./claude-desktop-session-registrar.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
 
@@ -98,6 +99,28 @@ describe("parseClaudeDesktopProfiles", () => {
       userDataDir: "/Users/me/Library/Application Support/Claude-3p",
     }]);
   });
+
+  it("maps Windows Claude Helper processes to their Claude.exe profile", () => {
+    const output = JSON.stringify([
+      {
+        ProcessId: 400,
+        ParentProcessId: 1,
+        Name: "Claude.exe",
+        CommandLine: '"C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude.exe"',
+      },
+      {
+        ProcessId: 401,
+        ParentProcessId: 400,
+        Name: "Claude Helper.exe",
+        CommandLine: '"C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude Helper.exe" --type=renderer --user-data-dir="C:\\Users\\me\\AppData\\Roaming\\Claude"',
+      },
+    ]);
+
+    expect(parseWindowsClaudeDesktopProfiles(output)).toEqual([{
+      pid: 400,
+      userDataDir: "C:\\Users\\me\\AppData\\Roaming\\Claude",
+    }]);
+  });
 });
 
 describe("ClaudeDesktopSessionRegistrar", () => {
@@ -167,7 +190,9 @@ describe("ClaudeDesktopSessionRegistrar", () => {
       effort: "high",
       isArchived: false,
     });
-    expect((await stat(metadataPath)).mode & 0o777).toBe(0o600);
+    const metadataStat = await stat(metadataPath);
+    expect(metadataStat.isFile()).toBe(true);
+    if (process.platform !== "win32") expect(metadataStat.mode & 0o777).toBe(0o600);
 
     now = 200;
     const unchanged = await registrar.register(input, first);
