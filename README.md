@@ -38,7 +38,8 @@ Bridge 0.6 不再把自己定义为 Claude 的单一 tunnel。它保留一条加
   环回 WebSocket，Bridge 为自己启动的 Gateway 生成进程级随机令牌，且不读取 Hermes Desktop 的
   token/keychain。
 - **能力按运行时声明**：文本会话、流、工具、审批和中断是 0.6 的共同基线；图片附件和模型配置
-  只在对应 adapter 确认支持时开放。模型设置仍在各自 Desktop 应用内完成。
+  只在对应 adapter 确认支持时开放。Codex/Hermes 的会话配置通过各自 Desktop 的原生接口应用，
+  不会变成 Bridge 的跨运行时 provider 或全局凭据配置。
 - **Claude 域内功能保持独立**：原有多 provider lane 与 handoff 仍只在 Claude 域内工作，不能用于
   Codex/Hermes 跨应用迁移。
 
@@ -161,9 +162,11 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
   同一套列表、对话、流、审批、追问、调整与中断操作，同时用 `(runtimeId, nativeSessionId)`
   彻底隔离会话身份。
 - Codex 使用 Bridge 自己启动的官方 `codex app-server --stdio`；Hermes 使用 Bridge 自己启动的
-  仅环回 Gateway 和进程级随机令牌。两者都不读取或复用原生 Desktop 的账号、token/keychain。
+  仅环回 Gateway 和进程级随机令牌。Codex 只读取 `config.toml` 中 provider section 的名称元数据，
+  不提取、不记录或传输原生 Desktop 的账号、token/keychain。
 - 运行时能力决定可见控件：当前外部 adapter 支持文本、流、工具、审批、追问、调整和中断；
-  图片附件与模型配置只在相应 adapter 声明支持时开放，模型仍在原生 Desktop 内管理。
+  图片附件与模型、provider、思考强度和快速模式配置只在相应 adapter 声明支持时开放；Codex/Hermes
+  的这些会话级设置由 Bridge 转发给各自 Desktop，账号、token、keychain 和其他全局配置仍由原生 Desktop 管理。
 - 电脑默认与单会话授权模式、切换后立即处理待授权队列、自动批准审计，以及
   `AskUserQuestion` 始终等待用户回答。
 - 手机后台、网络恢复和推送唤醒统一重连 `events.resume`；进程重启后恢复最近主机、

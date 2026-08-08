@@ -5,7 +5,9 @@ import type {
   BridgeDesktopRuntimeState,
   BridgeEffort,
   BridgeHistoryItem,
+  BridgeModelInfo,
   BridgePermissionDecision,
+  BridgeRuntimeProviderInfo,
   BridgeRuntimeCapability,
   BridgeSessionTransport,
   BridgeTurnState,
@@ -21,8 +23,31 @@ export interface RuntimeAdapterSession {
   turnState: BridgeTurnState;
   transport: BridgeSessionTransport;
   activeTurnId?: string;
+  provider?: string;
   model?: string;
   effort?: BridgeEffort;
+  reasoningEffort?: string;
+  fast?: boolean;
+}
+
+export interface RuntimeAdapterConfiguration {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
+  fast?: boolean;
+  availableModels: BridgeModelInfo[];
+  availableProviders: BridgeRuntimeProviderInfo[];
+  availableReasoningEfforts: string[];
+  modelsComplete: boolean;
+  supportsFastMode: boolean;
+  appliesAfterTurn: boolean;
+}
+
+export interface RuntimeAdapterConfigurationChange {
+  provider?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  fast?: boolean | null;
 }
 
 export interface RuntimeAdapterHistoryItem {
@@ -135,6 +160,11 @@ export abstract class DesktopRuntimeAdapter extends EventEmitter {
   abstract sessions(): RuntimeAdapterSession[];
   abstract createSession(input: { cwd: string; title?: string }): Promise<RuntimeAdapterSession>;
   abstract history(nativeSessionId: string): Promise<RuntimeAdapterHistoryItem[]>;
+  abstract configuration(nativeSessionId: string): Promise<RuntimeAdapterConfiguration>;
+  abstract configureSession(
+    nativeSessionId: string,
+    change: RuntimeAdapterConfigurationChange,
+  ): Promise<RuntimeAdapterConfiguration>;
   abstract startTurn(input: RuntimeAdapterTurnInput): Promise<RuntimeAdapterTurnResult>;
   abstract steerTurn(input: RuntimeAdapterTurnInput): Promise<RuntimeAdapterTurnResult>;
   abstract interruptTurn(nativeSessionId: string): Promise<boolean>;

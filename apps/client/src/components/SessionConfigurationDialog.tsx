@@ -1,5 +1,4 @@
 import type {
-  BridgeEffort,
   BridgePermissionMode,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
@@ -9,13 +8,20 @@ import { useEffect, useMemo, useState } from "react";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
 
-const EFFORT_LABELS: Record<BridgeEffort, string> = {
+const EFFORT_LABELS: Record<string, string> = {
+  none: "关闭",
+  minimal: "最小",
   low: "低",
   medium: "中",
   high: "高",
   xhigh: "极高",
   max: "最大",
+  ultra: "超高",
 };
+
+function effortLabel(value: string): string {
+  return EFFORT_LABELS[value] ?? value;
+}
 
 function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 ? 1 : 0)}M`;
@@ -25,7 +31,10 @@ function formatTokens(value: number): string {
 
 export interface SessionConfigurationChange {
   model?: string | null;
-  effort?: BridgeEffort | null;
+  provider?: string | null;
+  effort?: string | null;
+  reasoningEffort?: string | null;
+  fast?: boolean | null;
 }
 
 export function SessionConfigurationDialog({
@@ -45,8 +54,10 @@ export function SessionConfigurationDialog({
   onClose(): void;
 }) {
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
+  const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
-  const [effort, setEffort] = useState<BridgeEffort>("medium");
+  const [effort, setEffort] = useState("medium");
+  const [fast, setFast] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [permissionScope, setPermissionScope] = useState<"host" | "session">("host");
@@ -61,8 +72,10 @@ export function SessionConfigurationDialog({
       .then((next) => {
         if (!active) return;
         setConfiguration(next);
+        setProvider(next.provider ?? next.availableProviders?.[0]?.value ?? "");
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
-        setEffort(next.effort ?? next.availableEffortLevels[0] ?? "medium");
+        setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
+        setFast(next.fast ?? false);
         setPermissionScope("host");
         setPermissionMode(next.permissionPolicy?.hostMode ?? "standard");
         setError(undefined);
@@ -78,20 +91,50 @@ export function SessionConfigurationDialog({
     };
   }, [session.sessionId]);
 
+  const modelOptions = useMemo(() => {
+    const all = configuration?.availableModels ?? [];
+    if (!provider) return all;
+    const scoped = all.filter((candidate) => !candidate.provider || candidate.provider === provider);
+    return scoped.length ? scoped : all;
+  }, [configuration, provider]);
   const selectedModel = useMemo(
-    () => configuration?.availableModels.find((candidate) => candidate.value === model),
-    [configuration, model],
+    () => modelOptions.find((candidate) => candidate.value === model),
+    [model, modelOptions],
   );
   const effortLevels = selectedModel?.supportedEffortLevels?.length
     ? selectedModel.supportedEffortLevels
-    : configuration?.availableEffortLevels ?? ["low", "medium", "high", "xhigh", "max"];
+    : configuration?.availableReasoningEfforts?.length
+      ? configuration.availableReasoningEfforts
+      : configuration?.availableEffortLevels ?? ["low", "medium", "high", "xhigh", "max"];
+  const nativeRuntime = session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop";
+  const fastSupported = Boolean(configuration?.supportsFastMode && selectedModel?.supportsFast !== false);
 
   function chooseModel(value: string): void {
     setModel(value);
-    const nextModel = configuration?.availableModels.find((candidate) => candidate.value === value);
-    if (nextModel?.supportedEffortLevels?.length && !nextModel.supportedEffortLevels.includes(effort)) {
+    const nextModel = modelOptions.find((candidate) => candidate.value === value);
+    if (nextModel?.provider) setProvider(nextModel.provider);
+    if (nextModel?.supportsEffort === false) {
+      setEffort("");
+    } else if (nextModel?.supportedEffortLevels?.length && !nextModel.supportedEffortLevels.includes(effort)) {
       setEffort(nextModel.supportedEffortLevels[0]!);
     }
+    if (nextModel?.supportsFast === false) setFast(false);
+  }
+
+  function chooseProvider(value: string): void {
+    setProvider(value);
+    const nextModels = (configuration?.availableModels ?? []).filter(
+      (candidate) => !candidate.provider || candidate.provider === value,
+    );
+    const nextModel = nextModels[0];
+    if (!nextModel) return;
+    setModel(nextModel.value);
+    if (nextModel.supportsEffort === false) {
+      setEffort("");
+    } else if (nextModel.supportedEffortLevels?.length && !nextModel.supportedEffortLevels.includes(effort)) {
+      setEffort(nextModel.supportedEffortLevels[0]!);
+    }
+    if (nextModel.supportsFast === false) setFast(false);
   }
 
   async function save(change: SessionConfigurationChange): Promise<void> {
@@ -101,8 +144,10 @@ export function SessionConfigurationDialog({
     try {
       const next = await onSave(change);
       setConfiguration(next);
+      setProvider(next.provider ?? next.availableProviders?.[0]?.value ?? "");
       setModel(next.model ?? next.availableModels[0]?.value ?? "");
-      setEffort(next.effort ?? next.availableEffortLevels[0] ?? "medium");
+      setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
+      setFast(next.fast ?? false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话配置保存失败");
     } finally {
@@ -167,7 +212,7 @@ export function SessionConfigurationDialog({
         {loading ? (
           <div className="session-configuration-loading">
             <LoaderCircle className="is-spinning" size={19} />
-            正在读取 Claude Host 配置
+            正在读取 {nativeRuntime ? `${session.runtimeId === "codex-desktop" ? "Codex" : "Hermes"} Desktop` : "Claude Host"} 配置
           </div>
         ) : (
           <>
@@ -194,32 +239,59 @@ export function SessionConfigurationDialog({
               </div>
             )}
 
+            {configuration?.availableProviders?.length ? (
+              <label className="session-model-field">
+                <span>Provider</span>
+                <select value={provider} onChange={(event) => chooseProvider(event.target.value)}>
+                  {configuration.availableProviders.map((candidate) => (
+                    <option value={candidate.value} key={candidate.value}>{candidate.displayName}</option>
+                  ))}
+                </select>
+                <small>{provider || "跟随 Desktop 当前配置"}</small>
+              </label>
+            ) : null}
+
             <label className="session-model-field">
               <span>模型</span>
-              <select value={model} disabled={!configuration?.availableModels.length} onChange={(event) => chooseModel(event.target.value)}>
-                {configuration?.availableModels.map((candidate) => (
-                  <option value={candidate.value} key={candidate.value}>{candidate.displayName}</option>
+              <select value={model} disabled={!modelOptions.length} onChange={(event) => chooseModel(event.target.value)}>
+                {modelOptions.map((candidate) => (
+                  <option value={candidate.value} key={`${candidate.provider ?? ""}:${candidate.value}`}>{candidate.displayName}</option>
                 ))}
               </select>
               <small>{selectedModel?.description || (!configuration?.modelsComplete ? "仅显示当前主机已发现的模型" : model)}</small>
             </label>
 
-            <fieldset className="session-effort-field" disabled={selectedModel?.supportsEffort === false}>
-              <legend>Effort</legend>
-              <div className="effort-segments">
-                {effortLevels.map((level) => (
-                  <button
-                    type="button"
-                    className={effort === level ? "active" : ""}
-                    aria-pressed={effort === level}
-                    onClick={() => setEffort(level)}
-                    key={level}
-                  >
-                    {EFFORT_LABELS[level]}
-                  </button>
-                ))}
-              </div>
-            </fieldset>
+            {effortLevels.length > 0 && selectedModel?.supportsEffort !== false && (
+              <fieldset className="session-effort-field">
+                <legend>{nativeRuntime ? "思考强度" : "Effort"}</legend>
+                <div className="effort-segments">
+                  {effortLevels.map((level) => (
+                    <button
+                      type="button"
+                      className={effort === level ? "active" : ""}
+                      aria-pressed={effort === level}
+                      onClick={() => setEffort(level)}
+                      key={level}
+                    >
+                      {effortLabel(level)}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+
+            {configuration?.supportsFastMode && (
+              <label className="session-fast-field">
+                <input
+                  type="checkbox"
+                  checked={fast}
+                  disabled={!fastSupported}
+                  onChange={(event) => setFast(event.target.checked)}
+                />
+                <span>快速模式</span>
+                {!fastSupported && <small>当前模型不支持</small>}
+              </label>
+            )}
 
             {onConfigurePermission && configuration?.permissionPolicy && (
               <fieldset className="session-permission-field">
@@ -280,7 +352,7 @@ export function SessionConfigurationDialog({
             {error && <div className="session-configuration-error">{error}</div>}
 
             <footer>
-              {(configuration?.overrideModel || configuration?.overrideEffort) && (
+              {!nativeRuntime && (configuration?.overrideModel || configuration?.overrideEffort) && (
                 <button type="button" className="secondary-button" disabled={saving} onClick={() => void save({ model: null, effort: null })}>
                   跟随 Claude Desktop
                 </button>
@@ -291,7 +363,15 @@ export function SessionConfigurationDialog({
                 disabled={saving || !model}
                 onClick={() => void save({
                   model,
-                  effort: selectedModel?.supportsEffort === false ? null : effort,
+                  ...(nativeRuntime
+                    ? {
+                        provider: provider || null,
+                        ...(selectedModel?.supportsEffort === false ? { reasoningEffort: null } : { reasoningEffort: effort }),
+                        ...(configuration?.supportsFastMode ? { fast: fastSupported ? fast : false } : {}),
+                      }
+                    : {
+                        effort: selectedModel?.supportsEffort === false ? null : effort,
+                      }),
                 })}
               >
                 {saving && <LoaderCircle className="is-spinning" size={16} />}

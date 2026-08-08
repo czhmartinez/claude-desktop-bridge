@@ -18,6 +18,8 @@ import type { SessionEventLog } from "./session-event-log.js";
 import {
   type DesktopRuntimeAdapter,
   type RuntimeAdapterEvent,
+  type RuntimeAdapterConfiguration,
+  type RuntimeAdapterConfigurationChange,
   type RuntimeAdapterPermission,
   type RuntimeAdapterSession,
   RuntimeAdapterRegistry,
@@ -70,7 +72,7 @@ function allowedActions(adapter: DesktopRuntimeAdapter): BridgeSessionAllowedAct
     canInterrupt: capabilities.includes("turn.interrupt"),
     canSwitchProvider: false,
     canContinueOfficial: false,
-    canConfigure: false,
+    canConfigure: capabilities.includes("session.configure"),
   };
 }
 
@@ -196,17 +198,40 @@ export class RuntimeSessionBroker extends EventEmitter {
     return { sessionId, items, hasMore: false };
   }
 
-  configuration(sessionId: string): BridgeSessionConfiguration {
-    this.requireSession(sessionId);
-    return {
+  async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
+    const { adapter, nativeSessionId } = this.requireSession(sessionId);
+    if (!adapter.status().capabilities.includes("session.configure")) {
+      throw new Error(`${adapter.status().name} 暂不支持模型配置`);
+    }
+    return this.toBridgeConfiguration(sessionId, await adapter.configuration(nativeSessionId));
+  }
+
+  async configureSession(
+    sessionId: string,
+    change: RuntimeAdapterConfigurationChange,
+  ): Promise<BridgeSessionConfiguration> {
+    const { adapter, nativeSessionId } = this.requireSession(sessionId);
+    if (!adapter.status().capabilities.includes("session.configure")) {
+      throw new Error(`${adapter.status().name} 暂不支持模型配置`);
+    }
+    const configuration = await adapter.configureSession(nativeSessionId, change);
+    const nextSession = adapter.sessions().find((session) => session.nativeSessionId === nativeSessionId);
+    if (nextSession) this.upsert(adapter.id, nextSession);
+    await this.eventLog.append({
       sessionId,
-      modelSource: "default",
-      effortSource: "default",
-      availableModels: [],
-      availableEffortLevels: [],
-      modelsComplete: true,
-      appliesAfterTurn: false,
-    };
+      origin: originFor(adapter.id),
+      type: "session.configuration",
+      data: {
+        runtimeId: adapter.id,
+        ...(configuration.provider ? { provider: configuration.provider } : {}),
+        ...(configuration.model ? { model: configuration.model } : {}),
+        ...(configuration.reasoningEffort ? { reasoningEffort: configuration.reasoningEffort } : {}),
+        ...(configuration.fast !== undefined ? { fast: configuration.fast } : {}),
+        appliesAfterTurn: configuration.appliesAfterTurn,
+      },
+    });
+    this.emit("changed");
+    return this.toBridgeConfiguration(sessionId, configuration);
   }
 
   async startTurn(input: {
@@ -369,9 +394,35 @@ export class RuntimeSessionBroker extends EventEmitter {
       lastActivityAt: safeTimestamp(session.lastActivityAt),
       pendingCount: 0,
       ...(session.activeTurnId ? { activeTurnId: session.activeTurnId } : {}),
+      ...(session.provider ? { provider: session.provider } : {}),
       ...(session.model ? { model: session.model } : {}),
       ...(session.effort ? { effort: session.effort } : {}),
+      ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
+      ...(session.fast !== undefined ? { fast: session.fast } : {}),
       allowedActions: allowedActions(adapter),
+    };
+  }
+
+  private toBridgeConfiguration(
+    sessionId: string,
+    configuration: RuntimeAdapterConfiguration,
+  ): BridgeSessionConfiguration {
+    return {
+      sessionId,
+      ...(configuration.provider ? { provider: configuration.provider } : {}),
+      ...(configuration.model ? { model: configuration.model } : {}),
+      ...(configuration.reasoningEffort ? { reasoningEffort: configuration.reasoningEffort } : {}),
+      ...(configuration.fast !== undefined ? { fast: configuration.fast } : {}),
+      modelSource: "default",
+      effortSource: "default",
+      providerSource: "default",
+      availableModels: configuration.availableModels,
+      availableEffortLevels: configuration.availableReasoningEfforts,
+      availableReasoningEfforts: configuration.availableReasoningEfforts,
+      availableProviders: configuration.availableProviders,
+      supportsFastMode: configuration.supportsFastMode,
+      modelsComplete: configuration.modelsComplete,
+      appliesAfterTurn: configuration.appliesAfterTurn,
     };
   }
 

@@ -104,6 +104,14 @@ function nullableStringParam(params: Record<string, unknown>, key: string): stri
   throw new Error(`${key} must be a non-empty string or null`);
 }
 
+function nullableBooleanParam(params: Record<string, unknown>, key: string): boolean | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(params, key)) return undefined;
+  const value = params[key];
+  if (value === null) return null;
+  if (typeof value === "boolean") return value;
+  throw new Error(`${key} must be a boolean or null`);
+}
+
 function effortParam(params: Record<string, unknown>, key: string): BridgeEffort | null | undefined {
   const value = nullableStringParam(params, key);
   if (value === undefined || value === null) return value;
@@ -936,7 +944,7 @@ export class DesktopController extends EventEmitter {
     if (request.method === "session.configuration") {
       const sessionId = stringParam(params, "sessionId")!;
       if (this.externalSession(sessionId)) {
-        return { configuration: this.runtimeSessions!.configuration(sessionId) };
+        return { configuration: await this.runtimeSessions!.configuration(sessionId) };
       }
       return {
         configuration: await this.broker.configuration(sessionId),
@@ -945,7 +953,33 @@ export class DesktopController extends EventEmitter {
     if (request.method === "session.configure") {
       const sessionId = stringParam(params, "sessionId")!;
       if (this.externalSession(sessionId)) {
-        throw new Error("请在对应的 Desktop 应用中修改模型与任务配置。");
+        if (!this.runtimeSessions) throw new Error("External Desktop runtimes are unavailable");
+        const input: Parameters<RuntimeSessionBroker["configureSession"]>[1] = {};
+        if (Object.prototype.hasOwnProperty.call(params, "model")) {
+          const model = nullableStringParam(params, "model");
+          if (model !== undefined) input.model = model;
+        }
+        if (Object.prototype.hasOwnProperty.call(params, "provider")) {
+          const provider = nullableStringParam(params, "provider");
+          if (provider !== undefined) input.provider = provider;
+        }
+        if (Object.prototype.hasOwnProperty.call(params, "reasoningEffort")) {
+          const reasoningEffort = nullableStringParam(params, "reasoningEffort");
+          if (reasoningEffort !== undefined) input.reasoningEffort = reasoningEffort;
+        } else if (Object.prototype.hasOwnProperty.call(params, "effort")) {
+          // Keep older clients usable for native runtimes while Claude keeps its
+          // stricter BridgeEffort validation below.
+          const reasoningEffort = nullableStringParam(params, "effort");
+          if (reasoningEffort !== undefined) input.reasoningEffort = reasoningEffort;
+        }
+        if (Object.prototype.hasOwnProperty.call(params, "fast")) {
+          const fast = nullableBooleanParam(params, "fast");
+          if (fast !== undefined) input.fast = fast;
+        }
+        return {
+          configuration: await this.runtimeSessions.configureSession(sessionId, input),
+          session: this.runtimeSessions.session(sessionId),
+        };
       }
       const input: Parameters<SessionBroker["configureSession"]>[0] = { sessionId };
       if (Object.prototype.hasOwnProperty.call(params, "model")) {

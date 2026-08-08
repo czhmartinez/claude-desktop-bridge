@@ -10,6 +10,15 @@ interface GatewayEvent {
 
 class FakeHermesClient extends EventEmitter {
   readonly requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  private settings = {
+    model: "claude-sonnet",
+    provider: "anthropic",
+    reasoning: "medium",
+    fast: "normal",
+  };
+  private running = false;
+  private pendingModel?: string;
+  private pendingProvider?: string;
 
   on(event: "event", listener: (value: GatewayEvent) => void): this {
     return super.on(event, listener);
@@ -27,9 +36,65 @@ class FakeHermesClient extends EventEmitter {
         }],
       } as T;
     }
-    if (method === "session.resume") return { status: "ok" } as T;
+    if (method === "session.resume") {
+      const model = this.running ? this.pendingModel ?? this.settings.model : this.settings.model;
+      const provider = this.running ? this.pendingProvider ?? this.settings.provider : this.settings.provider;
+      return {
+        status: "ok",
+        info: {
+          model,
+          provider,
+          reasoning_effort: this.settings.reasoning,
+          fast: this.settings.fast === "fast",
+        },
+      } as T;
+    }
+    if (method === "model.options") {
+      return {
+        model: this.settings.model,
+        provider: this.settings.provider,
+        providers: [{
+          slug: "anthropic",
+          name: "Anthropic",
+          models: ["claude-sonnet", "claude-haiku"],
+          capabilities: {
+            "claude-sonnet": { fast: true, reasoning: true },
+            "claude-haiku": { fast: false, reasoning: true },
+          },
+        }],
+      } as T;
+    }
+    if (method === "config.get") {
+      const key = params?.key;
+      if (key === "provider") return { provider: this.settings.provider, providers: [{ slug: "anthropic", name: "Anthropic" }] } as T;
+      if (key === "reasoning") return { value: this.settings.reasoning } as T;
+      if (key === "fast") return { value: this.settings.fast } as T;
+    }
+    if (method === "config.set") {
+      const key = params?.key;
+      const value = String(params?.value ?? "");
+      if (key === "model") {
+        const model = value.split(" --provider ")[0] ?? value;
+        const provider = value.match(/ --provider ([^ ]+)/)?.[1] ?? this.settings.provider;
+        if (this.running) {
+          this.pendingModel = model;
+          this.pendingProvider = provider;
+        } else {
+          this.settings.model = model;
+          this.settings.provider = provider;
+        }
+      } else if (key === "reasoning") {
+        this.settings.reasoning = value;
+      } else if (key === "fast") {
+        this.settings.fast = value;
+      }
+      return { key, value, status: "ok" } as T;
+    }
     if (method === "session.history") return { messages: [] } as T;
-    if (method === "prompt.submit") return { status: "streaming" } as T;
+    if (method === "prompt.submit") {
+      this.running = true;
+      return { status: "streaming" } as T;
+    }
     return { status: "ok", resolved: true } as T;
   }
 
@@ -83,6 +148,89 @@ describe("HermesGatewayAdapter", () => {
     expect(client.requests).toContainEqual({
       method: "clarify.respond",
       params: { session_id: "hermes-1", request_id: "clarify-1", answer: "A" },
+    });
+
+    await adapter.close();
+  });
+
+  it("uses session-scoped Hermes config.set for model, provider, reasoning and fast mode", async () => {
+    process.env.BRIDGE_HERMES_GATEWAY_URL = "ws://127.0.0.1:8765/api/ws";
+    const client = new FakeHermesClient();
+    const adapter = new HermesGatewayAdapter({ clientFactory: async () => client });
+
+    await adapter.initialize();
+    await expect(adapter.configuration("hermes-1")).resolves.toMatchObject({
+      model: "claude-sonnet",
+      provider: "anthropic",
+      reasoningEffort: "medium",
+      fast: false,
+      supportsFastMode: true,
+      availableModels: expect.arrayContaining([
+        expect.objectContaining({ value: "claude-sonnet", supportsFast: true }),
+      ]),
+    });
+
+    await expect(adapter.configureSession("hermes-1", {
+      model: "claude-haiku",
+      provider: "anthropic",
+      reasoningEffort: "high",
+      fast: false,
+    })).resolves.toMatchObject({
+      model: "claude-haiku",
+      provider: "anthropic",
+      reasoningEffort: "high",
+      fast: false,
+    });
+    expect(client.requests).toContainEqual({
+      method: "config.set",
+      params: {
+        session_id: "hermes-1",
+        key: "model",
+        value: "claude-haiku --provider anthropic --session",
+      },
+    });
+    expect(client.requests).toContainEqual({
+      method: "config.set",
+      params: { session_id: "hermes-1", key: "reasoning", value: "high" },
+    });
+    expect(client.requests).toContainEqual({
+      method: "config.set",
+      params: { session_id: "hermes-1", key: "fast", value: "normal" },
+    });
+
+    await adapter.configureSession("hermes-1", { reasoningEffort: null, fast: null });
+    expect(client.requests).toContainEqual({
+      method: "config.set",
+      params: { session_id: "hermes-1", key: "reasoning", value: "none" },
+    });
+
+    await adapter.close();
+  });
+
+  it("keeps a running turn's pending native model ahead of the stale model catalog", async () => {
+    process.env.BRIDGE_HERMES_GATEWAY_URL = "ws://127.0.0.1:8765/api/ws";
+    const client = new FakeHermesClient();
+    const adapter = new HermesGatewayAdapter({ clientFactory: async () => client });
+
+    await adapter.initialize();
+    await adapter.startTurn({
+      nativeSessionId: "hermes-1",
+      text: "Start the turn",
+      commandId: "command-running",
+      requestId: "request-running",
+    });
+
+    await expect(adapter.configureSession("hermes-1", {
+      model: "claude-haiku",
+      provider: "anthropic",
+      reasoningEffort: "high",
+      fast: false,
+    })).resolves.toMatchObject({
+      model: "claude-haiku",
+      provider: "anthropic",
+      reasoningEffort: "high",
+      fast: false,
+      appliesAfterTurn: true,
     });
 
     await adapter.close();

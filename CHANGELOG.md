@@ -1,3 +1,13 @@
+## 0.6.9
+
+- Add model, provider, reasoning-effort and fast-mode configuration for Codex Desktop and Hermes
+  Desktop sessions from the Bridge desktop and mobile UIs through each runtime's native interface.
+- Codex uses the app-server model catalog and `thread/settings/update`, falls back to per-turn
+  `thread/resume` parameters on older app-servers, and mirrors Desktop-side changes via
+  `thread/settings/updated` notifications.
+- Hermes uses `model.options` plus session `config.set` for model/provider/reasoning/fast, with
+  `session.info` event sync.
+
 # Changelog
 
 ## 0.6.8

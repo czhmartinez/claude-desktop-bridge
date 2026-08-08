@@ -139,7 +139,13 @@ function sessionProfile(session: BridgeSessionInfo): string {
     ?.replace(/^claude-/iu, "")
     .replace(/\[1m\]/giu, " 1M")
     .replaceAll("-", " ");
-  return [model || "默认模型", session.effort?.toLocaleUpperCase()].filter(Boolean).join(" · ");
+  const native = session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop";
+  return [
+    native && session.provider ? session.provider : undefined,
+    model || "默认模型",
+    (native ? session.reasoningEffort : session.effort)?.toLocaleUpperCase(),
+    native && session.fast !== undefined ? (session.fast ? "快速" : "标准") : undefined,
+  ].filter(Boolean).join(" · ");
 }
 
 function DesktopSessions({
@@ -192,7 +198,8 @@ function DesktopSessions({
     ? snapshot.runtimes?.find((runtime) => runtime.id === selectedRuntime)?.capabilities.includes("attachment.image")
       ?? selectedRuntime === "claude-desktop"
     : false;
-  const canConfigure = selectedRuntime === "claude-desktop" && selected?.allowedActions?.canConfigure !== false;
+  const canConfigure = selected?.allowedActions?.canConfigure === true
+    || (selectedRuntime === "claude-desktop" && selected?.allowedActions?.canConfigure !== false);
   const providers = snapshot.providers ?? [];
   const providerSwitchingAvailable = Boolean(
     selected
@@ -763,7 +770,7 @@ function DesktopSessions({
                   <button
                     type="button"
                     className="session-profile-trigger"
-                    aria-label="模型与 Effort"
+                    aria-label="模型与运行模式"
                     onClick={() => setConfigurationOpen(true)}
                   >
                     <Settings2 size={15} />
@@ -773,7 +780,7 @@ function DesktopSessions({
                 {!canConfigure && selectedRuntime !== "claude-desktop" && (
                   <span
                     className="session-profile-trigger is-static"
-                    title="模型与 Effort 由对应 Desktop 管理"
+                    title="模型与运行模式由对应 Desktop 管理"
                   >
                     <Settings2 size={15} />
                     <span>{sessionProfile(selected)}</span>

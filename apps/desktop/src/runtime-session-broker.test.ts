@@ -8,6 +8,8 @@ import {
   DesktopRuntimeAdapter,
   RuntimeAdapterRegistry,
   type RuntimeAdapterHistoryItem,
+  type RuntimeAdapterConfiguration,
+  type RuntimeAdapterConfigurationChange,
   type RuntimeAdapterSession,
   type RuntimeAdapterTurnInput,
   type RuntimeAdapterTurnResult,
@@ -30,6 +32,7 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
       "session.list",
       "session.create",
       "session.history",
+      "session.configure",
       "turn.start",
       "turn.steer",
       "turn.interrupt",
@@ -76,6 +79,33 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
 
   async history(nativeSessionId: string): Promise<RuntimeAdapterHistoryItem[]> {
     return [{ id: `history:${nativeSessionId}`, role: "assistant", text: this.id, createdAt: 3 }];
+  }
+
+  async configuration(nativeSessionId: string): Promise<RuntimeAdapterConfiguration> {
+    const session = this.rows.get(nativeSessionId);
+    if (!session) throw new Error("Session not found");
+    return {
+      ...(session.provider ? { provider: session.provider } : {}),
+      ...(session.model ? { model: session.model } : {}),
+      availableModels: [],
+      availableProviders: [],
+      availableReasoningEfforts: [],
+      modelsComplete: true,
+      supportsFastMode: false,
+      appliesAfterTurn: false,
+    };
+  }
+
+  async configureSession(
+    nativeSessionId: string,
+    change: RuntimeAdapterConfigurationChange,
+  ): Promise<RuntimeAdapterConfiguration> {
+    const session = this.rows.get(nativeSessionId);
+    if (!session) throw new Error("Session not found");
+    if (change.model) session.model = change.model;
+    if (change.provider) session.provider = change.provider;
+    this.rows.set(nativeSessionId, session);
+    return this.configuration(nativeSessionId);
   }
 
   async startTurn(input: RuntimeAdapterTurnInput): Promise<RuntimeAdapterTurnResult> {
@@ -143,6 +173,18 @@ describe("RuntimeSessionBroker", () => {
     expect(broker.listProjects()).toHaveLength(2);
 
     const codexSessionId = runtimeSessionId("codex-desktop", "same-native-id");
+    await expect(broker.configuration(codexSessionId)).resolves.toMatchObject({
+      sessionId: codexSessionId,
+      availableModels: [],
+    });
+    expect(broker.session(codexSessionId)?.allowedActions?.canConfigure).toBe(true);
+    await expect(broker.configureSession(codexSessionId, {
+      model: "gpt-test",
+      provider: "codex",
+      reasoningEffort: "high",
+      fast: true,
+    })).resolves.toMatchObject({ model: "gpt-test", provider: "codex" });
+
     await broker.startTurn({
       sessionId: codexSessionId,
       text: "Inspect the repository",

@@ -68,8 +68,10 @@ Claude、Codex、Hermes 间复制历史、认证、模型选择、权限规则�
 生成随机会话令牌。Bridge 不读取 Hermes Desktop 的 token、keychain 或远端 Gateway 地址。
 adapter 启动超时、关闭或重试时必须关闭其自有子进程，不能保留后台访问通道。
 
-Codex/Hermes 的模型、账号和原生配置只在相应 Desktop 内管理。外部 adapter 的图片附件、
-模型配置和其他非共同能力默认关闭，只有显式能力声明才能在 Bridge UI 开放。
+Codex/Hermes 的账号、凭据、token、keychain 和全局配置只在相应 Desktop 内管理。Bridge 可以在
+adapter 显式声明能力后，通过原生接口修改当前会话的模型、provider、思考强度和快速模式；这类操作
+不提取、不记录或传输凭据，也不执行跨运行时迁移。外部 adapter 的图片附件和其他非共同能力默认关闭，
+只有显式能力声明才能在 Bridge UI 开放。
 
 `TranscriptObserver` 需要只读访问当前用户的 Claude 会话 JSONL 与元数据。
 `ClaudeSessionHost` 以当前用户身份运行，并继承第三方 Host 环境，因此它拥有与

@@ -1170,8 +1170,9 @@ export function MobileWorkspace({
   if (selectedSession) {
     const runtimeName = desktopRuntimeName(desktopRuntimeId(selectedSession));
     const canAttachImages = runtimeSupports(snapshot, selectedSession, "attachment.image");
-    const canConfigure = desktopRuntimeId(selectedSession) === "claude-desktop"
-      && selectedSession.allowedActions?.canConfigure !== false;
+    const canConfigure = selectedSession.allowedActions?.canConfigure === true
+      || (desktopRuntimeId(selectedSession) === "claude-desktop"
+        && selectedSession.allowedActions?.canConfigure !== false);
     const officialActive = usesOfficialComposer(selectedSession, providers);
     const bridgeRunning = selectedSession.turnState === "running"
       && (
@@ -1218,7 +1219,7 @@ export function MobileWorkspace({
             )}
             {canConfigure && (
               <IconButton
-                label="模型与 Effort"
+                label="模型与运行模式"
                 onClick={() => setConfigurationOpen(true)}
               >
                 <Settings2 size={19} />

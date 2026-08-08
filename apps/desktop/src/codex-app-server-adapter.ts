@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
-import type { BridgePermissionDecision } from "@bridge/protocol";
+import type {
+  BridgeModelInfo,
+  BridgePermissionDecision,
+  BridgeRuntimeProviderInfo,
+} from "@bridge/protocol";
 import {
   DesktopRuntimeAdapter,
   type RuntimeAdapterHistoryItem,
+  type RuntimeAdapterConfiguration,
+  type RuntimeAdapterConfigurationChange,
   type RuntimeAdapterPermission,
   type RuntimeAdapterSession,
   type RuntimeAdapterTurnInput,
@@ -187,12 +193,72 @@ async function findCodexExecutable(): Promise<string | undefined> {
   return undefined;
 }
 
+async function configuredCodexProviders(currentProvider?: string): Promise<BridgeRuntimeProviderInfo[]> {
+  const codexHome = process.env.CODEX_HOME || (process.env.HOME ? `${process.env.HOME}/.codex` : undefined);
+  const providers = new Map<string, BridgeRuntimeProviderInfo>();
+  if (codexHome) {
+    try {
+      const source = await readFile(`${codexHome}/config.toml`, "utf8");
+      const pattern = /^\[model_providers\.([^\]\r\n]+)\]\s*$/gmu;
+      for (const match of source.matchAll(pattern)) {
+        const value = match[1]?.trim();
+        if (!value) continue;
+        const start = (match.index ?? 0) + match[0].length;
+        const nextHeader = source.slice(start).search(/^\[/mu);
+        const section = source.slice(start, nextHeader < 0 ? source.length : start + nextHeader);
+        const name = /^name\s*=\s*["']([^"']+)["']/mu.exec(section)?.[1]?.trim();
+        providers.set(value, { value, displayName: name || value });
+      }
+    } catch {
+      // Provider discovery is advisory; app-server remains the source of truth.
+    }
+  }
+  if (currentProvider && !providers.has(currentProvider)) {
+    providers.set(currentProvider, { value: currentProvider, displayName: currentProvider });
+  }
+  return [...providers.values()];
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isUnsupportedCodexMethod(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(method\s+(?:not found|unknown|unsupported)|unknown\s+method|not implemented)/iu.test(message);
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function codexModelInfo(value: unknown): BridgeModelInfo | undefined {
+  const model = record(value);
+  const modelValue = text(model.model) || text(model.id);
+  if (!modelValue) return undefined;
+  const reasoningLevels = (Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : []).flatMap((item) => {
+    const effort = text(record(item).reasoningEffort) || text(item);
+    return effort ? [effort] : [];
+  });
+  const serviceTiers = Array.isArray(model.serviceTiers) ? model.serviceTiers : [];
+  const supportsFast = serviceTiers.some((tier) => text(record(tier).id) === "priority")
+    || stringList(model.additionalSpeedTiers).includes("priority");
+  return {
+    value: modelValue,
+    displayName: text(model.displayName) || modelValue,
+    ...(text(model.description) ? { description: text(model.description) } : {}),
+    supportsEffort: reasoningLevels.length > 0,
+    ...(reasoningLevels.length ? { supportedEffortLevels: reasoningLevels } : {}),
+    supportsFast,
+  };
 }
 
 function timestamp(value: unknown): number {
@@ -222,6 +288,10 @@ function sessionFromThread(value: unknown): RuntimeAdapterSession | undefined {
     lastActivityAt: timestamp(thread.recencyAt ?? thread.updatedAt ?? thread.createdAt),
     turnState: turnState(thread.status),
     transport: "codex-app-server",
+    ...(text(thread.modelProvider) ? { provider: text(thread.modelProvider) } : {}),
+    ...(text(thread.model) ? { model: text(thread.model) } : {}),
+    ...(text(thread.reasoningEffort) ? { reasoningEffort: text(thread.reasoningEffort) } : {}),
+    ...(text(thread.serviceTier) ? { fast: text(thread.serviceTier) === "priority" } : {}),
   };
 }
 
@@ -285,6 +355,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
   private readonly sessionMap = new Map<string, RuntimeAdapterSession>();
   private readonly activeTurns = new Map<string, string>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private modelCatalog: BridgeModelInfo[] | undefined;
   private client: CodexRpcClient | undefined;
   private initialized = false;
   private lifecycleId = 0;
@@ -294,6 +365,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       "session.list",
       "session.create",
       "session.history",
+      "session.configure",
       "turn.start",
       "turn.steer",
       "turn.interrupt",
@@ -346,10 +418,18 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     const client = this.requireClient();
     const result = await client.request<Record<string, unknown>>("thread/list", { limit: 100, archived: false });
     const rows = Array.isArray(result.data) ? result.data : [];
+    const previous = this.sessionMap;
     const next = new Map<string, RuntimeAdapterSession>();
     for (const value of rows) {
       const session = sessionFromThread(value);
       if (!session) continue;
+      const prior = previous.get(session.nativeSessionId);
+      if (prior) {
+        if (!session.provider && prior.provider) session.provider = prior.provider;
+        if (!session.model && prior.model) session.model = prior.model;
+        if (!session.reasoningEffort && prior.reasoningEffort) session.reasoningEffort = prior.reasoningEffort;
+        if (session.fast === undefined && prior.fast !== undefined) session.fast = prior.fast;
+      }
       const activeTurnId = this.activeTurns.get(session.nativeSessionId);
       if (activeTurnId) {
         session.turnState = "running";
@@ -378,9 +458,11 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     if (input.title) session.title = input.title;
     session.source = "bridge";
     this.sessionMap.set(session.nativeSessionId, session);
+    this.applyThreadConfiguration(session.nativeSessionId, result);
     this.setSessionCount(this.sessionMap.size);
-    this.emitRuntimeEvent({ type: "session.updated", session });
-    return { ...session };
+    const configuredSession = this.sessionMap.get(session.nativeSessionId) ?? session;
+    this.emitRuntimeEvent({ type: "session.updated", session: { ...configuredSession } });
+    return { ...configuredSession };
   }
 
   async history(nativeSessionId: string): Promise<RuntimeAdapterHistoryItem[]> {
@@ -392,13 +474,145 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     return historyFromThread(result.thread);
   }
 
+  async configuration(nativeSessionId: string): Promise<RuntimeAdapterConfiguration> {
+    const session = this.sessionMap.get(nativeSessionId);
+    if (!session) throw new Error("Codex thread not found");
+    const running = this.activeTurns.has(nativeSessionId);
+    const resumed = await this.resumeThread(nativeSessionId);
+    this.applyThreadConfiguration(nativeSessionId, resumed, running);
+    const current = this.sessionMap.get(nativeSessionId) ?? session;
+    const catalog = await this.loadModelCatalog();
+    const providers = await configuredCodexProviders(current.provider);
+    const models = [...catalog.models];
+    if (current.model && !models.some((candidate) => candidate.value === current.model)) {
+      models.unshift({
+        value: current.model,
+        displayName: current.model,
+        ...(current.provider ? { provider: current.provider } : {}),
+        supportsEffort: true,
+        supportedEffortLevels: ["none", "low", "medium", "high", "xhigh", "max", "ultra"],
+        supportsFast: false,
+      });
+    }
+    const selectedModel = models.find((candidate) => candidate.value === current.model);
+    if (selectedModel?.supportsEffort === false) delete current.reasoningEffort;
+    const reasoningLevels = selectedModel?.supportedEffortLevels?.length
+      ? [...selectedModel.supportedEffortLevels]
+      : ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
+    this.sessionMap.set(nativeSessionId, { ...current });
+    return {
+      ...(current.provider ? { provider: current.provider } : {}),
+      ...(current.model ? { model: current.model } : {}),
+      ...(current.reasoningEffort ? { reasoningEffort: current.reasoningEffort } : {}),
+      ...(current.fast !== undefined ? { fast: current.fast } : {}),
+      availableModels: models,
+      availableProviders: providers,
+      availableReasoningEfforts: reasoningLevels,
+      modelsComplete: catalog.complete,
+      supportsFastMode: models.some((candidate) => candidate.supportsFast === true),
+      appliesAfterTurn: running,
+    };
+  }
+
+  async configureSession(
+    nativeSessionId: string,
+    change: RuntimeAdapterConfigurationChange,
+  ): Promise<RuntimeAdapterConfiguration> {
+    const session = this.sessionMap.get(nativeSessionId);
+    if (!session) throw new Error("Codex thread not found");
+    const client = this.requireClient();
+    const nextModel = change.model === null ? undefined : change.model ?? session.model;
+    const nextProvider = change.provider === null ? undefined : change.provider ?? session.provider;
+    const running = this.activeTurns.has(nativeSessionId);
+
+    if ((change.model !== undefined || change.provider !== undefined) && !nextModel) {
+      throw new Error("Codex 需要先选择模型");
+    }
+
+    const settings: Record<string, unknown> = { threadId: nativeSessionId };
+    if (change.model !== undefined && nextModel) settings.model = nextModel;
+    if (change.reasoningEffort !== undefined) settings.effort = change.reasoningEffort;
+    if (change.fast !== undefined) {
+      settings.serviceTier = change.fast === null ? null : change.fast ? "priority" : "default";
+    }
+
+    let settingsUnsupported = false;
+    if (change.provider !== undefined) {
+      await this.resumeThread(nativeSessionId, {
+        ...(nextModel ? { model: nextModel } : {}),
+        provider: nextProvider ?? null,
+        ...(change.fast !== undefined
+          ? { serviceTier: change.fast === null ? null : change.fast ? "priority" : "default" }
+          : {}),
+      });
+    }
+    if (Object.keys(settings).length > 1) {
+      try {
+        await client.request("thread/settings/update", settings);
+      } catch (error) {
+        if (!isUnsupportedCodexMethod(error)) throw error;
+        settingsUnsupported = true;
+      }
+    }
+    if (settingsUnsupported && (change.model !== undefined || change.fast !== undefined) && change.provider === undefined) {
+      await this.resumeThread(nativeSessionId, {
+        ...(nextModel ? { model: nextModel } : {}),
+        ...(change.fast !== undefined
+          ? { serviceTier: change.fast === null ? null : change.fast ? "priority" : "default" }
+          : {}),
+      });
+    }
+
+    const updatedSession = this.sessionMap.get(nativeSessionId) ?? session;
+    if (change.model !== undefined && nextModel) updatedSession.model = nextModel;
+    if (change.provider !== undefined) {
+      if (nextProvider) updatedSession.provider = nextProvider;
+      else delete updatedSession.provider;
+    }
+    if (change.reasoningEffort !== undefined) {
+      if (change.reasoningEffort) updatedSession.reasoningEffort = change.reasoningEffort;
+      else delete updatedSession.reasoningEffort;
+    }
+    if (change.fast !== undefined) {
+      if (change.fast === null) delete updatedSession.fast;
+      else updatedSession.fast = change.fast;
+    }
+    updatedSession.lastActivityAt = Date.now();
+    this.sessionMap.set(nativeSessionId, { ...updatedSession });
+    this.emitRuntimeEvent({ type: "session.updated", session: { ...updatedSession } });
+    return this.configuration(nativeSessionId);
+  }
+
   async startTurn(input: RuntimeAdapterTurnInput): Promise<RuntimeAdapterTurnResult> {
     const client = this.requireClient();
-    await this.resumeThread(input.nativeSessionId);
+    const configuredSession = this.sessionMap.get(input.nativeSessionId);
+    const resumed = await this.resumeThread(input.nativeSessionId, {
+      ...(configuredSession?.model ? { model: configuredSession.model } : {}),
+      ...(configuredSession?.provider ? { provider: configuredSession.provider } : {}),
+      ...(configuredSession?.fast !== undefined
+        ? { serviceTier: configuredSession.fast ? "priority" : "default" }
+        : {}),
+    });
+    this.applyThreadConfiguration(input.nativeSessionId, resumed, true);
+    const activeSession = this.sessionMap.get(input.nativeSessionId);
+    const settings: Record<string, unknown> = {
+      threadId: input.nativeSessionId,
+      ...(activeSession?.model ? { model: activeSession.model } : {}),
+      ...(activeSession?.reasoningEffort ? { effort: activeSession.reasoningEffort } : {}),
+      ...(activeSession?.fast !== undefined ? { serviceTier: activeSession.fast ? "priority" : "default" } : {}),
+    };
+    if (Object.keys(settings).length > 1) {
+      await client.request<Record<string, unknown>>("thread/settings/update", settings).catch((error) => {
+        if (!isUnsupportedCodexMethod(error)) throw error;
+      });
+    }
     const result = await client.request<Record<string, unknown>>("turn/start", {
       threadId: input.nativeSessionId,
       clientUserMessageId: input.requestId,
       input: [{ type: "text", text: input.text, text_elements: [] }],
+      ...(activeSession?.model ? { model: activeSession.model } : {}),
+      ...(activeSession?.reasoningEffort ? { effort: activeSession.reasoningEffort } : {}),
+      ...(activeSession?.fast !== undefined ? { serviceTier: activeSession.fast ? "priority" : "default" } : {}),
     });
     const turnId = text(record(result.turn).id) || undefined;
     if (turnId) this.activeTurns.set(input.nativeSessionId, turnId);
@@ -491,12 +705,93 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     return this.client;
   }
 
-  private async resumeThread(nativeSessionId: string): Promise<void> {
-    await this.requireClient().request("thread/resume", {
+  private async loadModelCatalog(): Promise<{ models: BridgeModelInfo[]; complete: boolean }> {
+    if (this.modelCatalog) return { models: this.modelCatalog.map((model) => ({ ...model })), complete: true };
+    const models: BridgeModelInfo[] = [];
+    let cursor: string | undefined;
+    try {
+      for (let page = 0; page < 20; page += 1) {
+        const result = await this.requireClient().request<Record<string, unknown>>("model/list", {
+          limit: 100,
+          includeHidden: false,
+          ...(cursor ? { cursor } : {}),
+        });
+        const rows = Array.isArray(result.data) ? result.data : [];
+        for (const value of rows) {
+          const model = codexModelInfo(value);
+          if (model && !models.some((candidate) => candidate.value === model.value)) {
+            models.push(model);
+          }
+        }
+        const nextCursor = text(result.nextCursor);
+        if (!nextCursor || nextCursor === cursor) break;
+        cursor = nextCursor;
+      }
+      this.modelCatalog = models.map((model) => ({ ...model }));
+      return { models, complete: true };
+    } catch {
+      return { models: this.modelCatalog?.map((model) => ({ ...model })) ?? [], complete: false };
+    }
+  }
+
+  private applyThreadConfiguration(nativeSessionId: string, value: unknown, preserve = true): void {
+    const response = record(value);
+    const thread = record(response.thread);
+    const session = this.sessionMap.get(nativeSessionId);
+    if (!session) return;
+    const field = (keys: string[]): { present: boolean; value: unknown } => {
+      for (const key of keys) {
+        if (hasOwn(response, key)) return { present: true, value: response[key] };
+      }
+      for (const key of keys) {
+        if (hasOwn(thread, key)) return { present: true, value: thread[key] };
+      }
+      return { present: false, value: undefined };
+    };
+    const model = field(["model"]);
+    const provider = field(["modelProvider"]);
+    const effort = field(["reasoningEffort", "effort"]);
+    const serviceTier = field(["serviceTier"]);
+
+    if (model.present && (!preserve || !session.model)) {
+      const value = text(model.value);
+      if (value) session.model = value;
+      else delete session.model;
+    }
+    if (provider.present && (!preserve || !session.provider)) {
+      const value = text(provider.value);
+      if (value) session.provider = value;
+      else delete session.provider;
+    }
+    if (effort.present && (!preserve || !session.reasoningEffort)) {
+      const value = text(effort.value);
+      if (value) session.reasoningEffort = value;
+      else delete session.reasoningEffort;
+    }
+    if (serviceTier.present && (!preserve || session.fast === undefined)) {
+      const value = text(serviceTier.value);
+      if (value) session.fast = value === "priority";
+      else delete session.fast;
+    }
+    this.sessionMap.set(nativeSessionId, { ...session });
+  }
+
+  private async resumeThread(
+    nativeSessionId: string,
+    settings: {
+      model?: string | null;
+      provider?: string | null;
+      serviceTier?: string | null;
+    } = {},
+  ): Promise<Record<string, unknown>> {
+    return this.requireClient().request<Record<string, unknown>>("thread/resume", {
       threadId: nativeSessionId,
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       excludeTurns: true,
+      ...(settings.model !== undefined ? { model: settings.model } : {}),
+      ...(settings.provider !== undefined ? { modelProvider: settings.provider } : {}),
+      ...(settings.serviceTier !== undefined ? { serviceTier: settings.serviceTier } : {}),
     });
   }
 
@@ -504,6 +799,12 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     const params = record(notification.params);
     const nativeSessionId = text(params.threadId);
     const now = Date.now();
+    if (notification.method === "thread/settings/updated" && nativeSessionId) {
+      this.applyThreadConfiguration(nativeSessionId, { thread: record(params.threadSettings) }, false);
+      const session = this.sessionMap.get(nativeSessionId);
+      if (session) this.emitRuntimeEvent({ type: "session.updated", session: { ...session } });
+      return;
+    }
     if (notification.method === "turn/started" && nativeSessionId) {
       const turnId = text(record(params.turn).id) || undefined;
       if (turnId) this.activeTurns.set(nativeSessionId, turnId);

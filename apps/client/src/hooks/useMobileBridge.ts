@@ -13,7 +13,6 @@ import {
   type BridgeDesktopAppStatus,
   type BridgeDesktopRuntimeId,
   type BridgeEndpoint,
-  type BridgeEffort,
   type BridgeEvidenceBundle,
   type BridgeEvidencePage,
   type BridgeEvent,
@@ -2038,7 +2037,13 @@ export function useMobileBridge() {
 
   const configureSession = useCallback(async (
     sessionId: string,
-    change: { model?: string | null; effort?: BridgeEffort | null },
+    change: {
+      model?: string | null;
+      provider?: string | null;
+      effort?: string | null;
+      reasoningEffort?: string | null;
+      fast?: boolean | null;
+    },
   ): Promise<BridgeSessionConfiguration> => {
     const response = await sendRequest("session.configure", { sessionId, ...change }, {
       wait: true,

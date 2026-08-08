@@ -197,7 +197,7 @@ const sessions = [
       canInterrupt: true,
       canSwitchProvider: false,
       canContinueOfficial: false,
-      canConfigure: false,
+      canConfigure: true,
     },
   },
   {
@@ -220,7 +220,7 @@ const sessions = [
       canInterrupt: true,
       canSwitchProvider: false,
       canContinueOfficial: false,
-      canConfigure: false,
+      canConfigure: true,
     },
   },
 ];
@@ -917,7 +917,7 @@ try {
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-provider-switch-390x844.png"), fullPage: true });
   await mobileProviderDialog.getByLabel("关闭").click();
 
-  await mobile.getByRole("button", { name: "模型与 Effort" }).click();
+  await mobile.getByRole("button", { name: "模型与运行模式" }).click();
   await mobile.getByText("Claude Host 实时用量").waitFor();
   await mobile.getByText("授权模式", { exact: true }).waitFor();
   await checkPage(mobile, "mobile session configuration");
@@ -1257,7 +1257,7 @@ try {
   await checkPage(desktop, "desktop provider switching");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-provider-switch-1200x800.png"), fullPage: true });
   await desktopProviderDialog.getByLabel("关闭").click();
-  await desktop.getByRole("button", { name: "模型与 Effort" }).click();
+  await desktop.getByRole("button", { name: "模型与运行模式" }).click();
   await desktop.getByText("Claude Host 实时用量").waitFor();
   await desktop.getByText("授权模式", { exact: true }).waitFor();
   await checkPage(desktop, "desktop session configuration");

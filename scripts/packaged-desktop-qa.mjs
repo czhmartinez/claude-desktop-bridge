@@ -171,7 +171,7 @@ try {
   }
 
   if (selectedSession) {
-    const configurationButton = page.getByRole("button", { name: "模型与 Effort" });
+    const configurationButton = page.getByRole("button", { name: "模型与运行模式" });
     await configurationButton.click();
     const configurationDialog = page.getByRole("dialog");
     await configurationDialog.waitFor();

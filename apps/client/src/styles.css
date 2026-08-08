@@ -2111,12 +2111,34 @@ button:disabled {
 
 .session-model-field,
 .session-effort-field,
-.session-permission-field {
+.session-permission-field,
+.session-fast-field {
   display: grid;
   gap: 8px;
   margin: 0;
   padding: 0;
   border: 0;
+}
+
+.session-fast-field {
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.session-fast-field input {
+  accent-color: var(--accent);
+}
+
+.session-fast-field small {
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .session-model-field > span,

@@ -4,10 +4,16 @@ import { EventEmitter } from "node:events";
 import { access } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
-import type { BridgePermissionDecision } from "@bridge/protocol";
+import type {
+  BridgeModelInfo,
+  BridgePermissionDecision,
+  BridgeRuntimeProviderInfo,
+} from "@bridge/protocol";
 import {
   DesktopRuntimeAdapter,
   type RuntimeAdapterHistoryItem,
+  type RuntimeAdapterConfiguration,
+  type RuntimeAdapterConfigurationChange,
   type RuntimeAdapterPermission,
   type RuntimeAdapterSession,
   type RuntimeAdapterTurnInput,
@@ -208,6 +214,31 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+const HERMES_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function modelCapabilities(value: unknown): Record<string, { fast?: boolean; reasoning?: boolean }> {
+  const source = record(value);
+  const result: Record<string, { fast?: boolean; reasoning?: boolean }> = {};
+  for (const [model, capabilities] of Object.entries(source)) {
+    const item = record(capabilities);
+    const fast = booleanValue(item.fast);
+    const reasoning = booleanValue(item.reasoning);
+    result[model] = {
+      ...(fast !== undefined ? { fast } : {}),
+      ...(reasoning !== undefined ? { reasoning } : {}),
+    };
+  }
+  return result;
+}
+
 function timestamp(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return Date.now();
   return value < 10_000_000_000 ? value * 1_000 : value;
@@ -219,6 +250,7 @@ function sessionFromGateway(value: unknown): RuntimeAdapterSession | undefined {
   if (!nativeSessionId) return undefined;
   const title = text(item.title) || text(item.preview) || "未命名任务";
   const lastActivityAt = timestamp(item.updated_at ?? item.started_at);
+  const fast = booleanValue(item.fast);
   return {
     nativeSessionId,
     cwd: text(item.cwd) || process.cwd(),
@@ -228,6 +260,10 @@ function sessionFromGateway(value: unknown): RuntimeAdapterSession | undefined {
     lastActivityAt,
     turnState: "idle",
     transport: "hermes-gateway",
+    ...(text(item.provider) ? { provider: text(item.provider) } : {}),
+    ...(text(item.model) ? { model: text(item.model) } : {}),
+    ...(text(item.reasoning_effort) ? { reasoningEffort: text(item.reasoning_effort) } : {}),
+    ...(fast !== undefined ? { fast } : {}),
   };
 }
 
@@ -265,6 +301,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
       "session.list",
       "session.create",
       "session.history",
+      "session.configure",
       "turn.start",
       "turn.steer",
       "turn.interrupt",
@@ -303,10 +340,18 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
   async refresh(): Promise<void> {
     const result = await this.requireClient().request<Record<string, unknown>>("session.list", { limit: 100 });
     const rows = Array.isArray(result.sessions) ? result.sessions : [];
+    const previous = this.sessionMap;
     const next = new Map<string, RuntimeAdapterSession>();
     for (const value of rows) {
       const session = sessionFromGateway(value);
       if (!session) continue;
+      const prior = previous.get(session.nativeSessionId);
+      if (prior) {
+        if (!session.provider && prior.provider) session.provider = prior.provider;
+        if (!session.model && prior.model) session.model = prior.model;
+        if (!session.reasoningEffort && prior.reasoningEffort) session.reasoningEffort = prior.reasoningEffort;
+        if (session.fast === undefined && prior.fast !== undefined) session.fast = prior.fast;
+      }
       const turnId = this.activeTurns.get(session.nativeSessionId);
       if (turnId) {
         session.turnState = "running";
@@ -332,6 +377,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     const nativeSessionId = text(result.session_id);
     if (!nativeSessionId) throw new Error("Hermes Gateway returned an invalid session");
     const info = record(result.info);
+    const fast = booleanValue(info.fast);
     const session: RuntimeAdapterSession = {
       nativeSessionId,
       cwd: text(info.cwd) || input.cwd,
@@ -342,6 +388,9 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
       turnState: "idle",
       transport: "hermes-gateway",
       ...(text(info.model) ? { model: text(info.model) } : {}),
+      ...(text(info.provider) ? { provider: text(info.provider) } : {}),
+      ...(text(info.reasoning_effort) ? { reasoningEffort: text(info.reasoning_effort) } : {}),
+      ...(fast !== undefined ? { fast } : {}),
     };
     this.sessionMap.set(nativeSessionId, session);
     this.setSessionCount(this.sessionMap.size);
@@ -357,6 +406,154 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
       const parsed = historyItem(item, index);
       return parsed ? [parsed] : [];
     });
+  }
+
+  async configuration(nativeSessionId: string): Promise<RuntimeAdapterConfiguration> {
+    const session = this.sessionMap.get(nativeSessionId);
+    if (!session) throw new Error("Hermes session not found");
+
+    const resumed = await this.resume(nativeSessionId);
+    this.applySessionInfo(nativeSessionId, record(resumed.info));
+
+    let options: Record<string, unknown> = {};
+    try {
+      options = await this.requireClient().request<Record<string, unknown>>("model.options", {
+        session_id: nativeSessionId,
+        explicit_only: true,
+        include_unconfigured: false,
+      });
+    } catch {
+      // Older Hermes builds may not expose model.options. Keep the current
+      // native selection usable and let the next refresh discover the catalog.
+    }
+
+    const providerRows = Array.isArray(options.providers) ? options.providers : [];
+    const availableProviders: BridgeRuntimeProviderInfo[] = [];
+    const availableModels: BridgeModelInfo[] = [];
+    for (const value of providerRows) {
+      const row = record(value);
+      const provider = text(row.slug);
+      if (!provider) continue;
+      availableProviders.push({ value: provider, displayName: text(row.name) || provider });
+      const capabilities = modelCapabilities(row.capabilities);
+      for (const model of stringList(row.models)) {
+        const capability = capabilities[model] ?? {};
+        const supportsReasoning = capability.reasoning !== false;
+        availableModels.push({
+          value: model,
+          displayName: model,
+          provider,
+          supportsEffort: supportsReasoning,
+          supportedEffortLevels: supportsReasoning ? [...HERMES_REASONING_EFFORTS] : [],
+          supportsFast: capability.fast === true,
+        });
+      }
+    }
+
+    const providerConfig = await this.readConfig(nativeSessionId, "provider");
+    const reasoningConfig = await this.readConfig(nativeSessionId, "reasoning");
+    const fastConfig = await this.readConfig(nativeSessionId, "fast");
+    const running = this.activeTurns.has(nativeSessionId);
+    const optionModel = text(options.model);
+    const optionProvider = text(options.provider) !== "unknown" ? text(options.provider) : "";
+    const configuredModel = running ? session.model || optionModel : optionModel || session.model;
+    const configuredProvider = running
+      ? session.provider || optionProvider || text(providerConfig.provider)
+      : optionProvider || session.provider || text(providerConfig.provider);
+    const configuredReasoningEffort = text(reasoningConfig.value);
+    const reasoningEffort = running
+      ? session.reasoningEffort || configuredReasoningEffort
+      : configuredReasoningEffort || session.reasoningEffort;
+    const configuredFast = text(fastConfig.value);
+    const fast = running && session.fast !== undefined
+      ? session.fast
+      : configuredFast
+        ? configuredFast === "fast"
+        : session.fast;
+
+    if (configuredModel && !availableModels.some((candidate) => candidate.value === configuredModel && candidate.provider === configuredProvider)) {
+      availableModels.unshift({
+        value: configuredModel,
+        displayName: configuredModel,
+        ...(configuredProvider ? { provider: configuredProvider } : {}),
+        supportsEffort: true,
+        supportedEffortLevels: [...HERMES_REASONING_EFFORTS],
+        supportsFast: false,
+      });
+    }
+    if (configuredProvider && !availableProviders.some((candidate) => candidate.value === configuredProvider)) {
+      availableProviders.unshift({ value: configuredProvider, displayName: configuredProvider });
+    }
+    const selectedModel = availableModels.find((candidate) => (
+      candidate.value === configuredModel && (!configuredProvider || candidate.provider === configuredProvider)
+    ));
+    const effectiveReasoningEffort = selectedModel?.supportsEffort === false ? undefined : reasoningEffort;
+
+    const current = this.sessionMap.get(nativeSessionId);
+    if (current) {
+      if (configuredModel) current.model = configuredModel;
+      if (configuredProvider) current.provider = configuredProvider;
+      if (effectiveReasoningEffort) current.reasoningEffort = effectiveReasoningEffort;
+      else if (selectedModel?.supportsEffort === false) delete current.reasoningEffort;
+      if (fast !== undefined) current.fast = fast;
+      this.sessionMap.set(nativeSessionId, { ...current });
+    }
+    return {
+      ...(configuredModel ? { model: configuredModel } : {}),
+      ...(configuredProvider ? { provider: configuredProvider } : {}),
+      ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+      ...(fast !== undefined ? { fast } : {}),
+      availableModels,
+      availableProviders,
+      availableReasoningEfforts: selectedModel?.supportedEffortLevels?.length
+        ? [...selectedModel.supportedEffortLevels]
+        : [...HERMES_REASONING_EFFORTS],
+      modelsComplete: providerRows.length > 0,
+      supportsFastMode: availableModels.some((candidate) => candidate.supportsFast === true),
+      appliesAfterTurn: running,
+    };
+  }
+
+  async configureSession(
+    nativeSessionId: string,
+    change: RuntimeAdapterConfigurationChange,
+  ): Promise<RuntimeAdapterConfiguration> {
+    const session = this.sessionMap.get(nativeSessionId);
+    if (!session) throw new Error("Hermes session not found");
+    const client = this.requireClient();
+
+    if (change.model !== undefined || change.provider !== undefined) {
+      const model = change.model === null ? session.model : change.model ?? session.model;
+      const provider = change.provider === null ? undefined : change.provider ?? session.provider;
+      if (!model) throw new Error("Hermes 需要先选择模型");
+      const value = `${model}${provider ? ` --provider ${provider}` : ""} --session`;
+      await client.request("config.set", { session_id: nativeSessionId, key: "model", value });
+      session.model = model;
+      if (provider) session.provider = provider;
+      else delete session.provider;
+    }
+    if (change.reasoningEffort !== undefined) {
+      await client.request("config.set", {
+        session_id: nativeSessionId,
+        key: "reasoning",
+        value: change.reasoningEffort ?? "none",
+      });
+      if (change.reasoningEffort === null) delete session.reasoningEffort;
+      else session.reasoningEffort = change.reasoningEffort;
+    }
+    if (change.fast !== undefined) {
+      await client.request("config.set", {
+        session_id: nativeSessionId,
+        key: "fast",
+        value: change.fast === true ? "fast" : "normal",
+      });
+      if (change.fast === null) delete session.fast;
+      else session.fast = change.fast;
+    }
+    session.lastActivityAt = Date.now();
+    this.sessionMap.set(nativeSessionId, { ...session });
+    this.emitRuntimeEvent({ type: "session.updated", session: { ...session } });
+    return this.configuration(nativeSessionId);
   }
 
   async startTurn(input: RuntimeAdapterTurnInput): Promise<RuntimeAdapterTurnResult> {
@@ -517,8 +714,35 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     return this.client;
   }
 
-  private async resume(nativeSessionId: string): Promise<void> {
-    await this.requireClient().request("session.resume", { session_id: nativeSessionId });
+  private async readConfig(nativeSessionId: string, key: string): Promise<Record<string, unknown>> {
+    try {
+      return await this.requireClient().request<Record<string, unknown>>("config.get", {
+        session_id: nativeSessionId,
+        key,
+      });
+    } catch {
+      return {};
+    }
+  }
+
+  private applySessionInfo(nativeSessionId: string, info: Record<string, unknown>, preserve = true): void {
+    const session = this.sessionMap.get(nativeSessionId);
+    if (!session) return;
+    if (text(info.model) && (!preserve || !session.model)) session.model = text(info.model);
+    if (text(info.provider) && (!preserve || !session.provider)) session.provider = text(info.provider);
+    if (text(info.reasoning_effort) && (!preserve || !session.reasoningEffort)) session.reasoningEffort = text(info.reasoning_effort);
+    const fast = booleanValue(info.fast);
+    if (!preserve || session.fast === undefined) {
+      if (fast !== undefined) session.fast = fast;
+      else if (text(info.service_tier)) session.fast = text(info.service_tier) === "priority";
+    }
+    this.sessionMap.set(nativeSessionId, { ...session });
+  }
+
+  private async resume(nativeSessionId: string): Promise<Record<string, unknown>> {
+    const result = await this.requireClient().request<Record<string, unknown>>("session.resume", { session_id: nativeSessionId });
+    this.applySessionInfo(nativeSessionId, record(result.info));
+    return result;
   }
 
   private handleGatewayEvent(event: HermesGatewayEvent): void {
@@ -527,7 +751,11 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     const payload = record(event.payload);
     const turnId = this.activeTurns.get(nativeSessionId);
     const now = Date.now();
-    if (event.type === "message.start") {
+    if (event.type === "session.info") {
+      this.applySessionInfo(nativeSessionId, payload, false);
+      const session = this.sessionMap.get(nativeSessionId);
+      if (session) this.emitRuntimeEvent({ type: "session.updated", session: { ...session } });
+    } else if (event.type === "message.start") {
       this.emitRuntimeEvent({ type: "turn.started", nativeSessionId, ...(turnId ? { turnId } : {}), at: now });
     } else if (event.type === "message.delta") {
       const value = text(payload.text);

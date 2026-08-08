@@ -90,6 +90,7 @@ export type BridgeRuntimeCapability =
   | "session.list"
   | "session.create"
   | "session.history"
+  | "session.configure"
   | "turn.start"
   | "turn.steer"
   | "turn.interrupt"
@@ -438,8 +439,14 @@ export interface BridgeSessionInfo {
   pendingCount: number;
   activeTurnId?: string;
   currentSummary?: string;
+  /** Native runtime provider for Codex/Hermes; never a Bridge provider profile. */
+  provider?: string;
   model?: string;
   effort?: BridgeEffort;
+  /** Native runtime reasoning setting for Codex/Hermes. */
+  reasoningEffort?: string;
+  /** Native runtime fast/priority mode for Codex/Hermes. */
+  fast?: boolean;
   configurationPending?: boolean;
   fallbackConfirmed?: boolean;
   desktopRegistration?: BridgeDesktopRegistrationInfo;
@@ -453,10 +460,19 @@ export interface BridgeSessionInfo {
 export interface BridgeModelInfo {
   value: string;
   displayName: string;
+  /** Native runtime provider that owns this model, when known. */
+  provider?: string;
   description?: string;
   resolvedModel?: string;
   supportsEffort?: boolean;
-  supportedEffortLevels?: BridgeEffort[];
+  supportedEffortLevels?: string[];
+  supportsFast?: boolean;
+}
+
+export interface BridgeRuntimeProviderInfo {
+  value: string;
+  displayName: string;
+  description?: string;
 }
 
 export interface BridgeSessionContextUsage {
@@ -469,16 +485,24 @@ export interface BridgeSessionContextUsage {
 
 export interface BridgeSessionConfiguration {
   sessionId: string;
+  /** Native runtime provider; distinct from BridgeProviderProfile. */
+  provider?: string;
   model?: string;
   effort?: BridgeEffort;
+  reasoningEffort?: string;
+  fast?: boolean;
   inheritedModel?: string;
   inheritedEffort?: BridgeEffort;
   overrideModel?: string;
   overrideEffort?: BridgeEffort;
   modelSource: BridgeConfigurationSource;
   effortSource: BridgeConfigurationSource;
+  providerSource?: BridgeConfigurationSource;
   availableModels: BridgeModelInfo[];
-  availableEffortLevels: BridgeEffort[];
+  availableEffortLevels: string[];
+  availableReasoningEfforts?: string[];
+  availableProviders?: BridgeRuntimeProviderInfo[];
+  supportsFastMode?: boolean;
   modelsComplete: boolean;
   appliesAfterTurn: boolean;
   permissionPolicy?: BridgePermissionPolicy;

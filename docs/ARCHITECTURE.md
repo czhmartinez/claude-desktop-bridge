@@ -63,7 +63,8 @@ Bridge 0.6 的统一对象是操作体验，不是对话本体。每个原生会
 
 各 adapter 必须显式声明能力。当前共同基线为 `session.list/create/history`、
 `turn.start/steer/interrupt`、`permission.resolve` 和 `tool.events`；图片附件按 adapter
-能力单独开放，模型配置仍在对应的原生 Desktop 内完成。Bridge UI 对所有 ready runtime
+能力单独开放；Codex/Hermes 的模型、provider、思考强度和快速模式通过 adapter 的
+`session.configure` 调用各自 Desktop 的原生会话配置接口。Bridge UI 对所有 ready runtime
 提供相同的会话、流、审批和中断操作，并在任务标题和筛选器中显示其归属。
 
 ## 组件
