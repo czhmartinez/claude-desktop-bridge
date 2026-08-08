@@ -6,6 +6,9 @@ export interface DesktopAppDefinition {
   id: BridgeDesktopRuntimeId;
   displayName: string;
   darwinBundle: string;
+  darwinBundleCandidates?: string[];
+  darwinExecutableName?: string;
+  darwinExecutableCandidates?: string[];
   win32ExecutableName: string;
   envPathOverride?: string;
   win32PathCandidates?(environment: NodeJS.ProcessEnv, home: string): string[];
@@ -47,7 +50,10 @@ export const CLAUDE_DESKTOP_APP: DesktopAppDefinition = {
 export const CODEX_DESKTOP_APP: DesktopAppDefinition = {
   id: "codex-desktop",
   displayName: "Codex（ChatGPT）",
-  darwinBundle: "/Applications/Codex.app",
+  darwinBundle: "/Applications/ChatGPT.app",
+  darwinBundleCandidates: ["/Applications/Codex.app"],
+  darwinExecutableName: "ChatGPT",
+  darwinExecutableCandidates: ["Codex"],
   win32ExecutableName: "Codex.exe",
   envPathOverride: "BRIDGE_CODEX_DESKTOP_PATH",
   win32PathCandidates: (environment, home) => {
@@ -95,5 +101,8 @@ export function desktopAppPathCandidates(
     return definition.win32PathCandidates?.(environment, home)
       ?? unique([definition.envPathOverride ? environment[definition.envPathOverride] : undefined]);
   }
-  return unique([join(definition.darwinBundle)]);
+  return unique([
+    definition.darwinBundle,
+    ...(definition.darwinBundleCandidates ?? []),
+  ].map((bundle) => join(bundle)));
 }

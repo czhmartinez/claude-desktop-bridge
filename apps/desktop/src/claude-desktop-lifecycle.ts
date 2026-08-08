@@ -32,9 +32,13 @@ interface CachedStatus {
   observedAt: number;
 }
 
-function darwinExecutable(definition: DesktopAppDefinition): string {
-  const baseName = definition.win32ExecutableName.replace(/\.exe$/iu, "");
-  return `${definition.darwinBundle}/Contents/MacOS/${baseName}`;
+function darwinExecutables(definition: DesktopAppDefinition, bundlePath = definition.darwinBundle): string[] {
+  const defaultName = definition.win32ExecutableName.replace(/\.exe$/iu, "");
+  const names = [
+    definition.darwinExecutableName ?? defaultName,
+    ...(definition.darwinExecutableCandidates ?? []),
+  ];
+  return [...new Set(names)].map((name) => `${bundlePath}/Contents/MacOS/${name}`);
 }
 
 /** Resolve the ordinary Claude Desktop executable without touching private app state. */
@@ -54,14 +58,24 @@ async function applicationInstalled(
 ): Promise<boolean> {
   const candidate = platform === "win32"
     ? executablePath ?? desktopAppPathCandidates(definition, environment, homedir(), platform)[0]
-    : definition.darwinBundle;
-  if (!candidate) return false;
-  try {
-    await access(candidate);
-    return true;
-  } catch {
-    return false;
+    : undefined;
+  if (candidate) {
+    try {
+      await access(candidate);
+      return true;
+    } catch {
+      return false;
+    }
   }
+  for (const bundle of desktopAppPathCandidates(definition, environment, homedir(), platform)) {
+    try {
+      await access(bundle);
+      return true;
+    } catch {
+      // Continue through the supported macOS bundle names.
+    }
+  }
+  return false;
 }
 
 function parseWindowsTasklist(stdout: string, executableName = "Claude.exe"): number[] {
@@ -81,7 +95,7 @@ async function listMainProcessIds(
   definition: DesktopAppDefinition,
   platform = process.platform,
   executablePath?: string,
-  _environment: NodeJS.ProcessEnv = process.env,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<number[]> {
   if (platform === "win32") {
     const executableName = basename(executablePath ?? definition.win32ExecutableName);
@@ -92,13 +106,14 @@ async function listMainProcessIds(
     );
     return parseWindowsTasklist(stdout, executableName);
   }
-  const executable = darwinExecutable(definition);
+  const executables = desktopAppPathCandidates(definition, environment, homedir(), platform)
+    .flatMap((bundle) => darwinExecutables(definition, bundle));
   const { stdout } = await execFile("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" });
   return stdout.split("\n").flatMap((line) => {
     const match = /^\s*(\d+)\s+(.+)$/u.exec(line);
     if (!match) return [];
     const command = match[2]!.trim();
-    return command === executable || command.startsWith(`${executable} `)
+    return executables.some((executable) => command === executable || command.startsWith(`${executable} `))
       ? [Number(match[1])]
       : [];
   });
@@ -128,7 +143,16 @@ async function launchApplication(
     });
     return;
   }
-  await execFile("/usr/bin/open", [definition.darwinBundle], { encoding: "utf8" });
+  for (const bundle of desktopAppPathCandidates(definition, environment, homedir(), platform)) {
+    try {
+      await access(bundle);
+      await execFile("/usr/bin/open", [bundle], { encoding: "utf8" });
+      return;
+    } catch {
+      // Continue through supported bundle names before reporting a launch failure.
+    }
+  }
+  throw new Error(`未找到 ${definition.displayName} 应用。`);
 }
 
 function signalProcess(

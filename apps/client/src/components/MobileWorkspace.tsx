@@ -1427,7 +1427,10 @@ export function MobileWorkspace({
               <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
             </div>
           )}
-          <form onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+          <form
+            className={canAttachImages ? "composer-form composer-form--with-attachment" : "composer-form"}
+            onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}
+          >
             <input
               ref={fileRef}
               type="file"

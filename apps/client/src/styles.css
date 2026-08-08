@@ -3795,12 +3795,17 @@ button:disabled {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-.mobile-composer form,
-.desktop-composer form {
+.mobile-composer .composer-form,
+.desktop-composer .composer-form {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 40px;
+  grid-template-columns: minmax(0, 1fr) 40px;
   align-items: end;
   gap: 6px;
+}
+
+.mobile-composer .composer-form--with-attachment,
+.desktop-composer .composer-form--with-attachment {
+  grid-template-columns: 38px minmax(0, 1fr) 40px;
 }
 
 .mobile-composer textarea,

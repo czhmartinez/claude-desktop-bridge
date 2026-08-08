@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.7
+
+- Detect the macOS ChatGPT bundle as Codex Desktop so lifecycle status, launch, and quit controls
+  reflect the application that actually hosts Codex.
+- Let message composers without an image-attachment capability use their full width instead of
+  reserving a hidden attachment column.
+
 ## 0.6.6
 
 - Make pairing a two-phase handshake: a Relay claim is provisional until Mobile and Desktop

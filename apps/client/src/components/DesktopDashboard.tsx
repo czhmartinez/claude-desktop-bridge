@@ -971,7 +971,10 @@ function DesktopSessions({
                   <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
                 </div>
               )}
-              <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
+              <form
+                className={canAttachImages ? "composer-form composer-form--with-attachment" : "composer-form"}
+                onSubmit={(event) => { event.preventDefault(); void send(); }}
+              >
                 <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp" onChange={(event) => void addImages(event.target.files)} />
                 {canAttachImages && (
                   <IconButton label="添加图片" disabled={selected.allowedActions?.canSend === false} onClick={() => fileRef.current?.click()}><ImagePlus size={19} /></IconButton>
