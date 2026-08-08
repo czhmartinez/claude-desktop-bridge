@@ -3,7 +3,7 @@
   "productName": "Bridge",
   "description": "Secure mobile access to independent local Desktop runtimes.",
   "author": "Bridge Contributors",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "private": true,
   "type": "module",
   "main": "dist/main.cjs",
@@ -12,7 +12,7 @@
     "build:bundle": "node scripts/build.mjs",
     "build:main": "node scripts/build.mjs --main-only",
     "clean": "node ../../scripts/clean.mjs dist out coverage",
-    "dev": "npm run build:main && cross-env BRIDGE_DEV_SERVER_URL=http://localhost:5188 BRIDGE_PAIRING_BASE_URL=http://localhost:5188 electron .",
+    "dev": "npm run build:main && cross-env BRIDGE_DEV_SERVER_URL=http://localhost:5188 BRIDGE_RELAY_URL=ws://127.0.0.1:8788/ws BRIDGE_PAIRING_BASE_URL=http://localhost:5188 electron .",
     "make": "npm run build && electron-forge make",
     "make:windows": "npm run build && node scripts/make-windows.mjs",
     "make:adhoc": "cross-env BRIDGE_ALLOW_ADHOC_SIGNING=1 npm run make",
@@ -27,7 +27,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@bridge/protocol": "0.6.4",
+    "@bridge/protocol": "0.6.5",
     "@electron-forge/cli": "^7.11.2",
     "@electron-forge/maker-deb": "^7.11.2",
     "@electron-forge/maker-dmg": "^7.11.2",

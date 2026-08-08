@@ -67,7 +67,7 @@ protocol.registerSchemesAsPrivileged([{
 const CONFIGURED_RELAY = firstNonEmpty([
   process.env.BRIDGE_RELAY_URL,
   __BRIDGE_DEFAULT_RELAY__,
-  "ws://127.0.0.1:8788/ws",
+  "wss://relay.alioxis.com/ws",
 ])!;
 const DEFAULT_RELAY = networkReachableUrl(CONFIGURED_RELAY);
 const DEFAULT_PAIRING_BASE = firstNonEmpty([process.env.BRIDGE_PAIRING_BASE_URL])

@@ -12,7 +12,7 @@ const sharedDefine = {
   __BRIDGE_DEFAULT_RELAY__: JSON.stringify(buildEnvironmentValue(
     process.env,
     "BRIDGE_RELAY_URL",
-    "ws://127.0.0.1:8788/ws",
+    "wss://relay.alioxis.com/ws",
   )),
   __BRIDGE_DEFAULT_PUBLIC_RELAY__: JSON.stringify(
     buildEnvironmentValue(process.env, "BRIDGE_PUBLIC_RELAY_URL", "wss://relay.alioxis.com/ws"),
