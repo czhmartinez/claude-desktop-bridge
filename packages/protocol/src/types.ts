@@ -587,6 +587,11 @@ export interface ClaudeDesktopAppStatus {
   canQuit: boolean;
 }
 
+export interface BridgeDesktopAppStatus extends ClaudeDesktopAppStatus {
+  id: BridgeDesktopRuntimeId;
+  name: string;
+}
+
 export interface BridgeHostSnapshot {
   host: {
     hostId: string;
@@ -605,6 +610,7 @@ export interface BridgeHostSnapshot {
   runtime: BridgeRuntimeStatus;
   transport?: BridgeConnectionStatus;
   claudeDesktop?: ClaudeDesktopAppStatus;
+  desktopApps?: BridgeDesktopAppStatus[];
   runtimes?: BridgeDesktopRuntime[];
   permissions: BridgePermissionInfo[];
   providers?: BridgeProviderProfile[];
@@ -616,6 +622,7 @@ export interface DesktopControlSnapshot extends BridgeHostSnapshot {
   launchAtLogin: boolean;
   managedDesktopEnabled: boolean;
   claudeDesktop: ClaudeDesktopAppStatus;
+  desktopApps?: BridgeDesktopAppStatus[];
   pairingUrl?: string;
   pairingExpiresAt?: number;
 }
@@ -637,6 +644,9 @@ export type BridgeMethod =
   | "claude.desktop.status"
   | "claude.desktop.launch"
   | "claude.desktop.quit"
+  | "desktop.app.status"
+  | "desktop.app.launch"
+  | "desktop.app.quit"
   | "turn.start"
   | "turn.steer"
   | "turn.interrupt"

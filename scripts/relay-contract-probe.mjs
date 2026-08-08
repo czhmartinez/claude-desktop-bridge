@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { PROTOCOL_VERSION } from "@bridge/protocol";
 import { WebSocket } from "ws";
 
-const relayUrl = process.env.BRIDGE_RELAY_URL ?? "wss://relay.alioxis.uk/ws";
+const relayUrl = process.env.BRIDGE_RELAY_URL ?? "wss://relay.alioxis.com/ws";
 const timeoutMs = Number(process.env.BRIDGE_RELAY_PROBE_TIMEOUT_MS ?? 8_000);
 
 function randomId(bytes) {

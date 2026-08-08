@@ -24,7 +24,7 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前开发版：0.6.0
+## 当前开发版：0.6.1
 
 Bridge 0.6 不再把自己定义为 Claude 的单一 tunnel。它保留一条加密的手机与 Bridge Host
 连接，并在 Host 内注册独立的 Desktop adapter：Claude 继续使用既有 `SessionBroker`；Codex
@@ -86,7 +86,7 @@ lane。切换只迁移用户可见、可验证且有界的上下文，不声称�
 - V0.4.2 的跨 Claude/Claude-3p profile 原始恢复阻止、ultracode 1M 上下文识别和
   synthetic `Prompt is too long` 去重继续生效。
 
-0.6.0 继续使用协议 V3 和配对 schema V4；已配对的 0.4/0.5 设备无需重配。V0.6 客户端
+0.6.1 继续使用协议 V3 和配对 schema V4；已配对的 0.4/0.5 设备无需重配。V0.6 客户端
 连接 V0.4 Host 时会按能力缺失隐藏新增入口；V0.4/0.5 客户端连接 V0.6 Host 时会忽略
 `runtimeId`、`nativeSessionId` 和 `runtimes`，仍可沿用既有 Claude 可写 lane；需要
 Desktop 归属筛选和外部 adapter 的统一体验时应升级到 V0.6。它仍不兼容
@@ -141,7 +141,7 @@ Claude Desktop 会话清单登记。Windows 使用 `%APPDATA%\Claude\claude-code
 并通过 PowerShell/tasklist 做进程检查；用户无需手工复制配置。私有 CDP 和隐藏协议仍在
 两个平台都不启用，避免绕过 Anthropic 授权。
 
-0.6.0 的“标准授权 / 完全授权”、单会话覆盖、手机离线继续执行和 `events.resume`
+0.6.1 的“标准授权 / 完全授权”、单会话覆盖、手机离线继续执行和 `events.resume`
 同样运行在 Windows Host。`windows-2022` 门禁会执行完整 typecheck/test、NSIS
 自定义目录安装、打包版 UI 检查和真实加密配对；Windows 真机上的 DPAPI 跨重启、托盘常驻和
 手机断线恢复仍必须在发布前单独验收。
@@ -155,7 +155,7 @@ macOS 构建冒充正式安装包，也不会自动上传未签名附件。
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
 发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
-## 0.6.0 当前能力
+## 0.6.1 当前能力
 
 - `RuntimeAdapterRegistry` 和 `RuntimeSessionBroker` 将 Claude、Codex、Hermes 的会话统一呈现为
   同一套列表、对话、流、审批、追问、调整与中断操作，同时用 `(runtimeId, nativeSessionId)`
@@ -187,7 +187,7 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
 - 0.3 已有的持久 Agent SDK 会话、单写入者保护、可靠 WSS、WebRTC 直连、事件恢复、
   审批、提问、停止、推送唤醒、主机/项目/会话导航和稳定签名发布门继续保留。
 
-0.6.0 不包含隐藏 CoT、官方 OAuth 代理、自动故障转移、跨 Desktop 会话/账号/模型/权限
+0.6.1 不包含隐藏 CoT、官方 OAuth 代理、自动故障转移、跨 Desktop 会话/账号/模型/权限
 迁移、Claude Desktop 实时工具镜像、私有 CDP、完整项目浏览、远程编辑、动态站点直播、
 自动启动服务、PDF 内嵌渲染或超过 20 MiB 的产物传输。
 
@@ -231,7 +231,7 @@ npm run build -w @bridge/relay
 npm run test:desktop:packaged:windows
 ```
 
-产物位于 `apps/desktop/out/make/nsis.windows/x64/`，其中 `Bridge-0.6.0-Setup.exe`
+产物位于 `apps/desktop/out/make/nsis.windows/x64/`，其中 `Bridge-0.6.1-Setup.exe`
 会打开辅助式安装向导并显示目录选择页，不再静默固定到 Squirrel 的用户目录。应选择
 当前账户可写的位置，受管电脑可使用例如 `F:\Apps\Bridge`，不要选择被 IT 策略锁定的
 `ProgramData`。未签名包可能出现 SmartScreen 提示，仅适合本机/CI 验收。正式分发前在
@@ -261,9 +261,10 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.6.0 默认构建已经配置固定公网 WSS 与 Cloudflare 公共 STUN。自托管部署
-必须提供自己的固定 HTTPS/WSS，并显式配置 STUN/TURN。FCM/APNs 凭据、各平台
-签名和自动更新渠道仍属于正式发布条件。
+Bridge 0.6.1 默认构建使用国内 Relay `wss://relay.alioxis.com/ws` 与 Cloudflare
+公共 STUN。升级后的桌面端和移动端会优先尝试该 Relay，同时保留已存端点作为回退，
+不需要清空既有配对。自托管部署必须提供自己的固定 HTTPS/WSS，并显式配置
+STUN/TURN。FCM/APNs 凭据、各平台签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。
 
 License: MIT

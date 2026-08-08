@@ -1,4 +1,4 @@
-import { BridgeCrypto, type BridgeHostSnapshot } from "@bridge/protocol";
+import { BridgeCrypto, bridgeEndpoint, type BridgeHostSnapshot } from "@bridge/protocol";
 import { indexedDB } from "fake-indexeddb";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BridgeVault } from "./vault.js";
@@ -58,6 +58,36 @@ beforeAll(() => {
 });
 
 describe("BridgeVault pairing migration", () => {
+  it("prefers the packaged Relay while retaining an existing public Relay as fallback", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    const pairing = await BridgeCrypto.createDevicePairing({
+      hostId: "relay-migration-host",
+      pairingEpoch: 1,
+      roomId: "relay-migration-room",
+      relayUrl: "wss://relay.alioxis.uk/ws",
+      serviceOrigin: "https://relay.alioxis.uk",
+      relayEndpoints: [bridgeEndpoint("wss://relay.alioxis.uk/ws", 10, "public")],
+      activeEndpoint: "public",
+      desktopName: "Studio Mac",
+    });
+
+    await vault.importPairing(pairing.pairing);
+    expect(await vault.listHosts()).toEqual([expect.objectContaining({
+      relayUrl: "wss://relay.alioxis.com/ws",
+      activeEndpoint: "public",
+      relayEndpoints: expect.arrayContaining([
+        expect.objectContaining({ id: "public", url: "wss://relay.alioxis.com/ws", priority: 10 }),
+        expect.objectContaining({
+          id: "legacy-public-0",
+          url: "wss://relay.alioxis.uk/ws",
+          priority: 30,
+        }),
+      ]),
+    })]);
+    await vault.clear();
+  });
+
   it("marks protocol v2 hosts for repair and reconnects encrypted cache by stable hostId", async () => {
     const oldHostId = "stable-desktop-host";
     const oldPair = await BridgeCrypto.createDevicePairing({

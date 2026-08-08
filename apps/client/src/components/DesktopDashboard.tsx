@@ -6,6 +6,7 @@ import type {
   BridgeEvidencePage,
   BridgeEvent,
   BridgeHistoryPage,
+  BridgeDesktopAppStatus,
   BridgeDesktopRuntimeId,
   BridgePermissionMode,
   BridgeProviderProfile,
@@ -64,6 +65,7 @@ import {
   desktopRuntimeName,
   fileToAttachment,
   PermissionPrompt,
+  runtimeProviderLabel,
   stoppableBridgeTask,
 } from "./MobileWorkspace.js";
 import {
@@ -748,6 +750,15 @@ function DesktopSessions({
                     <span>{providerName(selected.activeProviderProfileId, providers)}</span>
                   </button>
                 )}
+                {!providerSwitchingAvailable && selectedRuntime !== "claude-desktop" && (
+                  <span
+                    className="session-provider-trigger is-static"
+                    title={`${selectedRuntimeName} 是独立的会话域，不提供跨 Desktop 接力`}
+                  >
+                    <ArrowRightLeft size={15} />
+                    <span>{runtimeProviderLabel(selectedRuntime)}</span>
+                  </span>
+                )}
                 {canConfigure && (
                   <button
                     type="button"
@@ -758,6 +769,15 @@ function DesktopSessions({
                     <Settings2 size={15} />
                     <span>{sessionProfile(selected)}</span>
                   </button>
+                )}
+                {!canConfigure && selectedRuntime !== "claude-desktop" && (
+                  <span
+                    className="session-profile-trigger is-static"
+                    title="模型与 Effort 由对应 Desktop 管理"
+                  >
+                    <Settings2 size={15} />
+                    <span>{sessionProfile(selected)}</span>
+                  </span>
                 )}
                 {canStop && (
                   <button
@@ -1120,30 +1140,35 @@ function DesktopDevices({
 function DesktopStatus({
   snapshot,
   onLaunchChange,
-  onClaudeDesktopLaunch,
-  onClaudeDesktopQuit,
+  onDesktopAppAction,
   onExport,
 }: {
   snapshot: DesktopControlSnapshot;
   onLaunchChange(enabled: boolean): Promise<void>;
-  onClaudeDesktopLaunch(): Promise<void>;
-  onClaudeDesktopQuit(): Promise<void>;
+  onDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void>;
   onExport(): Promise<void>;
 }) {
-  const [desktopAction, setDesktopAction] = useState<"launch" | "quit">();
-  const [desktopActionError, setDesktopActionError] = useState("");
+  const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
+  const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
   const takeoverReady = snapshot.runtime.state === "ready" || snapshot.runtime.state === "working";
   const takeoverTitle = takeoverReady
     ? snapshot.runtime.state === "working" ? "正在接管" : "自动接管已就绪"
     : snapshot.runtime.state === "auth-required" ? "等待第三方凭据" : "运行时不可用";
-  async function runDesktopAction(action: "launch" | "quit"): Promise<void> {
-    setDesktopAction(action);
-    setDesktopActionError("");
+  const desktopApps: BridgeDesktopAppStatus[] = snapshot.desktopApps ?? [{
+    id: "claude-desktop",
+    name: "Claude Desktop",
+    ...snapshot.claudeDesktop,
+  }];
+  async function runDesktopAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void> {
+    setDesktopAction({ runtimeId, action });
+    setDesktopActionError(undefined);
     try {
-      if (action === "launch") await onClaudeDesktopLaunch();
-      else await onClaudeDesktopQuit();
+      await onDesktopAppAction(runtimeId, action);
     } catch (error) {
-      setDesktopActionError(error instanceof Error ? error.message : String(error));
+      setDesktopActionError({
+        runtimeId,
+        message: error instanceof Error ? error.message : String(error),
+      });
     } finally {
       setDesktopAction(undefined);
     }
@@ -1197,34 +1222,36 @@ function DesktopStatus({
         </section>
       </div>
       <section className="status-settings">
-        <div className="desktop-app-control">
-          <span>
-            <strong>Claude Desktop</strong>
-            <small className={desktopActionError ? "desktop-app-error" : undefined}>
-              {desktopActionError || snapshot.claudeDesktop.detail}
-            </small>
-          </span>
-          <div className="desktop-app-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={Boolean(desktopAction) || !snapshot.claudeDesktop.canLaunch}
-              onClick={() => void runDesktopAction("launch")}
-            >
-              <Play size={15} />
-              {desktopAction === "launch" ? "启动中" : "启动"}
-            </button>
-            <button
-              type="button"
-              className="danger-button"
-              disabled={Boolean(desktopAction) || !snapshot.claudeDesktop.canQuit}
-              onClick={() => void runDesktopAction("quit")}
-            >
-              <Power size={15} />
-              {desktopAction === "quit" ? "退出中" : "退出"}
-            </button>
+        {desktopApps.map((desktopApp) => (
+          <div className="desktop-app-control" key={desktopApp.id}>
+            <span>
+              <strong>{desktopApp.name}</strong>
+              <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
+                {desktopActionError?.runtimeId === desktopApp.id ? desktopActionError.message : desktopApp.detail}
+              </small>
+            </span>
+            <div className="desktop-app-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={Boolean(desktopAction) || !desktopApp.canLaunch}
+                onClick={() => void runDesktopAction(desktopApp.id, "launch")}
+              >
+                <Play size={15} />
+                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch" ? "启动中" : "启动"}
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                disabled={Boolean(desktopAction) || !desktopApp.canQuit}
+                onClick={() => void runDesktopAction(desktopApp.id, "quit")}
+              >
+                <Power size={15} />
+                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
+              </button>
+            </div>
           </div>
-        </div>
+        ))}
         <label className="toggle-row">
           <span><strong>开机自动运行</strong><small>登录系统后 Bridge 自动待机</small></span>
           <input type="checkbox" checked={snapshot.launchAtLogin} onChange={(event) => void onLaunchChange(event.target.checked)} />
@@ -1327,8 +1354,11 @@ export function DesktopDashboard({ theme, onToggleTheme }: { theme: Theme; onTog
           <DesktopStatus
             snapshot={snapshot}
             onLaunchChange={async (enabled) => setSnapshot(await api.setLaunchAtLogin(enabled))}
-            onClaudeDesktopLaunch={async () => setSnapshot(await api.launchClaudeDesktop())}
-            onClaudeDesktopQuit={async () => setSnapshot(await api.quitClaudeDesktop())}
+            onDesktopAppAction={async (runtimeId, action) => setSnapshot(
+              action === "launch"
+                ? await api.launchDesktopApp(runtimeId)
+                : await api.quitDesktopApp(runtimeId),
+            )}
             onExport={async () => { await api.exportDiagnostics(); }}
           />
         )}

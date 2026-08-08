@@ -342,11 +342,24 @@ function refreshV3Endpoints(
   config: DesktopConfigFileV3 | DesktopConfigFileV4,
   defaults: DesktopConfigDefaults,
 ): BridgeEndpoint[] {
-  const refreshed = config.relayEndpoints.map((endpoint) => (
-    endpoint.kind === "lan-relay" && shouldRefreshLocalRelay(endpoint.url, defaults.relayUrl)
+  const refreshed = config.relayEndpoints.map((endpoint, index) => {
+    const updated = endpoint.kind === "lan-relay" && shouldRefreshLocalRelay(endpoint.url, defaults.relayUrl)
       ? { ...endpoint, url: defaults.relayUrl }
-      : endpoint
-  ));
+      : endpoint;
+    if (
+      defaults.publicRelayUrl &&
+      updated.kind === "public-relay" &&
+      updated.id === "public" &&
+      updated.url !== defaults.publicRelayUrl
+    ) {
+      return {
+        ...updated,
+        id: `legacy-public-${index}`,
+        priority: Math.max(updated.priority, 30),
+      };
+    }
+    return updated;
+  });
   return normalizeBridgeEndpoints([...defaultEndpoints(defaults), ...refreshed]);
 }
 

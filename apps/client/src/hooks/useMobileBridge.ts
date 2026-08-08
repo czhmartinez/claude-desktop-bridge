@@ -10,6 +10,7 @@ import {
   randomId,
   type BridgeAttachment,
   type BridgeDeliveryState,
+  type BridgeDesktopAppStatus,
   type BridgeDesktopRuntimeId,
   type BridgeEndpoint,
   type BridgeEffort,
@@ -2123,6 +2124,38 @@ export function useMobileBridge() {
     [controlClaudeDesktop],
   );
 
+  const controlDesktopApp = useCallback(async (
+    runtimeId: BridgeDesktopRuntimeId,
+    action: "status" | "launch" | "quit",
+  ): Promise<BridgeDesktopAppStatus[]> => {
+    const method: BridgeRequest["method"] = `desktop.app.${action}`;
+    const response = await sendRequest(method, { runtimeId }, {
+      wait: true,
+      timeoutMs: action === "status" ? 20_000 : 45_000,
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error?.message ?? (
+        action === "launch" ? "Desktop 应用启动失败" : action === "quit" ? "Desktop 应用退出失败" : "无法读取 Desktop 应用状态"
+      ));
+    }
+    const result = response.result as { desktopApps?: BridgeDesktopAppStatus[] } | undefined;
+    if (!result?.desktopApps) throw new Error("电脑未返回 Desktop 应用状态");
+    const desktopApps = result.desktopApps;
+    setState((current) => {
+      if (!current.snapshot) return current;
+      const claudeDesktop = desktopApps.find((app) => app.id === "claude-desktop");
+      return {
+        ...current,
+        snapshot: {
+          ...current.snapshot,
+          desktopApps,
+          ...(claudeDesktop ? { claudeDesktop } : {}),
+        },
+      };
+    });
+    return desktopApps;
+  }, [sendRequest]);
+
   const refresh = useCallback(async (sessionId?: string) => {
     try {
       await resumeEvents();
@@ -2218,6 +2251,7 @@ export function useMobileBridge() {
     cancelProviderSwitch,
     refreshProviders,
     launchClaudeDesktop,
+    controlDesktopApp,
     quitClaudeDesktop,
     refresh,
     forgetHost,

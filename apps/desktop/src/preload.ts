@@ -23,6 +23,12 @@ contextBridge.exposeInMainWorld("bridgeDesktop", {
   quitClaudeDesktop: () => (
     ipcRenderer.invoke("bridge:quit-claude-desktop") as Promise<DesktopControlSnapshot>
   ),
+  launchDesktopApp: (runtimeId: string) => (
+    ipcRenderer.invoke("bridge:launch-desktop-app", runtimeId) as Promise<DesktopControlSnapshot>
+  ),
+  quitDesktopApp: (runtimeId: string) => (
+    ipcRenderer.invoke("bridge:quit-desktop-app", runtimeId) as Promise<DesktopControlSnapshot>
+  ),
   request: (request: LocalBridgeRequest) => (
     ipcRenderer.invoke("bridge:request", request) as Promise<BridgeResponse>
   ),

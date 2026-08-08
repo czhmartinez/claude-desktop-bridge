@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { rename, writeFile } from "node:fs/promises";
-import { parseBridgeIceServers, relayPathForUrl } from "@bridge/protocol";
+import { parseBridgeIceServers, relayPathForUrl, type BridgeDesktopRuntimeId } from "@bridge/protocol";
 import {
   app,
   BrowserWindow,
@@ -32,6 +32,7 @@ import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
+import { DESKTOP_APP_DEFINITIONS } from "./desktop-app-definitions.js";
 import { ClaudeDesktopSessionRegistrar } from "./claude-desktop-session-registrar.js";
 import { ElectronEvidencePreviewRenderer } from "./artifact-preview.js";
 import { EvidenceManager } from "./evidence-manager.js";
@@ -209,6 +210,12 @@ async function desktopMain(): Promise<void> {
     openExternal: (url) => shell.openExternal(url),
   });
   const claudeDesktop = new ClaudeDesktopLifecycle();
+  const desktopAppControls = new Map(
+    DESKTOP_APP_DEFINITIONS.map((definition) => [
+      definition.id,
+      definition.id === "claude-desktop" ? claudeDesktop : new ClaudeDesktopLifecycle({ definition }),
+    ]),
+  );
   let RTCPeerConnectionImpl: typeof RTCPeerConnection | undefined;
   try {
     RTCPeerConnectionImpl = loadDesktopPeerConnection();
@@ -232,6 +239,7 @@ async function desktopMain(): Promise<void> {
     providers,
     handoffs,
     runtimeSessions,
+    desktopAppControls,
   );
 
   let mainWindow: BrowserWindow | undefined;
@@ -260,28 +268,35 @@ async function desktopMain(): Promise<void> {
       return action(...args);
     });
   };
-  handle("bridge:get-snapshot", () => controller.snapshot());
-  handle("bridge:create-pairing", () => controller.createPairing());
-  handle("bridge:revoke-device", (deviceId: string) => controller.revokeDevice(deviceId));
-  handle("bridge:set-launch-at-login", (enabled: boolean) => controller.setLaunchAtLogin(Boolean(enabled)));
-  handle("bridge:set-anthropic-api-key", (value: string) => controller.setAnthropicApiKey(value));
-  handle("bridge:remove-anthropic-api-key", () => controller.removeAnthropicApiKey());
-  handle("bridge:launch-claude-desktop", () => controller.launchClaudeDesktop());
-  handle("bridge:quit-claude-desktop", async () => {
+
+  function isDesktopRuntimeId(value: string): value is BridgeDesktopRuntimeId {
+    return value === "claude-desktop" || value === "codex-desktop" || value === "hermes-desktop";
+  }
+
+  async function quitDesktopAppWithConfirmation(runtimeId: BridgeDesktopRuntimeId) {
+    const displayName = runtimeId === "claude-desktop"
+      ? "Claude Desktop"
+      : runtimeId === "codex-desktop"
+        ? "Codex（ChatGPT）"
+        : "Hermes";
     const snapshot = await controller.snapshot();
-    const desktopTurnRunning = snapshot.sessions.some((session) => (
-      session.turnState === "running" &&
-      (
-        session.ownership === "DESKTOP_OBSERVED" ||
-        session.ownership === "DESKTOP_MANAGED_RUNNING" ||
-        session.ownership === "OWNERSHIP_CONFLICT"
-      )
-    ));
+    const desktopTurnRunning = runtimeId === "claude-desktop"
+      ? snapshot.sessions.some((session) => (
+        session.turnState === "running" &&
+        (
+          session.ownership === "DESKTOP_OBSERVED" ||
+          session.ownership === "DESKTOP_MANAGED_RUNNING" ||
+          session.ownership === "OWNERSHIP_CONFLICT"
+        )
+      ))
+      : snapshot.sessions.some((session) => (
+        session.runtimeId === runtimeId && session.turnState === "running"
+      ));
     if (desktopTurnRunning) {
       const options: Electron.MessageBoxOptions = {
         type: "warning",
-        title: "退出 Claude Desktop",
-        message: "Claude Desktop 仍有会话正在运行",
+        title: `退出 ${displayName}`,
+        message: `${displayName} 仍有会话正在运行`,
         detail: "现在退出会中断电脑端正在执行的内容。由 Bridge 接管的远程任务不会受到影响。",
         buttons: ["仍然退出", "取消"],
         defaultId: 1,
@@ -293,7 +308,26 @@ async function desktopMain(): Promise<void> {
         : await dialog.showMessageBox(options);
       if (result.response !== 0) return snapshot;
     }
-    return controller.quitClaudeDesktop();
+    return controller.quitDesktopApp(runtimeId);
+  }
+
+  handle("bridge:get-snapshot", () => controller.snapshot());
+  handle("bridge:create-pairing", () => controller.createPairing());
+  handle("bridge:revoke-device", (deviceId: string) => controller.revokeDevice(deviceId));
+  handle("bridge:set-launch-at-login", (enabled: boolean) => controller.setLaunchAtLogin(Boolean(enabled)));
+  handle("bridge:set-anthropic-api-key", (value: string) => controller.setAnthropicApiKey(value));
+  handle("bridge:remove-anthropic-api-key", () => controller.removeAnthropicApiKey());
+  handle("bridge:launch-claude-desktop", () => controller.launchClaudeDesktop());
+  handle("bridge:quit-claude-desktop", async () => {
+    return quitDesktopAppWithConfirmation("claude-desktop");
+  });
+  handle("bridge:launch-desktop-app", (runtimeId: string) => {
+    if (!isDesktopRuntimeId(runtimeId)) throw new Error("Unknown Desktop runtime");
+    return controller.launchDesktopApp(runtimeId);
+  });
+  handle("bridge:quit-desktop-app", async (runtimeId: string) => {
+    if (!isDesktopRuntimeId(runtimeId)) throw new Error("Unknown Desktop runtime");
+    return quitDesktopAppWithConfirmation(runtimeId);
   });
   handle("bridge:request", (request: LocalBridgeRequest) => controller.dispatchLocal(request));
   handle("bridge:export-diagnostics", async () => {

@@ -1,4 +1,5 @@
 import type {
+  BridgeDesktopRuntimeId,
   BridgeEvent,
   BridgeRequest,
   BridgeResponse,
@@ -22,6 +23,8 @@ export interface DesktopApi {
   removeAnthropicApiKey(): Promise<DesktopControlSnapshot>;
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;
   quitClaudeDesktop(): Promise<DesktopControlSnapshot>;
+  launchDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot>;
+  quitDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot>;
   request(request: LocalBridgeRequest): Promise<BridgeResponse>;
   exportDiagnostics(): Promise<{ saved: boolean; path?: string }>;
   onSnapshot(listener: (snapshot: DesktopControlSnapshot) => void): () => void;

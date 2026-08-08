@@ -1,15 +1,19 @@
 import { execFile as execFileCallback, spawn, spawnSync } from "node:child_process";
 import { access } from "node:fs/promises";
-import { basename, join, win32 as windowsPath } from "node:path";
+import { basename } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import type { ClaudeDesktopAppStatus } from "@bridge/protocol";
+import {
+  CLAUDE_DESKTOP_APP,
+  desktopAppPathCandidates,
+  type DesktopAppDefinition,
+} from "./desktop-app-definitions.js";
 
 const execFile = promisify(execFileCallback);
-const CLAUDE_BUNDLE = "/Applications/Claude.app";
-const CLAUDE_EXECUTABLE = `${CLAUDE_BUNDLE}/Contents/MacOS/Claude`;
 
 export interface ClaudeDesktopLifecycleOptions {
+  definition?: DesktopAppDefinition;
   platform?: NodeJS.Platform;
   environment?: NodeJS.ProcessEnv;
   executablePath?: string;
@@ -28,8 +32,9 @@ interface CachedStatus {
   observedAt: number;
 }
 
-function unique(values: Array<string | undefined>): string[] {
-  return [...new Set(values.filter((value): value is string => Boolean(value && value.trim())))];
+function darwinExecutable(definition: DesktopAppDefinition): string {
+  const baseName = definition.win32ExecutableName.replace(/\.exe$/iu, "");
+  return `${definition.darwinBundle}/Contents/MacOS/${baseName}`;
 }
 
 /** Resolve the ordinary Claude Desktop executable without touching private app state. */
@@ -38,31 +43,18 @@ export function findClaudeDesktopExecutable(
   home = homedir(),
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
-  const pathJoin = platform === "win32" ? windowsPath.join : join;
-  const localAppData = environment.LOCALAPPDATA ?? pathJoin(home, "AppData", "Local");
-  const programFiles = environment.ProgramW6432
-    ?? environment.ProgramFiles
-    ?? "C:\\Program Files";
-  const programFilesX86 = environment["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
-  return unique([
-    environment.BRIDGE_CLAUDE_DESKTOP_PATH,
-    pathJoin(localAppData, "Programs", "Claude", "Claude.exe"),
-    pathJoin(localAppData, "Claude", "Claude.exe"),
-    pathJoin(localAppData, "AnthropicClaude", "Claude.exe"),
-    pathJoin(localAppData, "Microsoft", "WindowsApps", "Claude.exe"),
-    pathJoin(programFiles, "Claude", "Claude.exe"),
-    pathJoin(programFilesX86, "Claude", "Claude.exe"),
-  ])[0];
+  return desktopAppPathCandidates(CLAUDE_DESKTOP_APP, environment, home, platform)[0];
 }
 
 async function applicationInstalled(
+  definition: DesktopAppDefinition,
   platform = process.platform,
   environment: NodeJS.ProcessEnv = process.env,
   executablePath?: string,
 ): Promise<boolean> {
   const candidate = platform === "win32"
-    ? executablePath ?? findClaudeDesktopExecutable(environment, homedir(), platform)
-    : CLAUDE_BUNDLE;
+    ? executablePath ?? desktopAppPathCandidates(definition, environment, homedir(), platform)[0]
+    : definition.darwinBundle;
   if (!candidate) return false;
   try {
     await access(candidate);
@@ -86,12 +78,13 @@ export function parseClaudeDesktopTasklist(stdout: string): number[] {
 }
 
 async function listMainProcessIds(
+  definition: DesktopAppDefinition,
   platform = process.platform,
   executablePath?: string,
   _environment: NodeJS.ProcessEnv = process.env,
 ): Promise<number[]> {
   if (platform === "win32") {
-    const executableName = basename(executablePath ?? "Claude.exe");
+    const executableName = basename(executablePath ?? definition.win32ExecutableName);
     const { stdout } = await execFile(
       "tasklist",
       ["/FI", `IMAGENAME eq ${executableName}`, "/FO", "CSV", "/NH"],
@@ -99,25 +92,27 @@ async function listMainProcessIds(
     );
     return parseWindowsTasklist(stdout, executableName);
   }
+  const executable = darwinExecutable(definition);
   const { stdout } = await execFile("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" });
   return stdout.split("\n").flatMap((line) => {
     const match = /^\s*(\d+)\s+(.+)$/u.exec(line);
     if (!match) return [];
     const command = match[2]!.trim();
-    return command === CLAUDE_EXECUTABLE || command.startsWith(`${CLAUDE_EXECUTABLE} `)
+    return command === executable || command.startsWith(`${executable} `)
       ? [Number(match[1])]
       : [];
   });
 }
 
 async function launchApplication(
+  definition: DesktopAppDefinition,
   platform = process.platform,
   environment: NodeJS.ProcessEnv = process.env,
   executablePath?: string,
 ): Promise<void> {
   if (platform === "win32") {
-    const executable = executablePath ?? findClaudeDesktopExecutable(environment, homedir(), platform);
-    if (!executable) throw new Error("未找到 Claude Desktop 可执行文件。");
+    const executable = executablePath ?? desktopAppPathCandidates(definition, environment, homedir(), platform)[0];
+    if (!executable) throw new Error(`未找到 ${definition.displayName} 可执行文件。`);
     await new Promise<void>((resolve, reject) => {
       const child = spawn(executable, [], {
         detached: true,
@@ -133,7 +128,7 @@ async function launchApplication(
     });
     return;
   }
-  await execFile("/usr/bin/open", [CLAUDE_BUNDLE], { encoding: "utf8" });
+  await execFile("/usr/bin/open", [definition.darwinBundle], { encoding: "utf8" });
 }
 
 function signalProcess(
@@ -154,8 +149,11 @@ function signalProcess(
 
 export class ClaudeDesktopLifecycle {
   private cached: CachedStatus | undefined;
+  readonly definition: DesktopAppDefinition;
 
-  constructor(private readonly options: ClaudeDesktopLifecycleOptions = {}) {}
+  constructor(private readonly options: ClaudeDesktopLifecycleOptions = {}) {
+    this.definition = options.definition ?? CLAUDE_DESKTOP_APP;
+  }
 
   async status(force = false): Promise<ClaudeDesktopAppStatus> {
     const cacheTtlMs = this.options.cacheTtlMs ?? 1_000;
@@ -175,6 +173,7 @@ export class ClaudeDesktopLifecycle {
     const platform = this.options.platform ?? process.platform;
     const environment = this.options.environment ?? process.env;
     await (this.options.launchApplication ?? (() => launchApplication(
+      this.definition,
       platform,
       environment,
       this.options.executablePath,
@@ -189,6 +188,7 @@ export class ClaudeDesktopLifecycle {
 
     const platform = this.options.platform ?? process.platform;
     const pids = await (this.options.listMainProcessIds ?? (() => listMainProcessIds(
+      this.definition,
       platform,
       this.options.executablePath,
       this.options.environment ?? process.env,
@@ -208,17 +208,19 @@ export class ClaudeDesktopLifecycle {
   }
 
   private async readStatus(): Promise<ClaudeDesktopAppStatus> {
+    const name = this.definition.displayName;
     const platform = this.options.platform ?? process.platform;
     if (platform !== "darwin" && platform !== "win32") {
       return {
         state: "unavailable",
-        detail: "当前平台暂不支持控制 Claude Desktop。",
+        detail: `当前平台暂不支持控制 ${name}。`,
         canLaunch: false,
         canQuit: false,
       };
     }
     const environment = this.options.environment ?? process.env;
     if (!await (this.options.applicationInstalled ?? (() => applicationInstalled(
+      this.definition,
       platform,
       environment,
       this.options.executablePath,
@@ -226,8 +228,8 @@ export class ClaudeDesktopLifecycle {
       return {
         state: "unavailable",
         detail: platform === "win32"
-          ? "未找到 Claude Desktop 可执行文件。"
-          : "未在“应用程序”文件夹中找到 Claude Desktop。",
+          ? `未找到 ${name} 可执行文件。`
+          : `未在“应用程序”文件夹中找到 ${name}。`,
         canLaunch: false,
         canQuit: false,
       };
@@ -235,6 +237,7 @@ export class ClaudeDesktopLifecycle {
     let running: boolean;
     try {
       running = (await (this.options.listMainProcessIds ?? (() => listMainProcessIds(
+        this.definition,
         platform,
         this.options.executablePath,
         environment,
@@ -242,7 +245,7 @@ export class ClaudeDesktopLifecycle {
     } catch {
       return {
         state: "unavailable",
-        detail: "无法检查 Claude Desktop 的运行状态。",
+        detail: `无法检查 ${name} 的运行状态。`,
         canLaunch: false,
         canQuit: false,
       };
@@ -250,13 +253,13 @@ export class ClaudeDesktopLifecycle {
     return running
       ? {
           state: "running",
-          detail: "Claude Desktop 正在运行。",
+          detail: `${name} 正在运行。`,
           canLaunch: false,
           canQuit: true,
         }
       : {
           state: "stopped",
-          detail: "Claude Desktop 已退出，Bridge 仍可继续处理远程会话。",
+          detail: `${name} 已退出，Bridge 仍可继续处理远程会话。`,
           canLaunch: true,
           canQuit: false,
         };
@@ -266,6 +269,7 @@ export class ClaudeDesktopLifecycle {
     expected: "running" | "stopped",
     attempts: number,
   ): Promise<ClaudeDesktopAppStatus> {
+    const name = this.definition.displayName;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const status = await this.status(true);
       if (status.state === expected) return status;
@@ -274,7 +278,7 @@ export class ClaudeDesktopLifecycle {
       )))(250);
     }
     throw new Error(expected === "running"
-      ? "Claude Desktop 启动超时，请检查应用是否可以正常打开。"
-      : "Claude Desktop 未能正常退出，请在应用中手动退出。");
+      ? `${name} 启动超时，请检查应用是否可以正常打开。`
+      : `${name} 未能正常退出，请在应用中手动退出。`);
   }
 }

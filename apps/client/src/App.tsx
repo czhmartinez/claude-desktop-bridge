@@ -107,8 +107,7 @@ export function App() {
       onCommitProviderSwitch={mobile.commitProviderSwitch}
       onCancelProviderSwitch={mobile.cancelProviderSwitch}
       onRefreshProviders={mobile.refreshProviders}
-      onClaudeDesktopLaunch={mobile.launchClaudeDesktop}
-      onClaudeDesktopQuit={mobile.quitClaudeDesktop}
+      onDesktopAppAction={mobile.controlDesktopApp}
       onRefresh={mobile.refresh}
       onBackToHosts={mobile.backToHosts}
       onRetry={mobile.retryConnection}

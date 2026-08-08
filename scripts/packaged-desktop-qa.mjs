@@ -48,6 +48,7 @@ try {
       "evidence.v1",
       "permission.policy.v1",
       "provider.profile.v1",
+      "runtime.adapter.v1",
     ],
   );
   assert.ok(["standard", "full-access"].includes(snapshot.host.defaultPermissionMode));

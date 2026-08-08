@@ -54,14 +54,32 @@ export interface StoredBridgeHost {
 }
 
 const PACKAGED_PUBLIC_RELAY = String(
-  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "wss://relay.alioxis.uk/ws",
+  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "wss://relay.alioxis.com/ws",
 ).trim();
 const PACKAGED_SERVICE_ORIGIN = String(
-  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "https://relay.alioxis.uk",
+  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "https://relay.alioxis.com",
 ).trim();
 const PACKAGED_ICE_SERVERS = parseBridgeIceServers(String(
   import.meta.env.VITE_BRIDGE_ICE_SERVERS ?? '[{"urls":"stun:stun.cloudflare.com:3478"}]',
 ));
+
+function refreshStoredRelayEndpoints(stored: StoredCrypto): BridgeEndpoint[] {
+  return (stored.relayEndpoints ?? []).map((endpoint, index) => {
+    if (
+      PACKAGED_PUBLIC_RELAY &&
+      endpoint.kind === "public-relay" &&
+      endpoint.id === "public" &&
+      endpoint.url !== PACKAGED_PUBLIC_RELAY
+    ) {
+      return {
+        ...endpoint,
+        id: `legacy-public-${index}`,
+        priority: Math.max(endpoint.priority, 30),
+      };
+    }
+    return endpoint;
+  });
+}
 
 function serviceOriginForRelay(relayUrl: string): string {
   try {
@@ -85,7 +103,7 @@ function transportForStored(stored: StoredCrypto): {
 } {
   const relayEndpoints = normalizeBridgeEndpoints([
     ...(PACKAGED_PUBLIC_RELAY ? [bridgeEndpoint(PACKAGED_PUBLIC_RELAY, 10, "public")] : []),
-    ...(stored.relayEndpoints ?? []),
+    ...refreshStoredRelayEndpoints(stored),
     bridgeEndpoint(stored.identity.relayUrl, 100, "legacy"),
   ]);
   const active = selectBridgeEndpoint(

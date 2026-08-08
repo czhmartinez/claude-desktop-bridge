@@ -518,6 +518,32 @@ const hostSnapshot = {
   },
   projects: [project, secondaryProject, codexProject, hermesProject],
   sessions,
+  desktopApps: [
+    {
+      id: "claude-desktop",
+      name: "Claude Desktop",
+      state: "running",
+      detail: "Claude Desktop 正在运行。",
+      canLaunch: false,
+      canQuit: true,
+    },
+    {
+      id: "codex-desktop",
+      name: "Codex（ChatGPT）",
+      state: "running",
+      detail: "Codex（ChatGPT）正在运行。",
+      canLaunch: false,
+      canQuit: true,
+    },
+    {
+      id: "hermes-desktop",
+      name: "Hermes",
+      state: "running",
+      detail: "Hermes 正在运行。",
+      canLaunch: false,
+      canQuit: true,
+    },
+  ],
   runtimes: [
     {
       id: "claude-desktop",
@@ -716,6 +742,22 @@ desktopSocket.onMessage((message, encrypted) => {
         canQuit: false,
       };
       result = { claudeDesktop: hostSnapshot.claudeDesktop };
+    } else if (request.method === "desktop.app.status") {
+      result = { desktopApps: hostSnapshot.desktopApps };
+    } else if (request.method === "desktop.app.launch" || request.method === "desktop.app.quit") {
+      const runtimeId = request.params.runtimeId;
+      const app = hostSnapshot.desktopApps.find((candidate) => candidate.id === runtimeId);
+      if (app) {
+        const launching = request.method === "desktop.app.launch";
+        Object.assign(app, {
+          state: launching ? "running" : "stopped",
+          detail: launching ? `${app.name} 正在运行。` : `${app.name} 已退出，Bridge 仍可继续处理远程会话。`,
+          canLaunch: !launching,
+          canQuit: launching,
+        });
+        if (runtimeId === "claude-desktop") hostSnapshot.claudeDesktop = app;
+      }
+      result = { desktopApps: hostSnapshot.desktopApps };
     } else if (request.method === "turn.start" || request.method === "turn.steer") {
       result = { commandId: "qa-command", state: "running" };
     } else if (request.method === "turn.interrupt") {
@@ -731,7 +773,7 @@ desktopSocket.onMessage((message, encrypted) => {
       ok: true,
       result,
     }, message.header.fromDeviceId);
-    if (request.method.startsWith("claude.desktop.")) {
+    if (request.method.startsWith("claude.desktop.") || request.method.startsWith("desktop.app.")) {
       await sendToMobile({ kind: "snapshot", snapshot: hostSnapshot }, message.header.fromDeviceId);
     }
     desktopSocket.ack([encrypted.id]);
@@ -814,10 +856,11 @@ try {
   }
   await mobile.getByRole("button", { name: "全部展开" }).click();
   await waitingSessionRow.waitFor();
-  await mobile.getByRole("button", { name: "退出", exact: true }).click();
+  const claudeMobileControl = mobile.locator(".mobile-desktop-control").filter({ hasText: "Claude Desktop" }).first();
+  await claudeMobileControl.getByRole("button", { name: "退出", exact: true }).click();
   await mobile.getByRole("button", { name: "退出 Claude Desktop", exact: true }).click();
   await mobile.getByText("Claude Desktop 已退出，Bridge 仍可继续处理远程会话。").waitFor();
-  await mobile.getByRole("button", { name: "启动", exact: true }).click();
+  await claudeMobileControl.getByRole("button", { name: "启动", exact: true }).click();
   await mobile.getByText("Claude Desktop 正在运行。").waitFor();
   await checkPage(mobile, "mobile catalog");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-catalog-390x844.png"), fullPage: true });
@@ -1030,6 +1073,44 @@ try {
             canLaunch: true,
             canQuit: false,
           },
+        };
+        for (const listener of snapshotListeners) listener(current);
+        return current;
+      },
+      launchDesktopApp: async (runtimeId) => {
+        window.__bridgeQaClaudeActions.push(`launch:${runtimeId}`);
+        current = {
+          ...current,
+          desktopApps: current.desktopApps.map((app) => app.id === runtimeId
+            ? { ...app, state: "running", detail: `${app.name} 正在运行。`, canLaunch: false, canQuit: true }
+            : app),
+          ...(runtimeId === "claude-desktop" ? {
+            claudeDesktop: {
+              state: "running",
+              detail: "Claude Desktop 正在运行。",
+              canLaunch: false,
+              canQuit: true,
+            },
+          } : {}),
+        };
+        for (const listener of snapshotListeners) listener(current);
+        return current;
+      },
+      quitDesktopApp: async (runtimeId) => {
+        window.__bridgeQaClaudeActions.push(`quit:${runtimeId}`);
+        current = {
+          ...current,
+          desktopApps: current.desktopApps.map((app) => app.id === runtimeId
+            ? { ...app, state: "stopped", detail: `${app.name} 已退出，Bridge 仍可继续处理远程会话。`, canLaunch: true, canQuit: false }
+            : app),
+          ...(runtimeId === "claude-desktop" ? {
+            claudeDesktop: {
+              state: "stopped",
+              detail: "Claude Desktop 已退出，Bridge 仍可继续处理远程会话。",
+              canLaunch: true,
+              canQuit: false,
+            },
+          } : {}),
         };
         for (const listener of snapshotListeners) listener(current);
         return current;

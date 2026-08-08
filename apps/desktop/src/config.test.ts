@@ -224,21 +224,21 @@ describe("desktop configuration", () => {
     expect(JSON.stringify(persisted)).not.toContain(loaded.evidenceKey);
   });
 
-  it("refreshes public service and ICE defaults for an existing schema v3 pairing", async () => {
+  it("migrates an existing public relay to a lower-priority fallback", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
     const path = join(directory, "bridge-config.json");
-    const local = new DesktopConfigRepository(path, protector, {
-      relayUrl: "ws://192.168.1.32:8788/ws",
+    const legacy = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.alioxis.uk/ws",
       desktopName: "Test PC",
     });
-    const created = await local.loadOrCreate();
-    await local.save(created);
+    const created = await legacy.loadOrCreate();
+    await legacy.save(created);
 
     const publicBuild = new DesktopConfigRepository(path, protector, {
       relayUrl: "ws://192.168.1.32:8788/ws",
-      publicRelayUrl: "wss://relay.alioxis.uk/ws",
-      serviceOrigin: "https://relay.alioxis.uk",
+      publicRelayUrl: "wss://relay.alioxis.com/ws",
+      serviceOrigin: "https://relay.alioxis.com",
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
       desktopName: "Test PC",
     });
@@ -247,9 +247,32 @@ describe("desktop configuration", () => {
     expect(loaded).toMatchObject({
       roomId: created.roomId,
       hostSecret: created.hostSecret,
-      relayUrl: "wss://relay.alioxis.uk/ws",
-      serviceOrigin: "https://relay.alioxis.uk",
+      relayUrl: "wss://relay.alioxis.com/ws",
+      serviceOrigin: "https://relay.alioxis.com",
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    });
+    expect(loaded?.relayEndpoints).toEqual(expect.arrayContaining([
+      {
+        id: "public",
+        kind: "public-relay",
+        url: "wss://relay.alioxis.com/ws",
+        priority: 10,
+      },
+      {
+        id: "legacy-public-0",
+        kind: "public-relay",
+        url: "wss://relay.alioxis.uk/ws",
+        priority: 30,
+      },
+    ]));
+
+    await publicBuild.save(loaded!);
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      activeEndpoint: "public",
+      serviceOrigin: "https://relay.alioxis.com",
+      relayEndpoints: expect.arrayContaining([
+        expect.objectContaining({ id: "legacy-public-0", url: "wss://relay.alioxis.uk/ws" }),
+      ]),
     });
   });
 

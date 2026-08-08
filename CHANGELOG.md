@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1
+
+- Add Codex Desktop and Hermes Desktop adapters behind the same Bridge session, streaming,
+  approval, question, steer and interrupt experience while keeping native runtime identities isolated.
+- Add Tencent Cloud domestic Relay at `relay.alioxis.com` with HTTPS/WSS termination, persistent
+  SQLite storage, health checks and a deterministic migration path from the previous public Relay.
+- Prefer the domestic Relay in packaged Desktop and Android clients while retaining the previous
+  public endpoint as a lower-priority fallback.
+
 ## 0.5.3
 
 - Replace the no-prompt Windows Squirrel installer with an assisted NSIS wizard that exposes the

@@ -57,6 +57,17 @@ BRIDGE_RELAY_URL=wss://你的域名/ws npm run probe:relay
 选项；面向普通用户的安装包应写入 Bridge 托管 Relay。Relay 数据位于
 `/data/bridge-relay.db`，WAL 和每日七份备份都必须位于持久卷。
 
+当前 Bridge 托管 Relay 为 `relay.alioxis.com`。在腾讯云上使用
+`deploy/relay.compose.yml` 启动 `bridge-relay`，并把
+`deploy/relay.nginx.conf.template` 渲染后挂入现有 Nginx 容器。部署目录中的
+`relay.env.example` 仅包含非敏感运行参数；实际 `.env` 不入库。上线后至少验证：
+
+```bash
+curl -fsS https://relay.alioxis.com/health
+curl -fsS https://relay.alioxis.com/ready
+npm run probe:relay
+```
+
 Bridge 不从 `BRIDGE_SERVICE_ORIGIN` 自动派生 STUN 地址。ICE 必须显式配置，
 例如 Cloudflare 的公共 STUN：
 
@@ -202,7 +213,7 @@ Windows 与 macOS 共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic AP
 Windows 读取 `%APPDATA%\Claude\claude-code-sessions`，并通过 PowerShell/tasklist
 检查实例。私有 CDP 仍在两个平台都关闭，不属于发布能力。
 
-0.6.0 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
+0.6.1 的授权策略和手机后台连续性同样属于 Windows Host 的发布范围。Windows runner
 必须先运行完整 typecheck/test，再生成辅助式 NSIS 包，并执行：
 
 ```powershell
@@ -275,7 +286,7 @@ npm run test:webrtc:native
 稳定版矩阵为 macOS/Windows/Linux x Android/iOS。只有实机、签名与固定公网
 WSS 全部通过的平台才能标记“可分发”。
 
-V0.6.0 必须同时生成本机稳定签名 DMG、Windows NSIS `Setup.exe` 与
+V0.6.1 必须同时生成本机稳定签名 DMG、Windows NSIS `Setup.exe` 与
 Android APK，并记录版本、SHA-256、签名校验、打包态 CDP/配对结果和真机状态。
 Windows 正式分发必须有有效 Authenticode；CI 会生成
 `windows-release-evidence.json`，没有证书时只能标记为未签名验收包。没有 Anthropic

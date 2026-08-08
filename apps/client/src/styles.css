@@ -4203,6 +4203,18 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.session-profile-trigger.is-static,
+.session-provider-trigger.is-static {
+  cursor: default;
+}
+
+.mobile-runtime-provider {
+  max-width: 132px;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 9px;
+}
+
 .provider-route-banner {
   width: 100%;
   border-width: 0 0 1px;

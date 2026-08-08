@@ -1,0 +1,33 @@
+services:
+  relay:
+    build:
+      context: ./source
+      dockerfile: deploy/relay.Dockerfile
+    container_name: bridge-relay
+    restart: unless-stopped
+    environment:
+      BRIDGE_RELAY_HOST: 0.0.0.0
+      BRIDGE_RELAY_PORT: 8788
+      BRIDGE_RELAY_DATA: /data/bridge-relay.db
+      BRIDGE_RELAY_BACKUP_DIR: /data/backups
+      BRIDGE_TRUST_PROXY: "1"
+      BRIDGE_ALLOWED_ORIGINS: ${BRIDGE_ALLOWED_ORIGINS}
+    expose:
+      - "8788"
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:8788/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - bridge-relay-data:/data
+
+volumes:
+  bridge-relay-data:
+
+networks:
+  default:
+    name: ${BRIDGE_RELAY_NETWORK}
+    external: true

@@ -15,7 +15,7 @@ const sharedDefine = {
     "ws://127.0.0.1:8788/ws",
   )),
   __BRIDGE_DEFAULT_PUBLIC_RELAY__: JSON.stringify(
-    buildEnvironmentValue(process.env, "BRIDGE_PUBLIC_RELAY_URL", "wss://relay.alioxis.uk/ws"),
+    buildEnvironmentValue(process.env, "BRIDGE_PUBLIC_RELAY_URL", "wss://relay.alioxis.com/ws"),
   ),
   __BRIDGE_DEFAULT_PAIRING_BASE__: JSON.stringify(buildEnvironmentValue(
     process.env,
@@ -23,7 +23,7 @@ const sharedDefine = {
     "http://localhost:5188",
   )),
   __BRIDGE_DEFAULT_SERVICE_ORIGIN__: JSON.stringify(
-    buildEnvironmentValue(process.env, "BRIDGE_SERVICE_ORIGIN", "https://relay.alioxis.uk"),
+    buildEnvironmentValue(process.env, "BRIDGE_SERVICE_ORIGIN", "https://relay.alioxis.com"),
   ),
   __BRIDGE_DEFAULT_ICE_SERVERS__: JSON.stringify(
     buildEnvironmentValue(

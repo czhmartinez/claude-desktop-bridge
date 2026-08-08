@@ -13,6 +13,7 @@ import {
   cryptoWithRelayEndpoint,
   relayPathForUrl,
   type BridgeAttachment,
+  type BridgeDesktopAppStatus,
   type BridgeDesktopRuntime,
   type BridgeDesktopRuntimeId,
   type BridgeDeviceInfo,
@@ -232,6 +233,7 @@ export class DesktopController extends EventEmitter {
     private readonly providers?: ProviderRegistry,
     private readonly handoffs?: HandoffService,
     private readonly runtimeSessions?: RuntimeSessionBroker,
+    private readonly desktopAppControls?: ReadonlyMap<BridgeDesktopRuntimeId, ClaudeDesktopLifecycle>,
   ) {
     super();
   }
@@ -338,6 +340,7 @@ export class DesktopController extends EventEmitter {
       launchAtLogin: this.config.launchAtLogin,
       managedDesktopEnabled: this.config.managedDesktopEnabled,
       claudeDesktop: await this.claudeDesktop.status(),
+      desktopApps: await this.desktopAppStatuses(),
       ...(currentPairing ? {
         pairingUrl: buildPairingUrl(this.pairingBaseUrl, pairingForDevice(this.config, currentPairing)),
         pairingExpiresAt: currentPairing.expiresAt,
@@ -417,14 +420,50 @@ export class DesktopController extends EventEmitter {
   }
 
   async launchClaudeDesktop(): Promise<DesktopControlSnapshot> {
-    await this.claudeDesktop.launch();
+    return this.launchDesktopApp("claude-desktop");
+  }
+
+  async quitClaudeDesktop(): Promise<DesktopControlSnapshot> {
+    return this.quitDesktopApp("claude-desktop");
+  }
+
+  async desktopAppStatuses(force = false): Promise<BridgeDesktopAppStatus[]> {
+    const entries = [...(this.desktopAppControls?.entries() ?? [])];
+    if (!entries.some(([id]) => id === "claude-desktop")) {
+      entries.unshift(["claude-desktop", this.claudeDesktop]);
+    }
+    return Promise.all(entries.map(async ([id, lifecycle]) => {
+      try {
+        const status = await lifecycle.status(force);
+        return { id, name: lifecycle.definition.displayName, ...status };
+      } catch (error) {
+        return {
+          id,
+          name: lifecycle.definition.displayName,
+          state: "unavailable",
+          detail: error instanceof Error ? error.message : "无法读取运行状态。",
+          canLaunch: false,
+          canQuit: false,
+        };
+      }
+    }));
+  }
+
+  async launchDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot> {
+    const lifecycle = this.desktopAppControls?.get(runtimeId)
+      ?? (runtimeId === "claude-desktop" ? this.claudeDesktop : undefined);
+    if (!lifecycle) throw new Error("未知 Desktop 应用");
+    await lifecycle.launch();
     const snapshot = await this.publish();
     await this.broadcast({ kind: "snapshot", snapshot });
     return snapshot;
   }
 
-  async quitClaudeDesktop(): Promise<DesktopControlSnapshot> {
-    await this.claudeDesktop.quit();
+  async quitDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot> {
+    const lifecycle = this.desktopAppControls?.get(runtimeId)
+      ?? (runtimeId === "claude-desktop" ? this.claudeDesktop : undefined);
+    if (!lifecycle) throw new Error("未知 Desktop 应用");
+    await lifecycle.quit();
     const snapshot = await this.publish();
     await this.broadcast({ kind: "snapshot", snapshot });
     return snapshot;
@@ -742,6 +781,21 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "claude.desktop.quit") {
       return { claudeDesktop: (await this.quitClaudeDesktop()).claudeDesktop };
+    }
+    if (request.method === "desktop.app.status") {
+      return { desktopApps: await this.desktopAppStatuses(true) };
+    }
+    if (request.method === "desktop.app.launch") {
+      const runtimeId = runtimeIdParam(params, "runtimeId");
+      if (!runtimeId) throw new Error("desktop.app.launch 缺少 runtimeId");
+      await this.launchDesktopApp(runtimeId);
+      return { desktopApps: await this.desktopAppStatuses(true) };
+    }
+    if (request.method === "desktop.app.quit") {
+      const runtimeId = runtimeIdParam(params, "runtimeId");
+      if (!runtimeId) throw new Error("desktop.app.quit 缺少 runtimeId");
+      await this.quitDesktopApp(runtimeId);
+      return { desktopApps: await this.desktopAppStatuses(true) };
     }
     if (request.method === "snapshot.get") return { snapshot: await this.snapshot() };
     if (request.method === "runtime.list") return { runtimes: this.desktopRuntimes() };

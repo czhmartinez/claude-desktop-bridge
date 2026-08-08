@@ -13,7 +13,7 @@ import type {
   BridgeSessionConfiguration,
   BridgeSessionInfo,
   BridgeTransportMetrics,
-  ClaudeDesktopAppStatus,
+  BridgeDesktopAppStatus,
   SocketState,
 } from "@bridge/protocol";
 import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
@@ -168,6 +168,12 @@ export function desktopRuntimeName(runtimeId: BridgeDesktopRuntimeId | undefined
   if (runtimeId === "codex-desktop") return "Codex Desktop";
   if (runtimeId === "hermes-desktop") return "Hermes Desktop";
   return "Claude Desktop";
+}
+
+export function runtimeProviderLabel(runtimeId: BridgeDesktopRuntimeId | undefined): string {
+  if (runtimeId === "codex-desktop") return "Codex（ChatGPT）";
+  if (runtimeId === "hermes-desktop") return "Hermes";
+  return "Claude";
 }
 
 function runtimeSupports(
@@ -805,8 +811,7 @@ export function MobileWorkspace({
   onCommitProviderSwitch,
   onCancelProviderSwitch,
   onRefreshProviders,
-  onClaudeDesktopLaunch,
-  onClaudeDesktopQuit,
+  onDesktopAppAction,
   onRefresh,
   onBackToHosts,
   onRetry,
@@ -870,8 +875,10 @@ export function MobileWorkspace({
   ): Promise<ProviderSwitchResult>;
   onCancelProviderSwitch(handoffId: string): Promise<void>;
   onRefreshProviders(): Promise<void>;
-  onClaudeDesktopLaunch(): Promise<ClaudeDesktopAppStatus>;
-  onClaudeDesktopQuit(): Promise<ClaudeDesktopAppStatus>;
+  onDesktopAppAction(
+    runtimeId: BridgeDesktopRuntimeId,
+    action: "launch" | "quit",
+  ): Promise<BridgeDesktopAppStatus[]>;
   onRefresh(sessionId?: string): Promise<void>;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
@@ -896,9 +903,9 @@ export function MobileWorkspace({
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
-  const [desktopAction, setDesktopAction] = useState<"launch" | "quit">();
-  const [desktopActionError, setDesktopActionError] = useState("");
-  const [quitDesktopOpen, setQuitDesktopOpen] = useState(false);
+  const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
+  const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
+  const [quitDesktopTarget, setQuitDesktopTarget] = useState<BridgeDesktopRuntimeId>();
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -997,8 +1004,8 @@ export function MobileWorkspace({
       setCreateOpen(false);
       return true;
     }
-    if (quitDesktopOpen) {
-      setQuitDesktopOpen(false);
+    if (quitDesktopTarget) {
+      setQuitDesktopTarget(undefined);
       return true;
     }
     if (selectedSessionId) {
@@ -1011,7 +1018,7 @@ export function MobileWorkspace({
     createOpen,
     permissionOpen,
     providerOpen,
-    quitDesktopOpen,
+    quitDesktopTarget,
     selectedSessionId,
   ]);
 
@@ -1068,16 +1075,18 @@ export function MobileWorkspace({
     setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
   }
 
-  async function runClaudeDesktopAction(action: "launch" | "quit"): Promise<void> {
+  async function runDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void> {
     if (desktopAction) return;
-    if (action === "quit") setQuitDesktopOpen(false);
-    setDesktopAction(action);
-    setDesktopActionError("");
+    if (action === "quit") setQuitDesktopTarget(undefined);
+    setDesktopAction({ runtimeId, action });
+    setDesktopActionError(undefined);
     try {
-      if (action === "launch") await onClaudeDesktopLaunch();
-      else await onClaudeDesktopQuit();
+      await onDesktopAppAction(runtimeId, action);
     } catch (error) {
-      setDesktopActionError(error instanceof Error ? error.message : String(error));
+      setDesktopActionError({
+        runtimeId,
+        message: error instanceof Error ? error.message : String(error),
+      });
     } finally {
       setDesktopAction(undefined);
     }
@@ -1197,6 +1206,15 @@ export function MobileWorkspace({
               >
                 <ArrowRightLeft size={19} />
               </IconButton>
+            )}
+            {!providerSwitchingAvailable && desktopRuntimeId(selectedSession) !== "claude-desktop" && (
+              <span
+                className="session-provider-trigger is-static mobile-runtime-provider"
+                title={`${runtimeName} 是独立的会话域，不提供跨 Desktop 接力`}
+              >
+                <ArrowRightLeft size={15} />
+                <span>{runtimeProviderLabel(desktopRuntimeId(selectedSession))}</span>
+              </span>
             )}
             {canConfigure && (
               <IconButton
@@ -1378,7 +1396,7 @@ export function MobileWorkspace({
             <button
               type="button"
               className="official-continue-button"
-              onClick={() => void onClaudeDesktopLaunch()}
+              onClick={() => void onDesktopAppAction("claude-desktop", "launch")}
             >
               <ArrowRightLeft size={18} />
               在 Claude 官方继续
@@ -1588,37 +1606,46 @@ export function MobileWorkspace({
             ))}
           </nav>
         )}
-        <section className={`mobile-desktop-control ${snapshot?.claudeDesktop?.state ?? "unknown"}`}>
-          <div className="mobile-desktop-control-copy">
-            <i aria-hidden="true" />
-            <span>
-              <strong>Claude Desktop</strong>
-              <small className={desktopActionError ? "desktop-app-error" : undefined}>
-                {desktopActionError || snapshot?.claudeDesktop?.detail || "正在读取电脑端运行状态。"}
-              </small>
-            </span>
-          </div>
-          <div className="mobile-desktop-control-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={Boolean(desktopAction) || !desktopOnline || !snapshot?.claudeDesktop?.canLaunch}
-              onClick={() => void runClaudeDesktopAction("launch")}
-            >
-              <Play size={15} />
-              {desktopAction === "launch" ? "启动中" : "启动"}
-            </button>
-            <button
-              type="button"
-              className="danger-button"
-              disabled={Boolean(desktopAction) || !desktopOnline || !snapshot?.claudeDesktop?.canQuit}
-              onClick={() => setQuitDesktopOpen(true)}
-            >
-              <Power size={15} />
-              {desktopAction === "quit" ? "退出中" : "退出"}
-            </button>
-          </div>
-        </section>
+        {(snapshot?.desktopApps ?? [{
+          id: "claude-desktop" as const,
+          name: "Claude Desktop",
+          state: snapshot?.claudeDesktop?.state ?? "unavailable",
+          detail: snapshot?.claudeDesktop?.detail ?? "正在读取电脑端运行状态。",
+          canLaunch: snapshot?.claudeDesktop?.canLaunch ?? false,
+          canQuit: snapshot?.claudeDesktop?.canQuit ?? false,
+        }]).map((desktopApp) => (
+          <section className={`mobile-desktop-control ${desktopApp.state}`} key={desktopApp.id}>
+            <div className="mobile-desktop-control-copy">
+              <i aria-hidden="true" />
+              <span>
+                <strong>{desktopApp.name}</strong>
+                <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
+                  {desktopActionError?.runtimeId === desktopApp.id ? desktopActionError.message : desktopApp.detail}
+                </small>
+              </span>
+            </div>
+            <div className="mobile-desktop-control-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={Boolean(desktopAction) || !desktopOnline || !desktopApp.canLaunch}
+                onClick={() => void runDesktopAppAction(desktopApp.id, "launch")}
+              >
+                <Play size={15} />
+                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch" ? "启动中" : "启动"}
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                disabled={Boolean(desktopAction) || !desktopOnline || !desktopApp.canQuit}
+                onClick={() => setQuitDesktopTarget(desktopApp.id)}
+              >
+                <Power size={15} />
+                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
+              </button>
+            </div>
+          </section>
+        ))}
         <label className="session-search">
           <Search size={17} />
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
@@ -1774,14 +1801,16 @@ export function MobileWorkspace({
         </div>
       )}
       <ConfirmationDialog
-        open={quitDesktopOpen}
-        title="退出电脑上的 Claude Desktop？"
-        description="Claude Desktop 窗口会关闭，Bridge 主机仍保持在线，可继续管理已接管的远程会话。"
-        confirmLabel="退出 Claude Desktop"
-        busy={desktopAction === "quit"}
+        open={Boolean(quitDesktopTarget)}
+        title={`退出电脑上的 ${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""}？`}
+        description={`${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""} 窗口会关闭，Bridge 主机仍保持在线，可继续管理已接管的远程会话。`}
+        confirmLabel={`退出 ${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""}`}
+        busy={desktopAction?.action === "quit"}
         danger
-        onCancel={() => setQuitDesktopOpen(false)}
-        onConfirm={() => void runClaudeDesktopAction("quit")}
+        onCancel={() => setQuitDesktopTarget(undefined)}
+        onConfirm={() => {
+          if (quitDesktopTarget) void runDesktopAppAction(quitDesktopTarget, "quit");
+        }}
       />
     </main>
   );
