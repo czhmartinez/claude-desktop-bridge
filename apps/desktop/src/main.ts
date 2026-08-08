@@ -73,7 +73,7 @@ const DEFAULT_RELAY = networkReachableUrl(CONFIGURED_RELAY);
 const DEFAULT_PAIRING_BASE = firstNonEmpty([process.env.BRIDGE_PAIRING_BASE_URL])
   ?? networkReachableUrl(firstNonEmpty([
     __BRIDGE_DEFAULT_PAIRING_BASE__,
-    "http://localhost:5188",
+    "https://relay.alioxis.com",
   ])!);
 const CONFIGURED_PUBLIC_RELAY = (
   process.env.BRIDGE_PUBLIC_RELAY_URL === undefined

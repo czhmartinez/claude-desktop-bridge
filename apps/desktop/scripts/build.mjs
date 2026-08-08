@@ -20,7 +20,7 @@ const sharedDefine = {
   __BRIDGE_DEFAULT_PAIRING_BASE__: JSON.stringify(buildEnvironmentValue(
     process.env,
     "BRIDGE_PAIRING_BASE_URL",
-    "http://localhost:5188",
+    "https://relay.alioxis.com",
   )),
   __BRIDGE_DEFAULT_SERVICE_ORIGIN__: JSON.stringify(
     buildEnvironmentValue(process.env, "BRIDGE_SERVICE_ORIGIN", "https://relay.alioxis.com"),

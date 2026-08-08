@@ -24,6 +24,15 @@ services:
     volumes:
       - bridge-relay-data:/data
 
+  web:
+    build:
+      context: ./source
+      dockerfile: deploy/web.Dockerfile
+    container_name: bridge-web
+    restart: unless-stopped
+    expose:
+      - "80"
+
 volumes:
   bridge-relay-data:
 
