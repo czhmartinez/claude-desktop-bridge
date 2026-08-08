@@ -156,6 +156,9 @@ describe("BridgeVault pairing migration", () => {
         needsRepair: true,
       }),
     ]);
+    const migratedInstanceId = (await vault.listHosts())[0]?.crypto.identity.instanceId;
+    expect(migratedInstanceId).toEqual(expect.any(String));
+    expect((await vault.listHosts())[0]?.crypto.identity.instanceId).toBe(migratedInstanceId);
 
     const newHost = await BridgeCrypto.createHost("wss://relay.example/ws", "Studio Mac");
     const replacement = await BridgeCrypto.createDevicePairing({

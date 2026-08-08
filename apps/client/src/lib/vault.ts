@@ -6,6 +6,7 @@ import {
   normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
   parseBridgeIceServers,
+  randomId,
   selectBridgeEndpoint,
   type BridgeEndpoint,
   type BridgeIceServer,
@@ -274,39 +275,51 @@ export class BridgeVault {
 
   async listHosts(): Promise<StoredBridgeHost[]> {
     const database = await this.open();
-    const transaction = database.transaction("identity", "readonly");
-    const records = await requestResult(transaction.objectStore("identity").getAll()) as unknown[];
+    const transaction = database.transaction("identity", "readwrite");
+    const store = transaction.objectStore("identity");
+    const records = await requestResult(store.getAll()) as unknown[];
     const hosts = new Map<string, StoredBridgeHost>();
     for (const stored of records.filter(isStoredCrypto)) {
+      // V0.5 identities predate instance-scoped device claims. Persist one
+      // stable value so a mobile upgrade can reclaim its existing Relay slot.
+      const migratedInstanceId = stored.identity.instanceId ?? randomId(12);
+      const normalizedStored = stored.identity.instanceId
+        ? stored
+        : {
+            ...stored,
+            identity: { ...stored.identity, instanceId: migratedInstanceId },
+          } satisfies StoredCrypto;
+      if (normalizedStored !== stored) store.put(normalizedStored);
       const stableHostId = stored.identity.hostId ?? stored.identity.roomId;
       const existing = hosts.get(stableHostId);
       const updatedAt = stored.updatedAt ?? 0;
       if (existing && existing.updatedAt > updatedAt) continue;
-      const transport = transportForStored(stored);
+      const transport = transportForStored(normalizedStored);
       const crypto = cryptoWithRelayEndpoint(
-        new BridgeCrypto({ identity: stored.identity, encryptionKey: stored.encryptionKey }),
+        new BridgeCrypto({ identity: normalizedStored.identity, encryptionKey: normalizedStored.encryptionKey }),
         transport.relayUrl,
       );
       hosts.set(stableHostId, {
         hostId: stableHostId,
-        pairingEpoch: stored.identity.pairingEpoch ?? 0,
-        roomId: stored.identity.roomId,
-        desktopName: stored.identity.desktopName,
+        pairingEpoch: normalizedStored.identity.pairingEpoch ?? 0,
+        roomId: normalizedStored.identity.roomId,
+        desktopName: normalizedStored.identity.desktopName,
         relayUrl: transport.relayUrl,
         serviceOrigin: transport.serviceOrigin,
         relayEndpoints: transport.relayEndpoints,
         activeEndpoint: transport.activeEndpoint,
         iceServers: transport.iceServers,
-        ...(stored.migratedAt !== undefined ? { migratedAt: stored.migratedAt } : {}),
+        ...(normalizedStored.migratedAt !== undefined ? { migratedAt: normalizedStored.migratedAt } : {}),
         updatedAt,
         needsRepair: (
-          stored.identity.version !== PROTOCOL_VERSION ||
-          !stored.identity.hostId ||
-          !stored.identity.pairingEpoch
+          normalizedStored.identity.version !== PROTOCOL_VERSION ||
+          !normalizedStored.identity.hostId ||
+          !normalizedStored.identity.pairingEpoch
         ),
         crypto,
       });
     }
+    await transactionDone(transaction);
     return [...hosts.values()].sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
