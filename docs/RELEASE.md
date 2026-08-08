@@ -25,6 +25,8 @@ M0 必须证明手机/测试客户端消息与 Claude 回复落入同一 `sessio
 V0.6 还必须检查根包、全部 workspace、Android `versionName` 和 iOS
 `MARKETING_VERSION` 一致，并确认协议常量为 V3、配对 schema 为 V4。V0.3 客户端
 必须收到升级拒绝；重配后稳定 `hostId`、会话历史、本地事件和手机缓存仍可接回。
+配对回归还必须证明 Relay presence 不能单独形成在线状态、未知 Relay 设备会被桌面
+撤销、加密 `snapshot.get` 确认前手机不持久化新身份，失败时旧身份与缓存保持不变。
 
 Provider 发布闸门还必须覆盖：
 

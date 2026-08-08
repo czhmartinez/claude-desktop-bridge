@@ -1,13 +1,41 @@
-import type { BridgeEvent, BridgeHostSnapshot } from "@bridge/protocol";
+import type { BridgeEvent, BridgeHostSnapshot, BridgeResponse, PairingBundle } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import {
   applyEventToTurns,
   applyEventToSnapshot,
   applyPermissionEvent,
+  confirmedPairingSnapshot,
   mergeBridgeEvents,
   rebaseSnapshot,
   type LocalTurn,
 } from "./useMobileBridge.js";
+
+describe("confirmedPairingSnapshot", () => {
+  const pairing = { hostId: "desktop-1", pairingEpoch: 4 } as PairingBundle;
+  const snapshot = {
+    host: { hostId: "desktop-1", pairingEpoch: 4 },
+  } as BridgeHostSnapshot;
+
+  it("accepts only an encrypted response for the QR host and pairing epoch", () => {
+    const response = {
+      kind: "response",
+      requestId: "pairing-proof",
+      ok: true,
+      result: { snapshot },
+    } as BridgeResponse;
+    expect(confirmedPairingSnapshot(pairing, response)).toBe(snapshot);
+  });
+
+  it("rejects a Relay response that does not prove the QR host identity", () => {
+    const response = {
+      kind: "response",
+      requestId: "pairing-proof",
+      ok: true,
+      result: { snapshot: { ...snapshot, host: { ...snapshot.host, hostId: "other-desktop" } } },
+    } as BridgeResponse;
+    expect(() => confirmedPairingSnapshot(pairing, response)).toThrow("身份与二维码不一致");
+  });
+});
 
 function event(seq: number, eventId = `event-${seq}`): BridgeEvent {
   return {

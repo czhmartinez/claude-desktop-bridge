@@ -199,6 +199,27 @@ function relayIssue(code: string, fallback: string): MobileConnectionIssue {
   return { code: "unreachable", message: fallback };
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function confirmedPairingSnapshot(
+  pairing: PairingBundle,
+  response: BridgeResponse | undefined,
+): BridgeHostSnapshot {
+  if (!response?.ok) throw new Error(response?.error?.message ?? "电脑端拒绝了加密配对握手");
+  const result = response.result as { snapshot?: BridgeHostSnapshot } | undefined;
+  const snapshot = result?.snapshot;
+  if (
+    !snapshot ||
+    snapshot.host.hostId !== pairing.hostId ||
+    snapshot.host.pairingEpoch !== pairing.pairingEpoch
+  ) {
+    throw new Error("电脑端返回的身份与二维码不一致");
+  }
+  return snapshot;
+}
+
 function hostStatus(
   snapshot: BridgeHostSnapshot | undefined,
   permissions: BridgePermissionInfo[] = snapshot?.permissions ?? [],
@@ -586,7 +607,10 @@ export function applyEventToSnapshot(
   };
 }
 
-async function readStoredHostState(crypto: BridgeCrypto): Promise<{
+async function readStoredHostState(
+  crypto: BridgeCrypto,
+  storedEnvelopes?: EncryptedEnvelope[],
+): Promise<{
   snapshot?: BridgeHostSnapshot;
   permissions: BridgePermissionInfo[];
   events: BridgeEvent[];
@@ -595,9 +619,8 @@ async function readStoredHostState(crypto: BridgeCrypto): Promise<{
   localTurns: LocalTurn[];
   latestSeq: number;
 }> {
-  const results = await Promise.allSettled(
-    (await bridgeVault.listMessages(crypto.identity.roomId)).map((envelope) => crypto.decrypt(envelope)),
-  );
+  const envelopes = storedEnvelopes ?? await bridgeVault.listMessages(crypto.identity.roomId);
+  const results = await Promise.allSettled(envelopes.map((envelope) => crypto.decrypt(envelope)));
   const messages = results
     .filter((result): result is PromiseFulfilledResult<DecryptedEnvelope> => result.status === "fulfilled")
     .map((result) => result.value);
@@ -1073,16 +1096,19 @@ export function useMobileBridge() {
     crypto: BridgeCrypto,
     bootstrap = false,
     focusSessionId?: string,
+    provisionalPairing?: PairingBundle,
   ) => {
     if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
     socketRef.current?.close();
     socketRef.current = undefined;
     cryptoRef.current = crypto;
     const roomId = crypto.identity.roomId;
-    writeLastActiveHost(roomId);
+    if (!provisionalPairing) writeLastActiveHost(roomId);
     const storedHost = await bridgeVault.getHost(roomId);
     const relayEndpoints = normalizeBridgeEndpoints(
-      storedHost?.relayEndpoints ?? [bridgeEndpoint(crypto.identity.relayUrl, 100, "legacy")],
+      provisionalPairing?.relayEndpoints ??
+        storedHost?.relayEndpoints ??
+        [bridgeEndpoint(crypto.identity.relayUrl, 100, "legacy")],
     ).filter((endpoint): endpoint is BridgeEndpoint & {
       kind: "public-relay" | "lan-relay";
     } => endpoint.kind !== "direct");
@@ -1109,8 +1135,10 @@ export function useMobileBridge() {
       error: undefined,
     }));
 
-    const stored = await readStoredHostState(crypto);
-    const queuedOutbox = await bridgeVault.listOutbox(roomId);
+    const stored = provisionalPairing
+      ? await readStoredHostState(crypto, [])
+      : await readStoredHostState(crypto);
+    const queuedOutbox = provisionalPairing ? [] : await bridgeVault.listOutbox(roomId);
     const replayableOutbox = queuedOutbox.filter((envelope) => isReplayableMobileEnvelope(
       envelope,
       { roomId, deviceId: crypto.identity.deviceId },
@@ -1185,17 +1213,35 @@ export function useMobileBridge() {
           crypto,
           role: "mobile",
           RTCPeerConnectionImpl: globalThis.RTCPeerConnection,
-          iceServers: bridgeIceServers(storedHost?.iceServers),
+          iceServers: bridgeIceServers(provisionalPairing?.iceServers ?? storedHost?.iceServers),
         })
       : relay;
     socketRef.current = socket;
     let bootstrapPending = bootstrap;
+    let authenticatedDesktop = false;
+    let authenticationTimer: ReturnType<typeof setTimeout> | undefined;
     const isCurrent = () => socketRef.current === socket;
     socket.onState((connection) => {
       if (!isCurrent()) return;
-      setState((current) => ({ ...current, connection }));
+      setState((current) => ({
+        ...current,
+        connection,
+        ...(connection === "connected" ? {} : { desktopOnline: false }),
+      }));
       if (connection === "connected") {
         if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
+        if (authenticationTimer) clearTimeout(authenticationTimer);
+        authenticationTimer = setTimeout(() => {
+          if (!isCurrent() || authenticatedDesktop) return;
+          setState((current) => ({
+            ...current,
+            desktopOnline: false,
+            connectionIssue: {
+              code: "pairing-invalid",
+              message: "Relay 已连接，但电脑未通过加密握手，请在电脑端重新生成二维码。",
+            },
+          }));
+        }, 25_000);
         setState((current) => ({
           ...current,
           connectionIssue: rejectedOutbox.length > 0
@@ -1203,7 +1249,7 @@ export function useMobileBridge() {
             : undefined,
         }));
         const active = relayEndpoints.find((endpoint) => endpoint.url === socket.endpoint);
-        if (active) {
+        if (active && !provisionalPairing) {
           void bridgeVault.setActiveEndpoint(roomId, active.id).then((host) => {
             if (!host) return;
             cryptoByRoomRef.current.set(roomId, host.crypto);
@@ -1215,7 +1261,7 @@ export function useMobileBridge() {
             }));
           }).catch(() => undefined);
         }
-        void (async () => {
+        if (!provisionalPairing) void (async () => {
           const bootstrapResume = bootstrapPending;
           bootstrapPending = false;
           await resumeEvents(bootstrapResume);
@@ -1241,6 +1287,9 @@ export function useMobileBridge() {
             socket.registerPushToken(push.platform, push.token);
           }
         })();
+      } else if (authenticationTimer) {
+        clearTimeout(authenticationTimer);
+        authenticationTimer = undefined;
       }
     });
     socket.onMetrics((metrics) => {
@@ -1256,13 +1305,12 @@ export function useMobileBridge() {
     socket.onFrame((frame) => {
       if (!isCurrent()) return;
       if (frame.type === "ready") {
-        setState((current) => ({
-          ...current,
-          desktopOnline: frame.onlineDevices.some((device) => device.role === "desktop"),
-        }));
+        if (!frame.onlineDevices.some((device) => device.role === "desktop")) {
+          setState((current) => ({ ...current, desktopOnline: false }));
+        }
       }
       if (frame.type === "presence" && frame.role === "desktop") {
-        setState((current) => ({ ...current, desktopOnline: frame.online }));
+        if (!frame.online) setState((current) => ({ ...current, desktopOnline: false }));
       }
       if (frame.type === "stored" || frame.type === "acknowledged") {
         const delivery: BridgeDeliveryState = frame.type === "stored" ? "relay-received" : "host-received";
@@ -1329,11 +1377,16 @@ export function useMobileBridge() {
           return;
         }
         if (issue.code === "pairing-invalid" || issue.code === "revoked") {
+          for (const pending of pendingResponsesRef.current.values()) {
+            clearTimeout(pending.timer);
+            pending.reject(new Error(issue.message));
+          }
+          pendingResponsesRef.current.clear();
           if (socketRef.current === socket) {
             socketRef.current = undefined;
             cryptoRef.current = undefined;
           }
-          writeLastActiveHost();
+          if (!provisionalPairing) writeLastActiveHost();
           socket.close();
           setState((current) => ({
             ...current,
@@ -1355,9 +1408,11 @@ export function useMobileBridge() {
             transportMetrics: undefined,
             pendingOutbound: 0,
             error: issue.message,
-            hosts: current.hosts.map((host) => host.roomId === roomId
-              ? { ...host, needsRepair: true, status: "offline" }
-              : host),
+            hosts: provisionalPairing
+              ? current.hosts
+              : current.hosts.map((host) => host.roomId === roomId
+                  ? { ...host, needsRepair: true, status: "offline" }
+                  : host),
           }));
           return;
         }
@@ -1369,6 +1424,12 @@ export function useMobileBridge() {
     });
     socket.onMessage((message, encrypted) => {
       if (!isCurrent()) return;
+      authenticatedDesktop = true;
+      if (authenticationTimer) {
+        clearTimeout(authenticationTimer);
+        authenticationTimer = undefined;
+      }
+      setState((current) => ({ ...current, desktopOnline: true, connectionIssue: undefined }));
       void (async () => {
         const cachedEnvelope = shouldExtendLocalEvidenceCache(message.payload)
           ? await crypto.encrypt(
@@ -1510,8 +1571,26 @@ export function useMobileBridge() {
       }));
       return false;
     }
+    const previousLastActiveHost = readLastActiveHost();
+    let preparedCrypto: BridgeCrypto | undefined;
     try {
-      const crypto = await bridgeVault.importPairing(pairing);
+      const crypto = await BridgeCrypto.fromPairing(pairing);
+      preparedCrypto = crypto;
+      await start(crypto, true, undefined, pairing);
+      const connectDeadline = Date.now() + 20_000;
+      while (socketRef.current?.state !== "connected") {
+        if (cryptoRef.current !== crypto) {
+          throw new Error(stateRef.current.error ?? "电脑端已拒绝这次配对");
+        }
+        if (Date.now() >= connectDeadline) throw new Error("连接电脑超时");
+        await delay(100);
+      }
+      const response = await sendRequest("snapshot.get", {}, {
+        wait: true,
+        timeoutMs: 20_000,
+      });
+      confirmedPairingSnapshot(pairing, response);
+      await bridgeVault.importPairing(pairing, crypto);
       cryptoByRoomRef.current.set(crypto.identity.roomId, crypto);
       const nextHost = hostSummary({
         hostId: pairing.hostId,
@@ -1532,19 +1611,47 @@ export function useMobileBridge() {
         loading: false,
         hosts: [nextHost, ...current.hosts.filter((host) => host.hostId !== nextHost.hostId)],
       }));
-      await start(crypto, true);
+      writeLastActiveHost(crypto.identity.roomId);
+      await start(crypto, true).catch(() => setState((current) => ({
+        ...current,
+        loading: false,
+        error: "配对已保存，正在等待电脑恢复连接。",
+      })));
       return true;
     } catch (error) {
+      if (preparedCrypto && cryptoRef.current === preparedCrypto) {
+        socketRef.current?.close();
+        socketRef.current = undefined;
+        cryptoRef.current = undefined;
+      }
+      if (preparedCrypto) {
+        await bridgeVault.removeDeviceArtifacts(
+          preparedCrypto.identity.roomId,
+          preparedCrypto.identity.deviceId,
+        ).catch(() => undefined);
+      }
+      writeLastActiveHost(previousLastActiveHost);
+      const message = error instanceof Error ? error.message : "";
       setState((current) => ({
         ...current,
         loading: false,
-        error: error instanceof Error && /expired/iu.test(error.message)
+        activeHostId: undefined,
+        desktopName: undefined,
+        connection: "closed",
+        desktopOnline: false,
+        snapshot: undefined,
+        permissions: [],
+        connectionIssue: undefined,
+        transportMetrics: undefined,
+        error: /expired/iu.test(message)
           ? "二维码已超过十分钟，请在电脑端重新生成"
-          : "配对链接无效，请在电脑端重新生成",
+          : /prepared pairing|identity|身份/iu.test(message)
+            ? "二维码身份校验失败，请在电脑端重新生成"
+            : "未能与电脑完成加密配对，请在电脑端重新生成二维码后重试。",
       }));
       return false;
     }
-  }, [start]);
+  }, [sendRequest, start]);
 
   const selectHost = useCallback(async (roomId: string, focusSessionId?: string) => {
     let crypto = cryptoByRoomRef.current.get(roomId);

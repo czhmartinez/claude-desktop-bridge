@@ -207,6 +207,14 @@ function errorResponse(requestId: string, error: unknown): BridgeResponse {
   };
 }
 
+export function acceptsRelayDevice(
+  devices: readonly LoadedDeviceConfig[],
+  deviceId: string,
+  hasCrypto: boolean,
+): boolean {
+  return hasCrypto && devices.some((device) => device.deviceId === deviceId && !device.revokedAt);
+}
+
 export class DesktopController extends EventEmitter {
   private config: LoadedDesktopConfig | undefined;
   private hostCrypto: BridgeCrypto | undefined;
@@ -691,18 +699,28 @@ export class DesktopController extends EventEmitter {
       if (frame.type === "ready") {
         this.onlineDevices.clear();
         for (const device of frame.onlineDevices) {
-          if (device.role === "mobile") this.onlineDevices.add(device.deviceId);
+          if (device.role !== "mobile") continue;
+          if (this.acceptsDevice(device.deviceId)) {
+            this.onlineDevices.add(device.deviceId);
+          } else {
+            this.rejectUnknownDevice(device.deviceId);
+          }
         }
         this.registerPendingDevices();
       }
       if (frame.type === "presence" && frame.role === "mobile") {
         if (frame.online) {
+          if (!this.acceptsDevice(frame.deviceId)) {
+            this.rejectUnknownDevice(frame.deviceId);
+            void this.publish();
+            return;
+          }
           this.onlineDevices.add(frame.deviceId);
-          void this.rememberDevice(frame.deviceId);
+          if (this.isPairedDevice(frame.deviceId)) void this.rememberDevice(frame.deviceId);
           void this.sendSnapshot(frame.deviceId);
         } else {
           this.onlineDevices.delete(frame.deviceId);
-          void this.rememberDevice(frame.deviceId);
+          if (this.isPairedDevice(frame.deviceId)) void this.rememberDevice(frame.deviceId);
         }
       }
       void this.publish();
@@ -1259,6 +1277,29 @@ export class DesktopController extends EventEmitter {
       } catch {
         // Registration will be retried on the next reconnect.
       }
+    }
+  }
+
+  private acceptsDevice(deviceId: string): boolean {
+    return acceptsRelayDevice(
+      this.config?.devices ?? [],
+      deviceId,
+      this.deviceCryptos.has(deviceId),
+    );
+  }
+
+  private isPairedDevice(deviceId: string): boolean {
+    return Boolean(this.config?.devices.some((device) => (
+      device.deviceId === deviceId && Boolean(device.pairedAt) && !device.revokedAt
+    )));
+  }
+
+  private rejectUnknownDevice(deviceId: string): void {
+    this.onlineDevices.delete(deviceId);
+    try {
+      this.socket?.revokeDevice(deviceId);
+    } catch {
+      // A reconnect will repeat the rejection if the stale Relay claim remains.
     }
   }
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.6
+
+- Make pairing a two-phase handshake: a Relay claim is provisional until Mobile and Desktop
+  complete an encrypted `snapshot.get` request/response and verify the QR host identity.
+- Revoke stale Relay device claims when Desktop no longer has their local device key, and derive
+  Mobile online state only from successfully decrypted Desktop traffic instead of Relay presence.
+- Preserve the previous Mobile identity while replacement pairing is in progress and discard only
+  the provisional device's ciphertext when confirmation fails or times out.
+
 ## 0.6.1
 
 - Add Codex Desktop and Hermes Desktop adapters behind the same Bridge session, streaming,

@@ -672,6 +672,8 @@ desktopSocket.onMessage((message, encrypted) => {
     let result = {};
     if (request.method === "events.resume") {
       result = { events: [], latestSeq: eventSeq };
+    } else if (request.method === "snapshot.get") {
+      result = { snapshot: hostSnapshot };
     } else if (request.method === "session.open") {
       const session = sessions.find((candidate) => candidate.sessionId === request.params.sessionId) ?? sessions[0];
       result = {

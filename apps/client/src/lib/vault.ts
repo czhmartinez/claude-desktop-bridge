@@ -173,8 +173,15 @@ export class BridgeVault {
     return this.databasePromise;
   }
 
-  async importPairing(pairing: PairingBundle): Promise<BridgeCrypto> {
-    const crypto = await BridgeCrypto.fromPairing(pairing);
+  async importPairing(pairing: PairingBundle, preparedCrypto?: BridgeCrypto): Promise<BridgeCrypto> {
+    const crypto = preparedCrypto ?? await BridgeCrypto.fromPairing(pairing);
+    if (
+      crypto.identity.roomId !== pairing.roomId ||
+      crypto.identity.deviceId !== pairing.deviceId ||
+      crypto.identity.hostId !== pairing.hostId
+    ) {
+      throw new Error("Prepared pairing identity does not match the pairing bundle");
+    }
     const database = await this.open();
     const readTransaction = database.transaction(["identity", "messages", "outbox"], "readonly");
     const storedIdentities = await requestResult(
@@ -457,6 +464,24 @@ export class BridgeVault {
         await transactionDone(transaction);
       }),
     ]);
+  }
+
+  async removeDeviceArtifacts(roomId: string, deviceId: string): Promise<void> {
+    const database = await this.open();
+    const transaction = database.transaction(["messages", "outbox"], "readwrite");
+    for (const storeName of ["messages", "outbox"] as const) {
+      const store = transaction.objectStore(storeName);
+      const records = await requestResult(store.getAll()) as StoredMessage[];
+      for (const stored of records) {
+        if (
+          stored.envelope.roomId === roomId &&
+          (stored.envelope.fromDeviceId === deviceId || stored.envelope.toDeviceId === deviceId)
+        ) {
+          store.delete(stored.id);
+        }
+      }
+    }
+    await transactionDone(transaction);
   }
 
   async clear(): Promise<void> {

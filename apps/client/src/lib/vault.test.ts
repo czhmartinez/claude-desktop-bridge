@@ -188,4 +188,51 @@ describe("BridgeVault pairing migration", () => {
     expect(await vault.listMessages("legacy-room-12345678")).toEqual([]);
     await vault.clear();
   });
+
+  it("commits the crypto instance that completed the handshake and only removes provisional artifacts", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    const hostId = "two-phase-host";
+    const roomId = "two-phase-room";
+    const first = await BridgeCrypto.createDevicePairing({
+      hostId,
+      pairingEpoch: 1,
+      roomId,
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Studio Mac",
+    });
+    const oldCrypto = await vault.importPairing(first.pairing);
+    const replacement = await BridgeCrypto.createDevicePairing({
+      hostId,
+      pairingEpoch: 1,
+      roomId,
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Studio Mac",
+    });
+    const preparedCrypto = await BridgeCrypto.fromPairing(replacement.pairing);
+    const request = {
+      kind: "request" as const,
+      requestId: "handshake-request",
+      idempotencyKey: "handshake-key",
+      method: "snapshot.get" as const,
+      params: {},
+    };
+    const oldEnvelope = await oldCrypto.encrypt(request, "mobile", "desktop");
+    const provisionalEnvelope = await preparedCrypto.encrypt(request, "mobile", "desktop");
+    await vault.saveMessage(oldEnvelope);
+    await vault.saveMessage(provisionalEnvelope);
+    await vault.addOutbox(oldEnvelope);
+    await vault.addOutbox(provisionalEnvelope);
+
+    await vault.removeDeviceArtifacts(roomId, preparedCrypto.identity.deviceId);
+
+    expect((await vault.listMessages(roomId)).map((envelope) => envelope.id)).toEqual([oldEnvelope.id]);
+    expect((await vault.listOutbox(roomId)).map((envelope) => envelope.id)).toEqual([oldEnvelope.id]);
+
+    await vault.importPairing(replacement.pairing, preparedCrypto);
+    const stored = await vault.getHost(roomId);
+    expect(stored?.crypto.identity.deviceId).toBe(preparedCrypto.identity.deviceId);
+    expect(stored?.crypto.identity.instanceId).toBe(preparedCrypto.identity.instanceId);
+    await vault.clear();
+  });
 });
