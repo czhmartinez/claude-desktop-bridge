@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.8
+
+- Detect running Hermes Desktop instances from the standard Applications bundle and the local
+  Hermes Agent macOS release bundle under `~/.hermes`.
+
 ## 0.6.7
 
 - Detect the macOS ChatGPT bundle as Codex Desktop so lifecycle status, launch, and quit controls

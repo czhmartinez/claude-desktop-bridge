@@ -7,6 +7,7 @@ export interface DesktopAppDefinition {
   displayName: string;
   darwinBundle: string;
   darwinBundleCandidates?: string[];
+  darwinPathCandidates?(home: string): string[];
   darwinExecutableName?: string;
   darwinExecutableCandidates?: string[];
   win32ExecutableName: string;
@@ -71,6 +72,10 @@ export const HERMES_DESKTOP_APP: DesktopAppDefinition = {
   id: "hermes-desktop",
   displayName: "Hermes",
   darwinBundle: "/Applications/Hermes.app",
+  darwinPathCandidates: (home) => [
+    join(home, ".hermes", "hermes-agent", "apps", "desktop", "release", "mac-arm64", "Hermes.app"),
+    join(home, ".hermes", "hermes-agent", "apps", "desktop", "release", "mac-x64", "Hermes.app"),
+  ],
   win32ExecutableName: "Hermes.exe",
   envPathOverride: "BRIDGE_HERMES_DESKTOP_PATH",
   win32PathCandidates: (environment, home) => {
@@ -104,5 +109,6 @@ export function desktopAppPathCandidates(
   return unique([
     definition.darwinBundle,
     ...(definition.darwinBundleCandidates ?? []),
+    ...(definition.darwinPathCandidates?.(home) ?? []),
   ].map((bundle) => join(bundle)));
 }
