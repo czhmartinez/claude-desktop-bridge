@@ -1321,6 +1321,13 @@ export function useMobileBridge() {
           }));
           return;
         }
+        if (issue.code === "pairing-invalid" && relayEndpoints.length > 1) {
+          // A migrated pairing may fail on the new public relay while its
+          // legacy endpoint is still serving the same room. Let the transport
+          // router try every candidate before marking the host for repair.
+          setState((current) => ({ ...current, connectionIssue: issue }));
+          return;
+        }
         if (issue.code === "pairing-invalid" || issue.code === "revoked") {
           if (socketRef.current === socket) {
             socketRef.current = undefined;

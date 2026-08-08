@@ -61,6 +61,14 @@ type FrameListener = Parameters<BridgeTransport["onFrame"]>[0];
 type ErrorListener = Parameters<BridgeTransport["onError"]>[0];
 type MetricsListener = Parameters<BridgeTransport["onMetrics"]>[0];
 
+const FAILOVER_ERROR_NAMES = new Set([
+  "AUTH_FAILED",
+  "ROOM_NOT_FOUND",
+  "PAIRING_EXPIRED",
+  "PAIRING_ALREADY_USED",
+  "UPGRADE_REQUIRED",
+]);
+
 function unavailable(): never {
   throw new Error("Bridge transport is not connected");
 }
@@ -197,6 +205,17 @@ export class TransportRouter implements BridgeTransport {
         for (const listener of this.messageListeners) listener(message, encrypted);
       }),
       transport.onFrame((frame) => {
+        if (transport !== this.active) return;
+        if (
+          frame.type === "error" &&
+          FAILOVER_ERROR_NAMES.has(frame.code)
+        ) {
+          const isLastCandidate = this.activeIndex === this.candidates.length - 1;
+          if (!isLastCandidate) {
+            this.advance();
+            return;
+          }
+        }
         for (const listener of this.frameListeners) listener(frame);
       }),
       transport.onError((error) => {

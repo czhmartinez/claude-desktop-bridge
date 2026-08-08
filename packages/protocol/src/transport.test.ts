@@ -78,6 +78,14 @@ class FakeTransport implements BridgeTransport {
     this.state = state;
     for (const listener of this.stateListeners) listener(state);
   }
+
+  emitError(error: Error): void {
+    for (const listener of this.errorListeners) listener(error);
+  }
+
+  emitFrame(frame: ServerFrame): void {
+    for (const listener of this.frameListeners) listener(frame);
+  }
 }
 
 const payload: BridgePayload = {
@@ -126,6 +134,27 @@ describe("BridgeTransport", () => {
 
     expect(router.path).toBe("lan-relay");
     expect(second.state).toBe("connecting");
+    router.close();
+  });
+
+  it("fails over on endpoint-level pairing errors", () => {
+    const first = new FakeTransport("public-relay", "wss://new-relay.example/ws");
+    const second = new FakeTransport("lan-relay", "ws://192.168.1.2:8788/ws");
+    const router = new TransportRouter([
+      { id: "public", path: first.path, endpoint: first.endpoint, priority: 10, create: () => first },
+      { id: "legacy", path: second.path, endpoint: second.endpoint, priority: 20, create: () => second },
+    ]);
+    const errors: Error[] = [];
+    router.onError((error) => errors.push(error));
+
+    router.connect();
+    const error = new Error("Room not found");
+    error.name = "ROOM_NOT_FOUND";
+    first.emitFrame({ type: "error", code: "ROOM_NOT_FOUND", message: error.message });
+
+    expect(router.endpoint).toBe(second.endpoint);
+    expect(second.state).toBe("connecting");
+    expect(errors).toHaveLength(0);
     router.close();
   });
 
