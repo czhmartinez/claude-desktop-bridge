@@ -28,6 +28,9 @@ import {
   type BridgeProviderProfile,
   type BridgeRequest,
   type BridgeResponse,
+  type BridgeRuntimeGoalInfo,
+  type BridgeRuntimeHandoff,
+  type BridgeRuntimeHandoffPreview,
   type BridgeSessionConfiguration,
   type BridgeSessionInfo,
   type BridgeTransport,
@@ -560,6 +563,11 @@ export function applyEventToSnapshot(
           ownership: "OWNERSHIP_CONFLICT",
           turnState: "waiting",
         };
+      }
+      if (event.type === "runtime.goal.updated") {
+        const goal = event.data.goal as BridgeRuntimeGoalInfo | undefined;
+        if (goal && typeof goal.objective === "string") return { ...session, goal };
+        return session;
       }
       if (event.type === "turn.queued") {
         return {
@@ -2347,6 +2355,74 @@ export function useMobileBridge() {
     if (crypto) await start(crypto);
   }, [start]);
 
+  const previewRuntimeHandoff = useCallback(async (
+    sessionId: string,
+    targetRuntimeId: BridgeDesktopRuntimeId,
+  ): Promise<BridgeRuntimeHandoffPreview> => {
+    const response = await sendRequest("runtime.handoff.preview", {
+      sessionId,
+      targetRuntimeId,
+    }, { wait: true, timeoutMs: 60_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "跨 Desktop 接力预览失败");
+    const result = response.result as { preview?: BridgeRuntimeHandoffPreview };
+    if (!result.preview?.handoff) throw new Error("电脑未返回完整接力预览");
+    return result.preview;
+  }, [sendRequest]);
+
+  const commitRuntimeHandoff = useCallback(async (handoffId: string) => {
+    const response = await sendRequest("runtime.handoff.commit", {
+      handoffId,
+    }, { wait: true, timeoutMs: 60_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "跨 Desktop 接力失败");
+    const result = response.result as { handoff?: BridgeRuntimeHandoff };
+    if (!result.handoff) throw new Error("电脑未返回接力状态");
+    return result.handoff;
+  }, [sendRequest]);
+
+  const confirmRuntimeHandoff = useCallback(async (handoffId: string, objective?: string) => {
+    const response = await sendRequest("runtime.handoff.confirm", {
+      handoffId,
+      ...(objective?.trim() ? { objective: objective.trim() } : {}),
+    }, { wait: true, timeoutMs: 60_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "确认执行失败");
+    const result = response.result as { handoff?: BridgeRuntimeHandoff; goal?: BridgeRuntimeGoalInfo };
+    if (!result.handoff) throw new Error("电脑未返回接力状态");
+    return { handoff: result.handoff, ...(result.goal ? { goal: result.goal } : {}) };
+  }, [sendRequest]);
+
+  const cancelRuntimeHandoff = useCallback(async (handoffId: string) => {
+    const response = await sendRequest("runtime.handoff.cancel", {
+      handoffId,
+    }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "取消接力失败");
+    const result = response.result as { handoff?: BridgeRuntimeHandoff };
+    return result.handoff;
+  }, [sendRequest]);
+
+  const getRuntimeHandoff = useCallback(async (handoffId: string) => {
+    const response = await sendRequest("runtime.handoff.get", {
+      handoffId,
+    }, { wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "读取接力状态失败");
+    const result = response.result as { handoff?: BridgeRuntimeHandoff };
+    if (!result.handoff) throw new Error("电脑未返回接力状态");
+    return result.handoff;
+  }, [sendRequest]);
+
+  const pauseRuntimeGoal = useCallback(async (sessionId: string) => {
+    const response = await sendRequest("runtime.goal.pause", {
+      sessionId,
+    }, { wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "暂停目标失败");
+  }, [sendRequest]);
+
+  const resumeRuntimeGoal = useCallback(async (sessionId: string) => {
+    const response = await sendRequest("runtime.goal.resume", {
+      sessionId,
+    }, { wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "恢复目标失败");
+  }, [sendRequest]);
+
   return {
     state,
     pair,
@@ -2368,6 +2444,13 @@ export function useMobileBridge() {
     previewProviderSwitch,
     commitProviderSwitch,
     cancelProviderSwitch,
+    previewRuntimeHandoff,
+    commitRuntimeHandoff,
+    confirmRuntimeHandoff,
+    cancelRuntimeHandoff,
+    getRuntimeHandoff,
+    pauseRuntimeGoal,
+    resumeRuntimeGoal,
     refreshProviders,
     launchClaudeDesktop,
     controlDesktopApp,

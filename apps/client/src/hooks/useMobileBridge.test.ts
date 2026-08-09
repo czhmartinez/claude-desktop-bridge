@@ -354,6 +354,88 @@ describe("rebaseSnapshot", () => {
     expect(refreshed.latestSeq).toBe(4);
     expect(refreshed.snapshot.latestSeq).toBe(3);
   });
+
+  it("applies runtime goal updates and tolerates unknown 0.7+ event types", () => {
+    const snapshot: BridgeHostSnapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.6.9",
+        capabilities: [],
+      },
+      projects: [],
+      sessions: [{
+        sessionId: "codex-desktop:thread-1",
+        projectId: "project-1",
+        projectName: "project",
+        cwd: "/tmp/project",
+        title: "Relay target",
+        source: "bridge",
+        transport: "codex-app-server",
+        ownership: "BRIDGE_IDLE",
+        turnState: "idle",
+        lastActivityAt: 1,
+        pendingCount: 0,
+      }],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 1,
+    };
+    const handoffEvent: BridgeEvent = {
+      eventId: "handoff-started",
+      seq: 2,
+      timestamp: 2,
+      origin: "system",
+      type: "runtime.handoff.started",
+      sessionId: "codex-desktop:thread-1",
+      data: { handoff: { handoffId: "h1", state: "preparing" } },
+    };
+    // Older clients must ignore unknown events without touching sessions.
+    expect(applyEventToSnapshot(snapshot, handoffEvent, [])?.sessions[0]).toMatchObject({
+      sessionId: "codex-desktop:thread-1",
+      turnState: "idle",
+    });
+
+    const goalEvent: BridgeEvent = {
+      eventId: "goal-updated",
+      seq: 3,
+      timestamp: 3,
+      origin: "system",
+      type: "runtime.goal.updated",
+      sessionId: "codex-desktop:thread-1",
+      data: {
+        goal: {
+          objective: "完成重构",
+          status: "active",
+          native: true,
+          continuations: 0,
+          updatedAt: 3,
+        },
+        handoffId: "h1",
+      },
+    };
+    expect(applyEventToSnapshot(snapshot, goalEvent, [])?.sessions[0]?.goal).toMatchObject({
+      objective: "完成重构",
+      status: "active",
+      native: true,
+    });
+  });
 });
 
 describe("provider route events", () => {

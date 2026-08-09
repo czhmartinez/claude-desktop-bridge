@@ -11,6 +11,7 @@ import type {
 } from "@bridge/protocol";
 import {
   DesktopRuntimeAdapter,
+  type RuntimeAdapterGoal,
   type RuntimeAdapterHistoryItem,
   type RuntimeAdapterConfiguration,
   type RuntimeAdapterConfigurationChange,
@@ -346,6 +347,25 @@ interface PendingApproval {
   permission: RuntimeAdapterPermission;
 }
 
+function codexGoalToAdapterGoal(goal: Record<string, unknown>, objective: string): RuntimeAdapterGoal {
+  const rawStatus = text(goal.status);
+  const status: RuntimeAdapterGoal["status"] = rawStatus === "paused"
+    ? "paused"
+    : rawStatus === "complete"
+      ? "complete"
+      : rawStatus === "blocked" || rawStatus === "usageLimited" || rawStatus === "budgetLimited"
+        ? "blocked"
+        : "active";
+  return {
+    objective,
+    status,
+    ...(status === "blocked" && rawStatus !== "blocked" ? { detail: rawStatus } : {}),
+    ...(typeof goal.tokensUsed === "number" ? { tokensUsed: goal.tokensUsed } : {}),
+    ...(typeof goal.timeUsedSeconds === "number" ? { timeUsedSeconds: goal.timeUsedSeconds } : {}),
+    updatedAt: typeof goal.updatedAt === "number" ? goal.updatedAt : Date.now(),
+  };
+}
+
 export interface CodexAppServerAdapterOptions {
   clientFactory?: (executablePath: string) => Promise<CodexRpcClient>;
   findExecutable?: () => Promise<string | undefined>;
@@ -371,6 +391,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       "turn.interrupt",
       "permission.resolve",
       "tool.events",
+      "goal.native",
     ]);
   }
 
@@ -686,6 +707,75 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     return true;
   }
 
+  override async setCollaborationMode(nativeSessionId: string, mode: "plan" | "default"): Promise<boolean> {
+    const session = this.sessionMap.get(nativeSessionId);
+    const settings: Record<string, unknown> = {
+      model: session?.model ?? null,
+      reasoning_effort: session?.reasoningEffort ?? null,
+      developer_instructions: null,
+    };
+    try {
+      await this.requireClient().request("thread/settings/update", {
+        threadId: nativeSessionId,
+        collaborationMode: { mode, settings },
+      });
+      return true;
+    } catch (error) {
+      if (isUnsupportedCodexMethod(error)) return false;
+      throw error;
+    }
+  }
+
+  override async goalSet(nativeSessionId: string, objective: string): Promise<boolean> {
+    try {
+      await this.requireClient().request("thread/goal/set", {
+        threadId: nativeSessionId,
+        objective,
+        status: "active",
+      });
+      return true;
+    } catch (error) {
+      if (isUnsupportedCodexMethod(error)) return false;
+      throw error;
+    }
+  }
+
+  override async goalGet(nativeSessionId: string): Promise<RuntimeAdapterGoal | undefined> {
+    try {
+      const result = await this.requireClient().request<Record<string, unknown>>("thread/goal/get", {
+        threadId: nativeSessionId,
+      });
+      const goal = record(result.goal);
+      const objective = text(goal.objective);
+      if (!goal || !objective) return undefined;
+      return codexGoalToAdapterGoal(goal, objective);
+    } catch (error) {
+      if (isUnsupportedCodexMethod(error)) return undefined;
+      throw error;
+    }
+  }
+
+  override async goalPause(nativeSessionId: string): Promise<boolean> {
+    return this.goalWriteStatus(nativeSessionId, "paused");
+  }
+
+  override async goalResume(nativeSessionId: string): Promise<boolean> {
+    return this.goalWriteStatus(nativeSessionId, "active");
+  }
+
+  private async goalWriteStatus(nativeSessionId: string, status: "active" | "paused"): Promise<boolean> {
+    try {
+      await this.requireClient().request("thread/goal/set", {
+        threadId: nativeSessionId,
+        status,
+      });
+      return true;
+    } catch (error) {
+      if (isUnsupportedCodexMethod(error)) return false;
+      throw error;
+    }
+  }
+
   async close(): Promise<void> {
     this.lifecycleId += 1;
     const client = this.client;
@@ -803,6 +893,22 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       this.applyThreadConfiguration(nativeSessionId, { thread: record(params.threadSettings) }, false);
       const session = this.sessionMap.get(nativeSessionId);
       if (session) this.emitRuntimeEvent({ type: "session.updated", session: { ...session } });
+      return;
+    }
+    if (notification.method === "thread/goal/updated" && nativeSessionId) {
+      const goalValue = record(params.goal);
+      const objective = text(goalValue.objective);
+      if (objective) {
+        this.emitRuntimeEvent({
+          type: "goal.updated",
+          nativeSessionId,
+          goal: codexGoalToAdapterGoal(goalValue, objective),
+        });
+      }
+      return;
+    }
+    if (notification.method === "thread/goal/cleared" && nativeSessionId) {
+      this.emitRuntimeEvent({ type: "goal.cleared", nativeSessionId, at: now });
       return;
     }
     if (notification.method === "turn/started" && nativeSessionId) {

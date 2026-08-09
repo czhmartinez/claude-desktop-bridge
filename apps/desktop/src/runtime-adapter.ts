@@ -73,6 +73,15 @@ export interface RuntimeAdapterTurnResult {
   state: "queued" | "running";
 }
 
+export interface RuntimeAdapterGoal {
+  objective: string;
+  status: "active" | "paused" | "blocked" | "complete";
+  detail?: string;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+  updatedAt: number;
+}
+
 export interface RuntimeAdapterPermission {
   requestId: string;
   nativeSessionId: string;
@@ -100,7 +109,9 @@ export type RuntimeAdapterEvent =
   | { type: "tool.progress"; nativeSessionId: string; turnId?: string; itemId: string; toolName: string; text?: string; at: number }
   | { type: "tool.completed"; nativeSessionId: string; turnId?: string; itemId: string; toolName: string; output?: unknown; at: number }
   | { type: "permission.requested"; permission: RuntimeAdapterPermission }
-  | { type: "permission.resolved"; nativeSessionId: string; requestId: string; at: number; decision: BridgePermissionDecision };
+  | { type: "permission.resolved"; nativeSessionId: string; requestId: string; at: number; decision: BridgePermissionDecision }
+  | { type: "goal.updated"; nativeSessionId: string; goal: RuntimeAdapterGoal }
+  | { type: "goal.cleared"; nativeSessionId: string; at: number };
 
 export abstract class DesktopRuntimeAdapter extends EventEmitter {
   private statusValue: BridgeDesktopRuntime;
@@ -174,6 +185,32 @@ export abstract class DesktopRuntimeAdapter extends EventEmitter {
     updatedInput?: Record<string, unknown>,
   ): Promise<boolean>;
   abstract close(): Promise<void>;
+
+  /**
+   * Optional native plan/goal hooks (0.7). Only adapters declaring
+   * "goal.native" implement them; other runtimes get Bridge-orchestrated
+   * goal emulation instead. Returning false means the runtime rejected
+   * the operation and the caller must fall back to prompt contracts.
+   */
+  async setCollaborationMode(_nativeSessionId: string, _mode: "plan" | "default"): Promise<boolean> {
+    return false;
+  }
+
+  async goalSet(_nativeSessionId: string, _objective: string): Promise<boolean> {
+    return false;
+  }
+
+  async goalGet(_nativeSessionId: string): Promise<RuntimeAdapterGoal | undefined> {
+    return undefined;
+  }
+
+  async goalPause(_nativeSessionId: string): Promise<boolean> {
+    return false;
+  }
+
+  async goalResume(_nativeSessionId: string): Promise<boolean> {
+    return false;
+  }
 }
 
 export class RuntimeAdapterRegistry extends EventEmitter {

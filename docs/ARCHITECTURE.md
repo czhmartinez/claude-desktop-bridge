@@ -1,11 +1,13 @@
-# Bridge 0.6 架构
+# Bridge 0.7 架构
 
 ## 产品边界
 
 Bridge 是独立的多 Desktop 协作产品，不是远程桌面，也不是任何一个 Desktop 输入框
 自动化。它统一手机与桌面上的会话列表、发送、流式输出、工具状态、审批、追问、中断和
 恢复体验；Claude Desktop、Codex Desktop 与 Hermes Desktop 的账户、原生会话、模型、
-权限与历史始终各自独立。Bridge 只建立出站连接，不要求公网 IP、端口映射或额外组网客户端。
+权限与历史始终各自独立。0.7 新增经用户两次确认的跨 Desktop 串行接力：接力只在运行时
+之间传递有界、脱敏、加密的可见上下文包，目标始终是新建原生会话，仍不构成会话迁移。
+Bridge 只建立出站连接，不要求公网 IP、端口映射或额外组网客户端。
 
 ```mermaid
 flowchart LR
@@ -57,9 +59,9 @@ Bridge 0.6 的统一对象是操作体验，不是对话本体。每个原生会
 | Hermes Desktop | Bridge 自己启动的仅环回 Hermes Gateway，使用进程级随机令牌 | 会话、发送、steer、流、工具、审批、追问、中断 | 不读取 Desktop token/keychain；不接受非环回 Gateway 地址 |
 
 `RuntimeAdapterRegistry` 只注册能力和健康状态，`RuntimeSessionBroker` 只做协议归一化、
-事件落盘与权限路由。它们不保存跨运行时接力包，不执行会话迁移，也不为某个 Desktop
-自动故障转移到另一个 Desktop。统一会话列表只是索引；打开后始终回到拥有该任务的原生
-运行时。
+事件落盘与权限路由。跨运行时接力包与接力状态由独立的 `RuntimeHandoffService` 持有；
+Broker 本身仍不执行会话迁移，也不为某个 Desktop 自动故障转移到另一个 Desktop。
+统一会话列表只是索引；打开后始终回到拥有该任务的原生运行时。
 
 各 adapter 必须显式声明能力。当前共同基线为 `session.list/create/history`、
 `turn.start/steer/interrupt`、`permission.resolve` 和 `tool.events`；图片附件按 adapter
@@ -81,6 +83,7 @@ Bridge 0.6 的统一对象是操作体验，不是对话本体。每个原生会
 | `ProviderRegistry` | 三类 profile 状态、Anthropic API Key 验证与模型发现 |
 | `ProviderRuntimePool` | Claude-3p Host 凭据、Anthropic API 显式 Key、Claude 官方只读 adapter |
 | `HandoffService` | 本机加密接力包、状态机、Deep Link、严格关联和原 lane 保留 |
+| `RuntimeHandoffService` | 跨 Desktop 串行接力状态机、三运行时端点、goal 监督与故障恢复 |
 | `TranscriptObserver` | 只读观察 Claude Desktop 会话，并增量恢复事后工具记录 |
 | `ClaudeDesktopSessionRegistrar` | 动态识别 active profile，校验并登记 Bridge 会话 ID 映射 |
 | `SessionEventLog` | 追加式 JSONL、单调 `seq`、delta 合并、history/cursor |
@@ -93,6 +96,58 @@ Bridge 0.6 的统一对象是操作体验，不是对话本体。每个原生会
 | `WebRtcTransport` | 加密信令、五秒直连竞争、DataChannel 分块、ACK 与无缝回退 |
 | `apps/relay` | 鉴权、SQLite 离线密文、分块、撤销、指标、备份和无正文推送 |
 | `apps/client` | 手机三层导航和电脑轻量控制台 |
+
+## 跨 Desktop 串行接力（0.7）
+
+跨运行时接力由独立的 `RuntimeHandoffService` 编排，与 Claude 域内 lane 接力并行且
+互不改写。它把「接力」建模为源会话到目标新建会话的**有向链接**，而不是任何意义上的
+会话迁移：原生身份 `(runtimeId, nativeSessionId)` 不变，目标会话由目标运行时自己执行，
+Bridge 只在两次用户确认之间传递接力包。
+
+```mermaid
+stateDiagram-v2
+  [*] --> previewed: "选择目标运行时并生成预览"
+  previewed --> preparing: "确认接力"
+  previewed --> failed: "预览过期"
+  preparing --> planning: "源任务已停止，目标新会话已创建"
+  preparing --> failed: "源任务 10s 未停止 / 目标未就绪"
+  planning --> plan_ready: "目标产出可读计划"
+  planning --> failed: "计划失败或为空"
+  plan_ready --> executing: "用户确认计划（可修改目标）"
+  plan_ready --> cancelled: "用户取消"
+  executing --> applied: "目标接受执行 turn，goal 已建立"
+  executing --> failed
+  previewed --> cancelled
+  preparing --> cancelled
+  planning --> cancelled
+```
+
+- **预览**：`runtime.handoff.preview` 构建加密接力包（目标草稿、有界近期对话、约束、
+  未完成事项、工具/成果摘要、workspace git 状态、完整性哈希），与 0.5 lane 接力包共用
+  同一套 compact/redact/workspace 采集实现（`handoff-package.ts`）。提示词上限仍为
+  48,000 字符；预览 30 分钟过期。
+- **确认接力**：源会话运行中先 `interruptTurn` 并有界等待 10 秒；未停止则失败且源任务
+  保持原状。源队列中未发送项不迁移，仅以摘要进入未完成事项。目标会话以源 cwd 新建，
+  标题为「接力自 <源标题>」。
+- **计划阶段**：Codex 目标经 `thread/settings/update` 设 `collaborationMode: plan` 原生
+  只读规划；Claude/Hermes 目标使用只读规划约定（写操作仍走既有审批）。计划 turn 的
+  终稿 assistant 消息存为计划文本；空计划直接失败。
+- **goal 执行**：用户确认计划后，Codex 目标调 `thread/goal/set` 建立原生 goal 并恢复
+  default 模式，由运行时自动续跑；Claude/Hermes 目标执行带 `GOAL_STATUS:
+  continue|done|blocked` 约定的指令，Bridge 在每轮结束解析标记并自动续跑（上限 20 次，
+  持久化计数），done/blocked 分别进入完成/受阻。
+- **停止语义**：用户在目标会话停止任务会同时暂停 goal（Codex 原生 `paused`，模拟侧停
+  循环），goal 循环永不与用户停止对抗；`runtime.goal.pause/resume` 可显式控制。
+- **故障闭合**：Host 重启后 `preparing` 与无 goal 的 `executing` 直接失败（绝不重发），
+  `planning` 从目标历史恢复可读计划（否则失败），`applied` 的 goal 按 `runtime_goals`
+  恢复监督并与 Codex `thread/goal/get` 对账。
+
+接力状态持久化在 `conversation-state-v1.sqlite` 的 `runtime_handoffs` 与
+`runtime_goals` 两表；接力链（`BridgeSessionInfo.relay`）、goal 状态
+（`BridgeSessionInfo.goal`）与待确认接力（`pendingRuntimeHandoff`，快照中剥离计划
+全文与原生 ID）作为增量快照字段下发。协议仍为 V3、配对 schema 仍为 V4，新增
+`runtime.handoff.v1` capability 与 `runtime.handoff.*`/`runtime.goal.*` 方法事件，
+旧客户端忽略并隐藏入口。
 
 ## Claude 域内逻辑对话与提供方接力
 
@@ -256,6 +311,7 @@ Claude 官方 adapter 没有 Host 执行计划，只能生成公开 Deep Link；
 ## 明确不做
 
 Bridge 不展示、存储或从行为推断隐藏 CoT，不自动故障转移，不代理官方 OAuth，也不
-重新接入 Claude Desktop 私有 CDP。Bridge 0.6 不合并 Claude、Codex 与 Hermes 的
-原生会话、历史、认证、模型或权限，也不在它们之间自动迁移或故障转移。V0.6 不提供项目目录树、远程编辑器、动态站点
+重新接入 Claude Desktop 私有 CDP。Bridge 0.7 不合并 Claude、Codex 与 Hermes 的
+原生会话、历史、认证、模型或权限，也不在它们之间自动迁移或故障转移；跨 Desktop
+接力永远是用户两次确认的手动串行操作，目标为新建原生会话。V0.7 不提供项目目录树、远程编辑器、动态站点
 直播、自动启动开发服务、PDF 内嵌渲染或超过 20 MiB 的文件传输。

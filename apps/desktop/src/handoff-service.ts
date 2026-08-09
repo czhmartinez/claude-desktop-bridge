@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { promisify } from "node:util";
 import type {
   BridgeConversationRoute,
   BridgeEvent,
@@ -22,13 +20,20 @@ import type { ProviderRegistry } from "./provider-registry.js";
 import type { ProviderRuntimePool } from "./provider-runtime-pool.js";
 import type { SessionBroker } from "./session-broker.js";
 import type { SessionEventLog } from "./session-event-log.js";
+import {
+  EXECUTABLE_PROMPT_LIMIT,
+  HANDOFF_HISTORY_ITEM_LIMIT,
+  captureWorkspace,
+  compact,
+  extractConstraints,
+  extractLatestGoal,
+  normalizeConversation,
+  packageHash,
+  redact,
+} from "./handoff-package.js";
 
-const execFileAsync = promisify(execFile);
-const EXECUTABLE_PROMPT_LIMIT = 48_000;
 const OFFICIAL_PROMPT_LIMIT = 12_000;
 const OFFICIAL_ASSOCIATION_WINDOW_MS = 10 * 60 * 1_000;
-const HISTORY_ITEM_LIMIT = 24;
-const HISTORY_TEXT_LIMIT = 2_000;
 
 interface HandoffObserver {
   readonly catalog: ClaudeCatalogSnapshot;
@@ -91,65 +96,7 @@ export interface HandoffServiceOptions {
   now?: () => number;
 }
 
-function compact(value: string, limit: number): string {
-  const normalized = value.replace(/\s+/gu, " ").trim();
-  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`;
-}
-
-function redact(value: string, cwd?: string): string {
-  let result = value
-    .replace(/\bsk-ant-[A-Za-z0-9_-]{8,}\b/gu, "[REDACTED_API_KEY]")
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{8,}\b/giu, "Bearer [REDACTED]")
-    .replace(/\b(?:api[_ -]?key|authorization|oauth|access[_ -]?token)\s*[:=]\s*\S+/giu, "$1=[REDACTED]");
-  const pathIsWithinProject = (path: string): boolean => {
-    if (!cwd) return false;
-    const normalizeForCompare = (candidate: string) => candidate
-      .replaceAll("\\", "/")
-      .replace(/\/+$/u, "")
-      .toLocaleLowerCase();
-    const candidate = normalizeForCompare(path);
-    const project = normalizeForCompare(cwd);
-    return candidate === project || candidate.startsWith(`${project}/`);
-  };
-  result = result.replace(
-    /\/(?:Users|private|Volumes|etc|var|tmp)\/[^\s"'`]+/gu,
-    (path) => pathIsWithinProject(path) ? path : "[OUTSIDE_PROJECT_PATH]",
-  );
-  result = result.replace(
-    /(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`<>|;&]+/gu,
-    (path) => pathIsWithinProject(path) ? path : "[OUTSIDE_PROJECT_PATH]",
-  );
-  return result;
-}
-
-function hash(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-async function gitValue(cwd: string, args: string[]): Promise<string | undefined> {
-  try {
-    const result = await execFileAsync("git", args, {
-      cwd,
-      encoding: "utf8",
-      timeout: 5_000,
-      maxBuffer: 2 * 1024 * 1024,
-    });
-    const value = result.stdout.trim();
-    return value || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function changedPaths(status: string | undefined): string[] {
-  if (!status) return [];
-  return status.split("\n").flatMap((line) => {
-    const path = line.slice(3).trim();
-    if (!path) return [];
-    const renamed = path.includes(" -> ") ? path.split(" -> ").at(-1)! : path;
-    return [renamed];
-  }).slice(0, 200);
-}
+const hash = packageHash;
 
 export class HandoffService {
   private readonly now: () => number;
@@ -590,22 +537,10 @@ export class HandoffService {
     const session = this.options.broker.session(route.conversationId);
     if (!session) throw new Error("Session not found");
     const cwd = await realpath(session.cwd);
-    const history = await this.options.broker.history(route.conversationId, undefined, HISTORY_ITEM_LIMIT);
-    const recentConversation = history.items
-      .filter((item) => item.role === "user" || item.role === "assistant")
-      .slice(-HISTORY_ITEM_LIMIT)
-      .map((item) => ({
-        role: item.role,
-        text: redact(compact(item.text, HISTORY_TEXT_LIMIT), cwd),
-        createdAt: item.createdAt,
-      }));
-    const latestGoal = [...recentConversation].reverse().find((item) => item.role === "user")?.text
-      ?? session.currentSummary
-      ?? session.title;
-    const constraints = recentConversation
-      .filter((item) => item.role === "user" && /(?:必须|不要|禁止|只能|保留|不得|must|never|only)/iu.test(item.text))
-      .slice(-8)
-      .map((item) => compact(item.text, 500));
+    const history = await this.options.broker.history(route.conversationId, undefined, HANDOFF_HISTORY_ITEM_LIMIT);
+    const recentConversation = normalizeConversation(history.items, cwd);
+    const latestGoal = extractLatestGoal(recentConversation, [session.currentSummary, session.title]);
+    const constraints = extractConstraints(recentConversation);
     const incompleteItems = [
       ...(session.pendingCount ? [`仍有 ${session.pendingCount} 个待处理任务`] : []),
       ...(session.currentSummary ? [redact(compact(session.currentSummary, 500), cwd)] : []),
@@ -623,11 +558,7 @@ export class HandoffService {
       })))
       .filter((artifact, index, all) => all.findIndex((candidate) => candidate.path === artifact.path) === index)
       .slice(0, 200);
-    const [gitHead, gitBranch, status] = await Promise.all([
-      gitValue(cwd, ["rev-parse", "HEAD"]),
-      gitValue(cwd, ["branch", "--show-current"]),
-      gitValue(cwd, ["status", "--porcelain=v1", "--untracked-files=normal"]),
-    ]);
+    const workspace = await captureWorkspace(cwd);
     const sourceEventSeq = this.options.eventLog.latestSeq();
     const unsigned = {
       version: 1 as const,
@@ -642,13 +573,7 @@ export class HandoffService {
       incompleteItems,
       toolsAndCommands,
       artifacts,
-      workspace: {
-        cwd,
-        ...(gitHead ? { gitHead } : {}),
-        ...(gitBranch ? { gitBranch } : {}),
-        dirty: Boolean(status),
-        changedFiles: changedPaths(status),
-      },
+      workspace,
       sourceEventSeq,
     };
     return {

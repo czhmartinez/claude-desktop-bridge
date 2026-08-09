@@ -1,8 +1,8 @@
 # Bridge
 
-Bridge 0.6 是一个独立的多 Desktop 协作产品：它给 Claude Desktop、Codex Desktop 和 Hermes Desktop
-提供一致的会话、发送、流式输出、审批、追问和中断体验，但不会把三者的原生会话、账号、
-模型、权限或历史合并到一起。
+Bridge 0.7 是一个独立的多 Desktop 协作产品：它给 Claude Desktop、Codex Desktop 和 Hermes Desktop
+提供一致的会话、发送、流式输出、审批、追问和中断体验，并支持把一段任务经用户确认后
+跨 Desktop 串行接力，但不会把三者的原生会话、账号、模型、权限或历史合并到一起。
 
 ## 早期背景
 
@@ -24,7 +24,29 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前开发版：0.6.1
+## 当前开发版：0.7.0
+
+Bridge 0.7 在 0.6 的统一操作体验上新增**跨 Desktop 串行接力**：任何会话顶栏的「接力」
+按钮可以把当前任务交给另一个 Desktop 运行时接手。接力不是会话迁移——Bridge 会安全中断
+源任务，把有界、脱敏、加密的可见上下文包交给目标运行时上**新建的原生会话**，两个会话
+通过接力链双向链接，原生身份与历史始终各自独立。
+
+- **先计划，后执行**：目标运行时先只读制定计划（Codex 使用原生 plan 协作模式，
+  Claude/Hermes 使用只读规划约定）；Bridge 展示完整计划，用户确认或修改执行目标后，
+  才以 goal 模式开始执行。
+- **goal 模式**：Codex 目标使用原生 thread goal 持续执行并镜像状态回 Bridge；
+  Claude/Hermes 目标由 Bridge 编排目标循环（`GOAL_STATUS` 标记、最多 20 次自动续跑、
+  受阻/完成上报）。在目标会话点停止会同时暂停 goal，暂停或受阻的 goal 可以随时恢复。
+- **两次确认，永不自动**：接力需要「确认接力」和「确认计划」两次人工确认；没有自动
+  故障转移，没有凭据迁移，接力包不含隐藏思维、OAuth、API Key 或项目外内容。
+- **故障闭合**：接力各阶段持久化在 `conversation-state-v1.sqlite`；Bridge 重启时
+  准备/执行中的接力安全停止且绝不重发，已完成计划从目标历史恢复，活动 goal 与目标
+  运行时对账恢复。
+
+协议仍为 V3、配对 schema 仍为 V4；0.4-0.6 客户端会忽略接力事件与元数据并隐藏接力
+入口，已配对设备无需重配。
+
+## 0.6 多 Desktop 运行时（延续）
 
 Bridge 0.6 不再把自己定义为 Claude 的单一 tunnel。它保留一条加密的手机与 Bridge Host
 连接，并在 Host 内注册独立的 Desktop adapter：Claude 继续使用既有 `SessionBroker`；Codex
@@ -34,6 +56,8 @@ Bridge 0.6 不再把自己定义为 Claude 的单一 tunnel。它保留一条加
 
 - **统一操作，不统一会话**：任何任务都可在 Bridge 中查看、继续、steer、审批、回答追问和中断；
   Claude、Codex 与 Hermes 不会互相迁移、共享上下文或自动故障转移。
+  0.7 新增的跨 Desktop 接力是例外中的严格手动路径：它只在用户两次确认后，把有界可见
+  上下文交给目标运行时的新会话，不迁移原生会话本身。
 - **本地最小权限**：Codex adapter 不附着或改写已经运行的 Desktop 进程；Hermes adapter 只接受
   环回 WebSocket，Bridge 为自己启动的 Gateway 生成进程级随机令牌，且不读取 Hermes Desktop 的
   token/keychain。
@@ -109,7 +133,8 @@ Bridge 工作手动接力到 Claude 官方本机应用，但官方 lane 不提�
 2. Bridge 会发现本机 adapter；在桌面或手机的“项目与会话”中按 Desktop 归属筛选，或在创建任务时
    选择目标 runtime。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、回答追问、调整或停止任务。
-   Claude 域内的 provider handoff 仍在会话顶栏单独触发，不会跨 Desktop 生效。
+   Claude 域内的 provider handoff 仍在会话顶栏单独触发；跨 Desktop 接力则在任意会话
+   顶栏通过「接力」按钮发起，先确认接力、再在计划就绪后确认执行。
 
 Bridge 不点击输入框，不粘贴内容，不申请辅助功能权限，也不读写系统剪贴板。
 Bridge 接管 Claude Desktop 已有会话后，电脑端 Bridge 是主要桌面界面，手机是远程

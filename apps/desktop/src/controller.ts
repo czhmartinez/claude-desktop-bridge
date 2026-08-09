@@ -49,6 +49,7 @@ import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
 import type { ProviderRegistry } from "./provider-registry.js";
 import type { HandoffService } from "./handoff-service.js";
 import type { RuntimeSessionBroker } from "./runtime-session-broker.js";
+import type { RuntimeHandoffService } from "./runtime-handoff-service.js";
 
 export interface LocalBridgeRequest {
   method: BridgeRequest["method"];
@@ -250,6 +251,7 @@ export class DesktopController extends EventEmitter {
     private readonly handoffs?: HandoffService,
     private readonly runtimeSessions?: RuntimeSessionBroker,
     private readonly desktopAppControls?: ReadonlyMap<BridgeDesktopRuntimeId, ClaudeDesktopLifecycle>,
+    private readonly runtimeHandoffs?: RuntimeHandoffService,
   ) {
     super();
   }
@@ -299,6 +301,7 @@ export class DesktopController extends EventEmitter {
       await this.providers.initialize();
     }
     await this.handoffs?.initialize();
+    await this.runtimeHandoffs?.initialize();
     await this.connect();
     if (!this.config.devices.some((device) => (
       !device.revokedAt && (Boolean(device.pairedAt) || device.expiresAt > Date.now())
@@ -330,6 +333,7 @@ export class DesktopController extends EventEmitter {
           "conversation.handoff.v1",
           "permission.policy.v1",
           "runtime.adapter.v1",
+          ...(this.runtimeHandoffs ? ["runtime.handoff.v1" as const] : []),
         ],
         defaultPermissionMode: this.config.defaultPermissionMode,
       },
@@ -533,6 +537,7 @@ export class DesktopController extends EventEmitter {
   async close(): Promise<void> {
     this.socket?.close();
     await this.handoffs?.close();
+    await this.runtimeHandoffs?.close();
     await this.runtimeSessions?.close();
   }
 
@@ -599,7 +604,8 @@ export class DesktopController extends EventEmitter {
     const priority = (state: BridgeSessionInfo["turnState"]): number => (
       state === "waiting" ? 3 : state === "running" ? 2 : state === "queued" ? 1 : 0
     );
-    return [...this.broker.listSessions(), ...(this.runtimeSessions?.listSessions() ?? [])]
+    const sessions = [...this.broker.listSessions(), ...(this.runtimeSessions?.listSessions() ?? [])];
+    return (this.runtimeHandoffs?.enrichSessions(sessions) ?? sessions)
       .sort((left, right) => (
         priority(right.turnState) - priority(left.turnState)
         || right.lastActivityAt - left.lastActivityAt
@@ -882,6 +888,48 @@ export class DesktopController extends EventEmitter {
       if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
       return { handoff: this.handoffs.get(stringParam(params, "handoffId")!) };
     }
+    if (request.method === "runtime.handoff.preview") {
+      if (!this.runtimeHandoffs) throw new Error("Runtime handoff is unavailable");
+      const targetRuntimeId = runtimeIdParam(params, "targetRuntimeId");
+      if (!targetRuntimeId) throw new Error("targetRuntimeId is required");
+      return {
+        preview: await this.runtimeHandoffs.preview({
+          sessionId: stringParam(params, "sessionId")!,
+          targetRuntimeId,
+        }),
+      };
+    }
+    if (request.method === "runtime.handoff.commit") {
+      if (!this.runtimeHandoffs) throw new Error("Runtime handoff is unavailable");
+      return this.runtimeHandoffs.commit({ handoffId: stringParam(params, "handoffId")! });
+    }
+    if (request.method === "runtime.handoff.cancel") {
+      if (!this.runtimeHandoffs) throw new Error("Runtime handoff is unavailable");
+      return this.runtimeHandoffs.cancel(stringParam(params, "handoffId")!);
+    }
+    if (request.method === "runtime.handoff.get") {
+      if (!this.runtimeHandoffs) throw new Error("Runtime handoff is unavailable");
+      return { handoff: this.runtimeHandoffs.get(stringParam(params, "handoffId")!) };
+    }
+    if (request.method === "runtime.handoff.list") {
+      if (!this.runtimeHandoffs) throw new Error("Runtime handoff is unavailable");
+      return this.runtimeHandoffs.list(stringParam(params, "sessionId")!);
+    }
+    if (request.method === "runtime.handoff.confirm") {
+      if (!this.runtimeHandoffs) throw new Error("Runtime handoff is unavailable");
+      return this.runtimeHandoffs.confirm({
+        handoffId: stringParam(params, "handoffId")!,
+        ...(typeof params.objective === "string" ? { objective: params.objective } : {}),
+      });
+    }
+    if (request.method === "runtime.goal.pause") {
+      if (!this.runtimeHandoffs) throw new Error("Runtime handoff is unavailable");
+      return this.runtimeHandoffs.pauseGoal(stringParam(params, "sessionId")!);
+    }
+    if (request.method === "runtime.goal.resume") {
+      if (!this.runtimeHandoffs) throw new Error("Runtime handoff is unavailable");
+      return this.runtimeHandoffs.resumeGoal(stringParam(params, "sessionId")!);
+    }
     if (request.method === "session.list") {
       return {
         sessions: this.listedSessions(
@@ -1055,6 +1103,9 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "turn.interrupt") {
       const sessionId = stringParam(params, "sessionId")!;
+      // Stopping a goal-mode session must also pause its goal so the
+      // supervisor never fights a user-initiated stop.
+      await this.runtimeHandoffs?.pauseGoal(sessionId).catch(() => ({}));
       if (this.externalSession(sessionId)) {
         return { interrupted: await this.runtimeSessions!.interruptTurn(sessionId) };
       }

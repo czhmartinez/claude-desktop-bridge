@@ -96,7 +96,8 @@ export type BridgeRuntimeCapability =
   | "turn.interrupt"
   | "permission.resolve"
   | "tool.events"
-  | "attachment.image";
+  | "attachment.image"
+  | "goal.native";
 
 export interface BridgeDesktopRuntime {
   id: BridgeDesktopRuntimeId;
@@ -168,7 +169,73 @@ export type BridgeCapability =
   | "conversation.lanes.v1"
   | "conversation.handoff.v1"
   | "permission.policy.v1"
-  | "runtime.adapter.v1";
+  | "runtime.adapter.v1"
+  | "runtime.handoff.v1";
+
+/**
+ * Cross-Desktop serial relay (0.7). A handoff moves a task to a brand-new
+ * native session on another runtime: plan first, then goal-mode execution.
+ * Runtimes stay isolated; only the user-confirmed package crosses.
+ */
+export type BridgeRuntimeHandoffState =
+  | "previewed"
+  | "preparing"
+  | "planning"
+  | "plan-ready"
+  | "executing"
+  | "applied"
+  | "cancelled"
+  | "failed";
+
+export type BridgeRuntimeGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "complete";
+
+export interface BridgeRuntimeGoalInfo {
+  objective: string;
+  status: BridgeRuntimeGoalStatus;
+  /** True when the owning runtime tracks the goal itself (Codex). */
+  native: boolean;
+  continuations: number;
+  detail?: string;
+  updatedAt: number;
+}
+
+export interface BridgeRuntimeRelayLink {
+  handoffId: string;
+  sessionId: string;
+  runtimeId: BridgeDesktopRuntimeId;
+  title: string;
+  at: number;
+}
+
+export interface BridgeRuntimeHandoff {
+  handoffId: string;
+  state: BridgeRuntimeHandoffState;
+  sourceRuntimeId: BridgeDesktopRuntimeId;
+  sourceSessionId: string;
+  targetRuntimeId: BridgeDesktopRuntimeId;
+  targetSessionId?: string;
+  objective: string;
+  summary: string;
+  planText?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt?: number;
+}
+
+export interface BridgeRuntimeHandoffPreview {
+  handoff: BridgeRuntimeHandoff;
+  objectiveDraft: string;
+  recentItemCount: number;
+  artifactCount: number;
+  gitBranch?: string;
+  workspaceDirty: boolean;
+  promptBytes: number;
+}
 
 export type BridgeProviderKind =
   | "claude-3p"
@@ -249,6 +316,8 @@ export interface BridgeSessionAllowedActions {
   canSwitchProvider: boolean;
   canContinueOfficial: boolean;
   canConfigure: boolean;
+  /** Cross-Desktop relay to another runtime (0.7+). */
+  canRelay?: boolean;
   reason?: string;
 }
 
@@ -455,6 +524,15 @@ export interface BridgeSessionInfo {
   routeState?: BridgeRouteState;
   allowedActions?: BridgeSessionAllowedActions;
   pendingHandoff?: BridgeHandoff;
+  /** Cross-Desktop relay chain metadata (0.7+); never a shared session. */
+  relay?: {
+    inbound?: BridgeRuntimeRelayLink;
+    outbound?: BridgeRuntimeRelayLink[];
+  };
+  /** Active cross-Desktop relay started from this session (0.7+). */
+  pendingRuntimeHandoff?: BridgeRuntimeHandoff;
+  /** Goal-mode execution state on this session (0.7+). */
+  goal?: BridgeRuntimeGoalInfo;
 }
 
 export interface BridgeModelInfo {
@@ -690,6 +768,14 @@ export type BridgeMethod =
   | "conversation.switch.commit"
   | "conversation.switch.cancel"
   | "handoff.get"
+  | "runtime.handoff.preview"
+  | "runtime.handoff.commit"
+  | "runtime.handoff.cancel"
+  | "runtime.handoff.get"
+  | "runtime.handoff.list"
+  | "runtime.handoff.confirm"
+  | "runtime.goal.pause"
+  | "runtime.goal.resume"
   | "device.revoke";
 
 export interface BridgeRequest {
@@ -751,6 +837,12 @@ export type BridgeEventType =
   | "handoff.ready"
   | "handoff.applied"
   | "handoff.failed"
+  | "runtime.handoff.started"
+  | "runtime.handoff.plan-ready"
+  | "runtime.handoff.applied"
+  | "runtime.handoff.failed"
+  | "runtime.handoff.cancelled"
+  | "runtime.goal.updated"
   | "device.paired"
   | "device.revoked"
   | "runtime.compatibility"

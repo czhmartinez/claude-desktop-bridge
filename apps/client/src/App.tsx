@@ -106,6 +106,13 @@ export function App() {
       onPreviewProviderSwitch={mobile.previewProviderSwitch}
       onCommitProviderSwitch={mobile.commitProviderSwitch}
       onCancelProviderSwitch={mobile.cancelProviderSwitch}
+      onPreviewRuntimeHandoff={mobile.previewRuntimeHandoff}
+      onCommitRuntimeHandoff={mobile.commitRuntimeHandoff}
+      onConfirmRuntimeHandoff={mobile.confirmRuntimeHandoff}
+      onCancelRuntimeHandoff={mobile.cancelRuntimeHandoff}
+      onGetRuntimeHandoff={mobile.getRuntimeHandoff}
+      onPauseRuntimeGoal={mobile.pauseRuntimeGoal}
+      onResumeRuntimeGoal={mobile.resumeRuntimeGoal}
       onRefreshProviders={mobile.refreshProviders}
       onDesktopAppAction={mobile.controlDesktopApp}
       onRefresh={mobile.refresh}

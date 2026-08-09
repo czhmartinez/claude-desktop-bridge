@@ -436,6 +436,11 @@ export class RuntimeSessionBroker extends EventEmitter {
       await this.handlePermission(runtimeId, event.permission);
       return;
     }
+    if (event.type === "goal.updated" || event.type === "goal.cleared") {
+      // Goal state is owned by the runtime handoff supervisor; it listens
+      // to the registry directly and writes normalized runtime.goal events.
+      return;
+    }
     const nativeSessionId = event.nativeSessionId;
     const sessionId = runtimeSessionId(runtimeId, nativeSessionId);
     const session = this.sessionsByRuntime.get(runtimeId)?.get(nativeSessionId);
@@ -521,7 +526,7 @@ export class RuntimeSessionBroker extends EventEmitter {
     this.emit("changed");
   }
 
-  private toBridgeEvent(event: Exclude<RuntimeAdapterEvent, { type: "session.updated" } | { type: "permission.requested" }>): {
+  private toBridgeEvent(event: Exclude<RuntimeAdapterEvent, { type: "session.updated" } | { type: "permission.requested" } | { type: "goal.updated" } | { type: "goal.cleared" }>): {
     type: BridgeEventType;
     turnId?: string;
     itemId?: string;

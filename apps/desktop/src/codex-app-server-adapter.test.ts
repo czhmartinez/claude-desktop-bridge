@@ -8,6 +8,8 @@ import {
 class FakeCodexClient extends EventEmitter implements CodexRpcClient {
   readonly requests: Array<{ method: string; params?: unknown }> = [];
   readonly responses: Array<{ id: string | number; result: unknown }> = [];
+  goal: Record<string, unknown> | undefined;
+  unsupportedMethods = new Set<string>();
   private settings = {
     model: "gpt-5.6-terra",
     provider: "custom",
@@ -17,6 +19,9 @@ class FakeCodexClient extends EventEmitter implements CodexRpcClient {
 
   async request<T = unknown>(method: string, params?: unknown): Promise<T> {
     this.requests.push({ method, ...(params === undefined ? {} : { params }) });
+    if (this.unsupportedMethods.has(method)) {
+      throw new Error(`Unknown method: ${method}`);
+    }
     if (method === "initialize") return { userAgent: "codex-test" } as T;
     if (method === "thread/list") {
       return {
@@ -64,6 +69,21 @@ class FakeCodexClient extends EventEmitter implements CodexRpcClient {
     }
     if (method === "turn/start") return { turn: { id: "turn-1" } } as T;
     if (method === "thread/read") return { thread: { turns: [] } } as T;
+    if (method === "thread/goal/set") {
+      const options = (params ?? {}) as Record<string, unknown>;
+      this.goal = {
+        threadId: options.threadId,
+        objective: typeof options.objective === "string" ? options.objective : this.goal?.objective,
+        status: typeof options.status === "string" ? options.status : "active",
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        updatedAt: Date.now(),
+      };
+      return {} as T;
+    }
+    if (method === "thread/goal/get") {
+      return { goal: this.goal ?? null } as T;
+    }
     return {} as T;
   }
 
@@ -242,6 +262,80 @@ describe("CodexAppServerAdapter", () => {
     expect(adapter.sessions()[0]).not.toHaveProperty("reasoningEffort");
     expect(adapter.sessions()[0]).not.toHaveProperty("fast");
 
+    await adapter.close();
+  });
+
+  it("drives native plan mode and goals, translating goal notifications", async () => {
+    const client = new FakeCodexClient();
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+    });
+    const events: Array<{ type: string; goal?: { status: string; detail?: string } }> = [];
+    adapter.on("event", (event) => events.push(event));
+    await adapter.initialize();
+    expect(adapter.status().capabilities).toContain("goal.native");
+
+    expect(await adapter.setCollaborationMode("thread-1", "plan")).toBe(true);
+    const planUpdate = client.requests.find((request) => (
+      request.method === "thread/settings/update" &&
+      Boolean((request.params as Record<string, unknown>).collaborationMode)
+    ));
+    expect(planUpdate?.params).toMatchObject({
+      threadId: "thread-1",
+      collaborationMode: {
+        mode: "plan",
+        settings: { developer_instructions: null },
+      },
+    });
+    expect(await adapter.setCollaborationMode("thread-1", "default")).toBe(true);
+
+    expect(await adapter.goalSet("thread-1", "完成接力目标")).toBe(true);
+    expect(client.goal).toMatchObject({ threadId: "thread-1", objective: "完成接力目标", status: "active" });
+
+    client.goal = { ...client.goal!, status: "usageLimited", updatedAt: 42 };
+    expect(await adapter.goalGet("thread-1")).toMatchObject({
+      objective: "完成接力目标",
+      status: "blocked",
+      detail: "usageLimited",
+    });
+
+    expect(await adapter.goalPause("thread-1")).toBe(true);
+    expect(client.goal).toMatchObject({ status: "paused" });
+    expect(await adapter.goalResume("thread-1")).toBe(true);
+    expect(client.goal).toMatchObject({ status: "active" });
+
+    client.emit("notification", {
+      method: "thread/goal/updated",
+      params: {
+        threadId: "thread-1",
+        turnId: null,
+        goal: { threadId: "thread-1", objective: "完成接力目标", status: "complete", updatedAt: 43 },
+      },
+    });
+    client.emit("notification", {
+      method: "thread/goal/cleared",
+      params: { threadId: "thread-1" },
+    });
+    expect(events.filter((event) => event.type === "goal.updated")).toEqual([
+      expect.objectContaining({ goal: expect.objectContaining({ status: "complete" }) }),
+    ]);
+    expect(events.some((event) => event.type === "goal.cleared")).toBe(true);
+
+    await adapter.close();
+  });
+
+  it("falls back when the app-server does not know plan/goal methods", async () => {
+    const client = new FakeCodexClient();
+    client.unsupportedMethods.add("thread/goal/set").add("thread/goal/get");
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+    });
+    await adapter.initialize();
+    expect(await adapter.goalSet("thread-1", "目标")).toBe(false);
+    expect(await adapter.goalGet("thread-1")).toBeUndefined();
+    expect(await adapter.goalPause("thread-1")).toBe(false);
     await adapter.close();
   });
 });

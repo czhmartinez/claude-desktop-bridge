@@ -249,4 +249,78 @@ describe("ConversationStateStore", () => {
     const bytes = await readFile(fixture.databasePath);
     expect(bytes.includes(Buffer.from("PRIVATE_HANDOFF_PACKAGE_SENTINEL"))).toBe(false);
   });
+
+  it("persists runtime handoffs with encrypted packages and survives reinitialization", async () => {
+    const fixture = await createStore();
+    await fixture.store.initialize();
+    fixture.store.saveRuntimeHandoff({
+      handoffId: "runtime-handoff-1",
+      state: "plan-ready",
+      sourceRuntimeId: "claude-desktop",
+      sourceSessionId: "claude-1",
+      sourceNativeSessionId: "native-1",
+      targetRuntimeId: "codex-desktop",
+      targetSessionId: "codex-desktop:native-2",
+      targetNativeSessionId: "native-2",
+      objective: "完成重构",
+      summary: "完成重构",
+      planText: "计划全文",
+      package: { version: 1, secretProbe: "encrypted-payload" },
+      planPrompt: "规划提示",
+      executionPrompt: "执行提示",
+    });
+    fixture.store.saveRuntimeGoal({
+      sessionId: "codex-desktop:native-2",
+      handoffId: "runtime-handoff-1",
+      runtimeId: "codex-desktop",
+      nativeSessionId: "native-2",
+      objective: "完成重构",
+      status: "active",
+      native: true,
+      continuations: 0,
+      updatedAt: Date.now(),
+    });
+    fixture.store.close();
+
+    // Reopen over the same database: the 0.7 tables migrate idempotently.
+    const reopened = new ConversationStateStore({
+      databasePath: fixture.databasePath,
+      sessionsPath: fixture.sessionsPath,
+      queuePath: fixture.queuePath,
+      masterSecret: "test-conversation-state-secret",
+    });
+    await reopened.initialize();
+    await reopened.initialize();
+    const handoff = reopened.runtimeHandoff("runtime-handoff-1");
+    expect(handoff).toMatchObject({
+      state: "plan-ready",
+      sourceRuntimeId: "claude-desktop",
+      targetRuntimeId: "codex-desktop",
+      targetSessionId: "codex-desktop:native-2",
+      objective: "完成重构",
+      planText: "计划全文",
+    });
+    const pkg = reopened.runtimeHandoffPackage("runtime-handoff-1");
+    expect(pkg?.package).toMatchObject({ version: 1, secretProbe: "encrypted-payload" });
+    expect(pkg?.planPrompt).toBe("规划提示");
+    expect(pkg?.executionPrompt).toBe("执行提示");
+    // The package never sits in the database as plaintext.
+    const raw = await readFile(fixture.databasePath, "utf8").catch(() => "");
+    expect(raw).not.toContain("encrypted-payload");
+    expect(reopened.runtimeHandoffsForSession("claude-1")).toHaveLength(1);
+    expect(reopened.runtimeHandoffsForSession("codex-desktop:native-2")).toHaveLength(1);
+    expect(reopened.listActiveRuntimeHandoffs()).toHaveLength(1);
+
+    const goal = reopened.runtimeGoal("codex-desktop:native-2");
+    expect(goal).toMatchObject({ status: "active", native: true, continuations: 0 });
+    reopened.saveRuntimeGoal({ ...goal!, status: "blocked", continuations: 3, detail: "受阻", updatedAt: Date.now() });
+    expect(reopened.runtimeGoal("codex-desktop:native-2")).toMatchObject({
+      status: "blocked",
+      continuations: 3,
+      detail: "受阻",
+    });
+    expect(reopened.listRuntimeGoals(["blocked"])).toHaveLength(1);
+    expect(reopened.listRuntimeGoals(["active"])).toHaveLength(0);
+    reopened.close();
+  });
 });

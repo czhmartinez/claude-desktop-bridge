@@ -11,11 +11,13 @@ import {
   canStopBridgeTask,
   conversationItems,
   conversationTimeline,
+  goalStatusLabel,
   ownershipLabel,
   permissionPresentation,
   restorableSessionId,
   stoppableBridgeTask,
   supportsProviderSwitching,
+  supportsRuntimeHandoff,
   usesOfficialComposer,
 } from "./MobileWorkspace.js";
 
@@ -190,6 +192,20 @@ describe("provider switching presentation", () => {
 
     expect(supportsProviderSwitching(legacy)).toBe(false);
     expect(supportsProviderSwitching(current)).toBe(true);
+  });
+
+  it("gates the runtime relay entry on the host capability and labels goal states", () => {
+    expect(supportsRuntimeHandoff(undefined)).toBe(false);
+    expect(supportsRuntimeHandoff({
+      host: { capabilities: [] },
+    } as never)).toBe(false);
+    expect(supportsRuntimeHandoff({
+      host: { capabilities: ["runtime.handoff.v1"] },
+    } as never)).toBe(true);
+    expect(goalStatusLabel("active")).toBe("goal 执行中");
+    expect(goalStatusLabel("paused")).toBe("goal 已暂停");
+    expect(goalStatusLabel("blocked")).toBe("goal 受阻");
+    expect(goalStatusLabel("complete")).toBe("goal 已完成");
   });
 
   it("replaces the writable composer for a Claude official lane", () => {

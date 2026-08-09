@@ -11,6 +11,8 @@ import type {
   BridgePermissionMode,
   BridgeProviderProfile,
   BridgeResponse,
+  BridgeRuntimeHandoff,
+  BridgeRuntimeHandoffPreview,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
   DesktopControlSnapshot,
@@ -25,6 +27,8 @@ import {
   ChevronsUp,
   CircleStop,
   Download,
+  Forward,
+  Goal,
   ImagePlus,
   Laptop,
   LoaderCircle,
@@ -64,9 +68,11 @@ import {
   desktopRuntimeId,
   desktopRuntimeName,
   fileToAttachment,
+  goalStatusLabel,
   PermissionPrompt,
   runtimeProviderLabel,
   stoppableBridgeTask,
+  supportsRuntimeHandoff,
 } from "./MobileWorkspace.js";
 import {
   ProviderSwitchDialog,
@@ -74,6 +80,7 @@ import {
   type ProviderSwitchPreview,
   type ProviderSwitchResult,
 } from "./ProviderSwitchDialog.js";
+import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -184,6 +191,7 @@ function DesktopSessions({
   const [createOpen, setCreateOpen] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [providerOpen, setProviderOpen] = useState(false);
+  const [relayOpen, setRelayOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
   const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
@@ -207,6 +215,7 @@ function DesktopSessions({
     && snapshot.host.capabilities.includes("provider.profile.v1")
     && snapshot.host.capabilities.includes("conversation.handoff.v1"),
   );
+  const runtimeHandoffAvailable = supportsRuntimeHandoff(snapshot);
   const activeProvider = providers.find((profile) => profile.id === selected?.activeProviderProfileId);
   const officialActive = activeProvider?.kind === "claude-official";
   const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
@@ -507,6 +516,65 @@ function DesktopSessions({
     }));
   }
 
+  async function previewRuntimeHandoff(
+    targetRuntimeId: BridgeDesktopRuntimeId,
+  ): Promise<BridgeRuntimeHandoffPreview> {
+    if (!selected) throw new Error("Session not found");
+    const result = unwrap<{ preview: BridgeRuntimeHandoffPreview }>(await apiRequest({
+      method: "runtime.handoff.preview",
+      params: { sessionId: selected.sessionId, targetRuntimeId },
+    }));
+    return result.preview;
+  }
+
+  async function commitRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff> {
+    const result = unwrap<{ handoff: BridgeRuntimeHandoff }>(await apiRequest({
+      method: "runtime.handoff.commit",
+      params: { handoffId },
+    }));
+    await onRefreshSnapshot();
+    return result.handoff;
+  }
+
+  async function confirmRuntimeHandoff(
+    handoffId: string,
+    objective?: string,
+  ): Promise<{ handoff: BridgeRuntimeHandoff }> {
+    const result = unwrap<{ handoff: BridgeRuntimeHandoff }>(await apiRequest({
+      method: "runtime.handoff.confirm",
+      params: { handoffId, ...(objective?.trim() ? { objective: objective.trim() } : {}) },
+    }));
+    await onRefreshSnapshot();
+    return { handoff: result.handoff };
+  }
+
+  async function cancelRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff | undefined> {
+    const result = unwrap<{ handoff?: BridgeRuntimeHandoff }>(await apiRequest({
+      method: "runtime.handoff.cancel",
+      params: { handoffId },
+    }));
+    await onRefreshSnapshot();
+    return result.handoff;
+  }
+
+  async function getRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff> {
+    const result = unwrap<{ handoff: BridgeRuntimeHandoff }>(await apiRequest({
+      method: "runtime.handoff.get",
+      params: { handoffId },
+    }));
+    return result.handoff;
+  }
+
+  async function pauseRuntimeGoal(sessionId: string): Promise<void> {
+    unwrap(await apiRequest({ method: "runtime.goal.pause", params: { sessionId } }));
+    await onRefreshSnapshot();
+  }
+
+  async function resumeRuntimeGoal(sessionId: string): Promise<void> {
+    unwrap(await apiRequest({ method: "runtime.goal.resume", params: { sessionId } }));
+    await onRefreshSnapshot();
+  }
+
   async function refreshProviders(): Promise<void> {
     unwrap<{ providers: BridgeProviderProfile[] }>(await apiRequest({
       method: "provider.refresh",
@@ -643,7 +711,7 @@ function DesktopSessions({
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
         <div className="desktop-sidebar-heading">
-          <div><span>Bridge 0.6</span><h1>会话</h1></div>
+          <div><span>Bridge 0.7</span><h1>会话</h1></div>
           <div className="desktop-sidebar-actions">
             <IconButton
               label="全部折叠"
@@ -757,7 +825,18 @@ function DesktopSessions({
                     <span>{providerName(selected.activeProviderProfileId, providers)}</span>
                   </button>
                 )}
-                {!providerSwitchingAvailable && selectedRuntime !== "claude-desktop" && (
+                {runtimeHandoffAvailable && selected.allowedActions?.canRelay !== false && (
+                  <button
+                    type="button"
+                    className="session-provider-trigger"
+                    aria-label="接力到其他 Desktop"
+                    onClick={() => setRelayOpen(true)}
+                  >
+                    <Forward size={15} />
+                    <span>接力</span>
+                  </button>
+                )}
+                {!providerSwitchingAvailable && !runtimeHandoffAvailable && selectedRuntime !== "claude-desktop" && (
                   <span
                     className="session-provider-trigger is-static"
                     title={`${selectedRuntimeName} 是独立的会话域，不提供跨 Desktop 接力`}
@@ -810,6 +889,59 @@ function DesktopSessions({
               <div className="desktop-channel-banner danger">
                 <AlertTriangle size={18} />
                 <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；持续冲突时再结束重复进程。</span>
+              </div>
+            )}
+            {selected.goal && (
+              <div className={`desktop-channel-banner goal-status ${selected.goal.status}`}>
+                <Goal size={18} />
+                <span>
+                  <strong>{goalStatusLabel(selected.goal.status)}</strong>
+                  {selected.goal.objective}
+                  {selected.goal.detail ? ` · ${selected.goal.detail}` : ""}
+                  {selected.goal.continuations > 0 ? ` · 已续跑 ${selected.goal.continuations} 轮` : ""}
+                </span>
+                {selected.goal.status === "active" ? (
+                  <button
+                    type="button"
+                    className="secondary-button goal-action"
+                    onClick={() => void pauseRuntimeGoal(selected.sessionId).catch(() => undefined)}
+                  >
+                    暂停目标
+                  </button>
+                ) : selected.goal.status !== "complete" ? (
+                  <button
+                    type="button"
+                    className="secondary-button goal-action"
+                    onClick={() => void resumeRuntimeGoal(selected.sessionId).catch(() => undefined)}
+                  >
+                    继续目标
+                  </button>
+                ) : null}
+              </div>
+            )}
+            {(selected.relay?.inbound || selected.relay?.outbound?.length) && (
+              <div className="desktop-channel-banner relay-chain-bar">
+                {selected.relay.inbound && (
+                  <button
+                    type="button"
+                    className="relay-chain-link"
+                    onClick={() => setSelectedId(selected.relay!.inbound!.sessionId)}
+                  >
+                    <Forward size={14} />
+                    {`接力自 ${selected.relay.inbound.title}`}
+                  </button>
+                )}
+                {selected.relay.outbound?.map((link) => (
+                  <button
+                    type="button"
+                    className="relay-chain-link outbound"
+                    key={link.handoffId}
+                    onClick={() => setSelectedId(link.sessionId)}
+                  >
+                    <Forward size={14} />
+                    {`接力至 ${link.title}`}
+                  </button>
+                ))}
               </div>
             )}
             {stopError && (
@@ -1066,6 +1198,19 @@ function DesktopSessions({
           onRemoveApiKey={onRemoveAnthropicApiKey}
           onChanged={onRefreshSnapshot}
           onClose={() => setProviderOpen(false)}
+        />
+      )}
+      {relayOpen && selected && runtimeHandoffAvailable && (
+        <RuntimeHandoffDialog
+          session={selected}
+          runtimes={snapshot.runtimes ?? []}
+          onPreview={previewRuntimeHandoff}
+          onCommit={commitRuntimeHandoff}
+          onConfirm={confirmRuntimeHandoff}
+          onCancel={cancelRuntimeHandoff}
+          onGet={getRuntimeHandoff}
+          onOpenSession={(sessionId) => setSelectedId(sessionId)}
+          onClose={() => setRelayOpen(false)}
         />
       )}
     </section>

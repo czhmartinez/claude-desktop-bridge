@@ -18,6 +18,8 @@ export const MAX_ENVELOPE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const ENVELOPE_CLOCK_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 const METHODS = new Set([
   "snapshot.get",
+  "runtime.list",
+  "runtime.refresh",
   "project.list",
   "session.list",
   "session.open",
@@ -31,6 +33,9 @@ const METHODS = new Set([
   "claude.desktop.status",
   "claude.desktop.launch",
   "claude.desktop.quit",
+  "desktop.app.status",
+  "desktop.app.launch",
+  "desktop.app.quit",
   "turn.start",
   "turn.steer",
   "turn.interrupt",
@@ -50,6 +55,14 @@ const METHODS = new Set([
   "conversation.switch.commit",
   "conversation.switch.cancel",
   "handoff.get",
+  "runtime.handoff.preview",
+  "runtime.handoff.commit",
+  "runtime.handoff.cancel",
+  "runtime.handoff.get",
+  "runtime.handoff.list",
+  "runtime.handoff.confirm",
+  "runtime.goal.pause",
+  "runtime.goal.resume",
   "device.revoke",
 ]);
 

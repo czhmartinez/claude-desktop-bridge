@@ -9,12 +9,17 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
   BridgeConversationRoute,
+  BridgeDesktopRuntimeId,
   BridgeExecutionLane,
   BridgeHandoff,
   BridgeHandoffState,
   BridgeProviderKind,
   BridgeProviderProfile,
   BridgeRouteState,
+  BridgeRuntimeHandoff,
+  BridgeRuntimeHandoffState,
+  BridgeRuntimeGoalInfo,
+  BridgeRuntimeGoalStatus,
   BridgeSessionAllowedActions,
 } from "@bridge/protocol";
 import { supportsClaudeDesktop } from "./platform.js";
@@ -116,6 +121,32 @@ interface StoredHandoffPackage {
   executablePrompt?: string;
 }
 
+interface StoredRuntimeHandoffPackage {
+  package?: unknown;
+  planPrompt?: string;
+  executionPrompt?: string;
+}
+
+export interface StoredRuntimeHandoff extends BridgeRuntimeHandoff {
+  sourceNativeSessionId?: string;
+  targetNativeSessionId?: string;
+}
+
+export interface SaveRuntimeHandoffInput extends Omit<StoredRuntimeHandoff, "createdAt" | "updatedAt"> {
+  createdAt?: number;
+  updatedAt?: number;
+  package?: unknown;
+  planPrompt?: string;
+  executionPrompt?: string;
+}
+
+export interface StoredRuntimeGoal extends BridgeRuntimeGoalInfo {
+  sessionId: string;
+  handoffId: string;
+  runtimeId: BridgeDesktopRuntimeId;
+  nativeSessionId: string;
+}
+
 function defaultProviderProfiles(): BridgeProviderProfile[] {
   const officialReady = supportsClaudeDesktop();
   return [
@@ -209,6 +240,41 @@ function handoffFromRow(row: SqlRow): BridgeHandoff {
     requiresUserConfirmation: Number(row.requires_user_confirmation) === 1,
     ...(candidates.length ? { candidateNativeSessionIds: candidates } : {}),
     ...(row.error !== null ? { error: String(row.error) } : {}),
+  };
+}
+
+function runtimeHandoffFromRow(row: SqlRow): StoredRuntimeHandoff {
+  return {
+    handoffId: String(row.id),
+    state: String(row.state) as BridgeRuntimeHandoffState,
+    sourceRuntimeId: String(row.source_runtime) as BridgeDesktopRuntimeId,
+    sourceSessionId: String(row.source_session_id),
+    ...(row.source_native_session_id !== null ? { sourceNativeSessionId: String(row.source_native_session_id) } : {}),
+    targetRuntimeId: String(row.target_runtime) as BridgeDesktopRuntimeId,
+    ...(row.target_session_id !== null ? { targetSessionId: String(row.target_session_id) } : {}),
+    ...(row.target_native_session_id !== null ? { targetNativeSessionId: String(row.target_native_session_id) } : {}),
+    objective: String(row.objective),
+    summary: String(row.summary),
+    ...(row.plan_text !== null ? { planText: String(row.plan_text) } : {}),
+    ...(row.error !== null ? { error: String(row.error) } : {}),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+    ...(row.expires_at !== null ? { expiresAt: Number(row.expires_at) } : {}),
+  };
+}
+
+function runtimeGoalFromRow(row: SqlRow): StoredRuntimeGoal {
+  return {
+    sessionId: String(row.session_id),
+    handoffId: String(row.handoff_id),
+    runtimeId: String(row.runtime_id) as BridgeDesktopRuntimeId,
+    nativeSessionId: String(row.native_session_id),
+    objective: String(row.objective),
+    status: String(row.status) as BridgeRuntimeGoalStatus,
+    native: Number(row.native) === 1,
+    continuations: Number(row.continuations),
+    ...(row.detail !== null ? { detail: String(row.detail) } : {}),
+    updatedAt: Number(row.updated_at),
   };
 }
 
@@ -388,6 +454,45 @@ export class ConversationStateStore {
         key TEXT PRIMARY KEY,
         value_json TEXT NOT NULL,
         updated_at INTEGER NOT NULL
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS runtime_handoffs (
+        id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        source_runtime TEXT NOT NULL,
+        source_session_id TEXT NOT NULL,
+        source_native_session_id TEXT,
+        target_runtime TEXT NOT NULL,
+        target_session_id TEXT,
+        target_native_session_id TEXT,
+        objective TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        plan_text TEXT,
+        package_encrypted BLOB,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER
+      ) STRICT;
+
+      CREATE INDEX IF NOT EXISTS runtime_handoffs_source
+        ON runtime_handoffs(source_session_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS runtime_handoffs_target
+        ON runtime_handoffs(target_session_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS runtime_goals (
+        session_id TEXT PRIMARY KEY,
+        handoff_id TEXT NOT NULL,
+        runtime_id TEXT NOT NULL,
+        native_session_id TEXT NOT NULL,
+        objective TEXT NOT NULL,
+        status TEXT NOT NULL,
+        native INTEGER NOT NULL,
+        continuations INTEGER NOT NULL,
+        detail TEXT,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (handoff_id) REFERENCES runtime_handoffs(id)
       ) STRICT;
     `);
     database.prepare(`
@@ -697,7 +802,7 @@ export class ConversationStateStore {
       "SELECT package_encrypted FROM handoffs WHERE id = ?",
     ).get(handoffId) as SqlRow | undefined;
     if (!row?.package_encrypted) return undefined;
-    return this.decryptPackage(Buffer.from(row.package_encrypted as Uint8Array));
+    return this.decryptPackage(Buffer.from(row.package_encrypted as Uint8Array)) as StoredHandoffPackage;
   }
 
   failHandoff(handoffId: string, error: string): BridgeHandoff {
@@ -798,6 +903,141 @@ export class ConversationStateStore {
       throw error;
     }
     return this.route(handoff.conversationId)!;
+  }
+
+  saveRuntimeHandoff(input: SaveRuntimeHandoffInput): StoredRuntimeHandoff {
+    const now = Date.now();
+    const createdAt = sqliteTimestamp(input.createdAt ?? now);
+    const updatedAt = sqliteTimestamp(input.updatedAt ?? now);
+    const encrypted = input.package !== undefined || input.planPrompt !== undefined || input.executionPrompt !== undefined
+      ? this.encryptPackage({
+          ...(input.package !== undefined ? { package: input.package } : {}),
+          ...(input.planPrompt !== undefined ? { planPrompt: input.planPrompt } : {}),
+          ...(input.executionPrompt !== undefined ? { executionPrompt: input.executionPrompt } : {}),
+        } satisfies StoredRuntimeHandoffPackage)
+      : null;
+    this.db.prepare(`
+      INSERT INTO runtime_handoffs(
+        id, state, source_runtime, source_session_id, source_native_session_id,
+        target_runtime, target_session_id, target_native_session_id,
+        objective, summary, plan_text, package_encrypted, error,
+        created_at, updated_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        state = excluded.state,
+        target_session_id = excluded.target_session_id,
+        target_native_session_id = excluded.target_native_session_id,
+        objective = excluded.objective,
+        summary = excluded.summary,
+        plan_text = excluded.plan_text,
+        package_encrypted = COALESCE(excluded.package_encrypted, runtime_handoffs.package_encrypted),
+        error = excluded.error,
+        updated_at = excluded.updated_at,
+        expires_at = excluded.expires_at
+    `).run(
+      input.handoffId,
+      input.state,
+      input.sourceRuntimeId,
+      input.sourceSessionId,
+      input.sourceNativeSessionId ?? null,
+      input.targetRuntimeId,
+      input.targetSessionId ?? null,
+      input.targetNativeSessionId ?? null,
+      input.objective,
+      input.summary,
+      input.planText ?? null,
+      encrypted,
+      input.error ?? null,
+      createdAt,
+      updatedAt,
+      input.expiresAt !== undefined ? sqliteTimestamp(input.expiresAt) : null,
+    );
+    return this.runtimeHandoff(input.handoffId)!;
+  }
+
+  runtimeHandoff(handoffId: string): StoredRuntimeHandoff | undefined {
+    const row = this.db.prepare(
+      "SELECT * FROM runtime_handoffs WHERE id = ?",
+    ).get(handoffId) as SqlRow | undefined;
+    return row ? runtimeHandoffFromRow(row) : undefined;
+  }
+
+  runtimeHandoffPackage(handoffId: string): StoredRuntimeHandoffPackage | undefined {
+    const row = this.db.prepare(
+      "SELECT package_encrypted FROM runtime_handoffs WHERE id = ?",
+    ).get(handoffId) as SqlRow | undefined;
+    if (!row?.package_encrypted) return undefined;
+    return this.decryptPackage(Buffer.from(row.package_encrypted as Uint8Array)) as StoredRuntimeHandoffPackage;
+  }
+
+  runtimeHandoffsForSession(sessionId: string): StoredRuntimeHandoff[] {
+    return (this.db.prepare(`
+      SELECT * FROM runtime_handoffs
+      WHERE source_session_id = ? OR target_session_id = ?
+      ORDER BY created_at ASC, id ASC
+    `).all(sessionId, sessionId) as SqlRow[]).map(runtimeHandoffFromRow);
+  }
+
+  listRuntimeHandoffs(): StoredRuntimeHandoff[] {
+    return (this.db.prepare(
+      "SELECT * FROM runtime_handoffs ORDER BY created_at ASC, id ASC",
+    ).all() as SqlRow[]).map(runtimeHandoffFromRow);
+  }
+
+  listActiveRuntimeHandoffs(): StoredRuntimeHandoff[] {
+    return (this.db.prepare(`
+      SELECT * FROM runtime_handoffs
+      WHERE state NOT IN ('applied', 'cancelled', 'failed')
+      ORDER BY created_at ASC, id ASC
+    `).all() as SqlRow[]).map(runtimeHandoffFromRow);
+  }
+
+  saveRuntimeGoal(goal: StoredRuntimeGoal): StoredRuntimeGoal {
+    this.db.prepare(`
+      INSERT INTO runtime_goals(
+        session_id, handoff_id, runtime_id, native_session_id,
+        objective, status, native, continuations, detail, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        objective = excluded.objective,
+        status = excluded.status,
+        native = excluded.native,
+        continuations = excluded.continuations,
+        detail = excluded.detail,
+        updated_at = excluded.updated_at
+    `).run(
+      goal.sessionId,
+      goal.handoffId,
+      goal.runtimeId,
+      goal.nativeSessionId,
+      goal.objective,
+      goal.status,
+      goal.native ? 1 : 0,
+      goal.continuations,
+      goal.detail ?? null,
+      sqliteTimestamp(goal.updatedAt),
+    );
+    return this.runtimeGoal(goal.sessionId)!;
+  }
+
+  runtimeGoal(sessionId: string): StoredRuntimeGoal | undefined {
+    const row = this.db.prepare(
+      "SELECT * FROM runtime_goals WHERE session_id = ?",
+    ).get(sessionId) as SqlRow | undefined;
+    return row ? runtimeGoalFromRow(row) : undefined;
+  }
+
+  listRuntimeGoals(statuses?: BridgeRuntimeGoalStatus[]): StoredRuntimeGoal[] {
+    const rows = statuses?.length
+      ? this.db.prepare(`
+          SELECT * FROM runtime_goals
+          WHERE status IN (${statuses.map(() => "?").join(", ")})
+          ORDER BY updated_at ASC, session_id ASC
+        `).all(...statuses) as SqlRow[]
+      : this.db.prepare(
+          "SELECT * FROM runtime_goals ORDER BY updated_at ASC, session_id ASC",
+        ).all() as SqlRow[];
+    return rows.map(runtimeGoalFromRow);
   }
 
   loadBrokerState(): ConversationBrokerState {
@@ -1104,7 +1344,7 @@ export class ConversationStateStore {
     }
   }
 
-  private encryptPackage(value: StoredHandoffPackage): Buffer {
+  private encryptPackage(value: StoredHandoffPackage | StoredRuntimeHandoffPackage): Buffer {
     const nonce = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, nonce);
     const ciphertext = Buffer.concat([
@@ -1119,7 +1359,7 @@ export class ConversationStateStore {
     ]);
   }
 
-  private decryptPackage(value: Buffer): StoredHandoffPackage {
+  private decryptPackage(value: Buffer): StoredHandoffPackage | StoredRuntimeHandoffPackage {
     if (
       value.byteLength < ENCRYPTED_PACKAGE_MAGIC.byteLength + 12 + 16 ||
       !value.subarray(0, ENCRYPTED_PACKAGE_MAGIC.byteLength).equals(ENCRYPTED_PACKAGE_MAGIC)

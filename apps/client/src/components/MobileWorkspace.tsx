@@ -10,6 +10,9 @@ import type {
   BridgeHostSnapshot,
   BridgePermissionInfo,
   BridgePermissionMode,
+  BridgeRuntimeGoalStatus,
+  BridgeRuntimeHandoff,
+  BridgeRuntimeHandoffPreview,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
   BridgeTransportMetrics,
@@ -27,6 +30,8 @@ import {
   ChevronsUp,
   CircleStop,
   FilePenLine,
+  Forward,
+  Goal,
   ImagePlus,
   LoaderCircle,
   Moon,
@@ -71,6 +76,7 @@ import {
   type ProviderSwitchPreview,
   type ProviderSwitchResult,
 } from "./ProviderSwitchDialog.js";
+import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
 
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
@@ -199,6 +205,19 @@ export function supportsProviderSwitching(
     snapshot?.host.capabilities.includes("provider.profile.v1") &&
     snapshot.host.capabilities.includes("conversation.handoff.v1"),
   );
+}
+
+export function supportsRuntimeHandoff(
+  snapshot: BridgeHostSnapshot | undefined,
+): boolean {
+  return Boolean(snapshot?.host.capabilities.includes("runtime.handoff.v1"));
+}
+
+export function goalStatusLabel(status: BridgeRuntimeGoalStatus): string {
+  if (status === "active") return "goal 执行中";
+  if (status === "paused") return "goal 已暂停";
+  if (status === "blocked") return "goal 受阻";
+  return "goal 已完成";
 }
 
 export function usesOfficialComposer(
@@ -810,6 +829,13 @@ export function MobileWorkspace({
   onPreviewProviderSwitch,
   onCommitProviderSwitch,
   onCancelProviderSwitch,
+  onPreviewRuntimeHandoff,
+  onCommitRuntimeHandoff,
+  onConfirmRuntimeHandoff,
+  onCancelRuntimeHandoff,
+  onGetRuntimeHandoff,
+  onPauseRuntimeGoal,
+  onResumeRuntimeGoal,
   onRefreshProviders,
   onDesktopAppAction,
   onRefresh,
@@ -875,6 +901,19 @@ export function MobileWorkspace({
   ): Promise<ProviderSwitchResult>;
   onCancelProviderSwitch(handoffId: string): Promise<void>;
   onRefreshProviders(): Promise<void>;
+  onPreviewRuntimeHandoff(
+    sessionId: string,
+    targetRuntimeId: BridgeDesktopRuntimeId,
+  ): Promise<BridgeRuntimeHandoffPreview>;
+  onCommitRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff>;
+  onConfirmRuntimeHandoff(
+    handoffId: string,
+    objective?: string,
+  ): Promise<{ handoff: BridgeRuntimeHandoff }>;
+  onCancelRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff | undefined>;
+  onGetRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff>;
+  onPauseRuntimeGoal(sessionId: string): Promise<void>;
+  onResumeRuntimeGoal(sessionId: string): Promise<void>;
   onDesktopAppAction(
     runtimeId: BridgeDesktopRuntimeId,
     action: "launch" | "quit",
@@ -897,6 +936,7 @@ export function MobileWorkspace({
   const [createBusy, setCreateBusy] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [providerOpen, setProviderOpen] = useState(false);
+  const [relayOpen, setRelayOpen] = useState(false);
   const [imageError, setImageError] = useState<string>();
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
@@ -919,6 +959,7 @@ export function MobileWorkspace({
   const providerSwitchingAvailable = Boolean(
     selectedSession && desktopRuntimeId(selectedSession) === "claude-desktop" && supportsProviderSwitching(snapshot),
   );
+  const runtimeHandoffAvailable = supportsRuntimeHandoff(snapshot);
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
   const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
@@ -990,6 +1031,10 @@ export function MobileWorkspace({
   useEffect(() => registerMobileBackHandler(() => {
     if (providerOpen) {
       setProviderOpen(false);
+      return true;
+    }
+    if (relayOpen) {
+      setRelayOpen(false);
       return true;
     }
     if (permissionOpen) {
@@ -1208,7 +1253,15 @@ export function MobileWorkspace({
                 <ArrowRightLeft size={19} />
               </IconButton>
             )}
-            {!providerSwitchingAvailable && desktopRuntimeId(selectedSession) !== "claude-desktop" && (
+            {runtimeHandoffAvailable && selectedSession.allowedActions?.canRelay !== false && (
+              <IconButton
+                label="接力到其他 Desktop"
+                onClick={() => setRelayOpen(true)}
+              >
+                <Forward size={19} />
+              </IconButton>
+            )}
+            {!providerSwitchingAvailable && !runtimeHandoffAvailable && desktopRuntimeId(selectedSession) !== "claude-desktop" && (
               <span
                 className="session-provider-trigger is-static mobile-runtime-provider"
                 title={`${runtimeName} 是独立的会话域，不提供跨 Desktop 接力`}
@@ -1258,6 +1311,59 @@ export function MobileWorkspace({
           <div className="session-channel-warning danger">
             <AlertTriangle size={17} />
             <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；当前指令保留排队，无需重复发送。</span>
+          </div>
+        )}
+        {selectedSession.goal && (
+          <div className={`session-channel-warning goal-status ${selectedSession.goal.status}`}>
+            <Goal size={17} />
+            <span>
+              <strong>{goalStatusLabel(selectedSession.goal.status)}</strong>
+              {selectedSession.goal.objective}
+              {selectedSession.goal.detail ? ` · ${selectedSession.goal.detail}` : ""}
+              {selectedSession.goal.continuations > 0 ? ` · 已续跑 ${selectedSession.goal.continuations} 轮` : ""}
+            </span>
+            {selectedSession.goal.status === "active" ? (
+              <button
+                type="button"
+                className="secondary-button goal-action"
+                onClick={() => void onPauseRuntimeGoal(selectedSession.sessionId).catch(() => undefined)}
+              >
+                暂停目标
+              </button>
+            ) : selectedSession.goal.status !== "complete" ? (
+              <button
+                type="button"
+                className="secondary-button goal-action"
+                onClick={() => void onResumeRuntimeGoal(selectedSession.sessionId).catch(() => undefined)}
+              >
+                继续目标
+              </button>
+            ) : null}
+          </div>
+        )}
+        {(selectedSession.relay?.inbound || selectedSession.relay?.outbound?.length) && (
+          <div className="relay-chain-bar">
+            {selectedSession.relay.inbound && (
+              <button
+                type="button"
+                className="relay-chain-link"
+                onClick={() => void selectSession(selectedSession.relay!.inbound!.sessionId)}
+              >
+                <Forward size={14} />
+                {`接力自 ${selectedSession.relay.inbound.title}`}
+              </button>
+            )}
+            {selectedSession.relay.outbound?.map((link) => (
+              <button
+                type="button"
+                className="relay-chain-link outbound"
+                key={link.handoffId}
+                onClick={() => void selectSession(link.sessionId)}
+              >
+                <Forward size={14} />
+                {`接力至 ${link.title}`}
+              </button>
+            ))}
           </div>
         )}
         {stopError && (
@@ -1493,6 +1599,19 @@ export function MobileWorkspace({
             onClose={() => setProviderOpen(false)}
           />
         )}
+        {relayOpen && runtimeHandoffAvailable && (
+          <RuntimeHandoffDialog
+            session={selectedSession}
+            runtimes={snapshot?.runtimes ?? []}
+            onPreview={(targetRuntimeId) => onPreviewRuntimeHandoff(selectedSession.sessionId, targetRuntimeId)}
+            onCommit={onCommitRuntimeHandoff}
+            onConfirm={onConfirmRuntimeHandoff}
+            onCancel={onCancelRuntimeHandoff}
+            onGet={onGetRuntimeHandoff}
+            onOpenSession={(sessionId) => void selectSession(sessionId)}
+            onClose={() => setRelayOpen(false)}
+          />
+        )}
         {configurationOpen && canConfigure && (
           <SessionConfigurationDialog
             session={selectedSession}
@@ -1569,7 +1688,7 @@ export function MobileWorkspace({
       <section className="host-detail">
         <div className="host-detail-heading">
           <div>
-            <span>Bridge 0.6</span>
+            <span>Bridge 0.7</span>
             <h1>项目与会话</h1>
           </div>
           <button

@@ -49,6 +49,7 @@ import { CodexAppServerAdapter } from "./codex-app-server-adapter.js";
 import { HermesGatewayAdapter } from "./hermes-gateway-adapter.js";
 import { RuntimeAdapterRegistry } from "./runtime-adapter.js";
 import { RuntimeSessionBroker } from "./runtime-session-broker.js";
+import { RuntimeHandoffService } from "./runtime-handoff-service.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -140,6 +141,7 @@ async function desktopMain(): Promise<void> {
   );
   const pairingConfig = await repository.loadOrCreate();
   const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));
+  await eventLog.initialize();
   const conversationState = new ConversationStateStore({
     databasePath: join(userDataPath, "conversation-state-v1.sqlite"),
     sessionsPath: join(userDataPath, "sessions-v2.json"),
@@ -209,6 +211,14 @@ async function desktopMain(): Promise<void> {
     paths: runtimePaths,
     openExternal: (url) => shell.openExternal(url),
   });
+  const runtimeHandoffs = new RuntimeHandoffService({
+    state: conversationState,
+    broker,
+    eventLog,
+    evidence,
+    runtimeRegistry,
+    runtimeSessions,
+  });
   const claudeDesktop = new ClaudeDesktopLifecycle();
   const desktopAppControls = new Map(
     DESKTOP_APP_DEFINITIONS.map((definition) => [
@@ -240,6 +250,7 @@ async function desktopMain(): Promise<void> {
     handoffs,
     runtimeSessions,
     desktopAppControls,
+    runtimeHandoffs,
   );
 
   let mainWindow: BrowserWindow | undefined;

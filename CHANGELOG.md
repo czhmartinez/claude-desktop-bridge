@@ -1,3 +1,27 @@
+## 0.7.0
+
+- Add cross-Desktop serial relay behind the additive `runtime.handoff.v1` capability: any Claude,
+  Codex or Hermes session can be handed off to another Desktop runtime from the Bridge desktop
+  and mobile UIs. The source task is interrupted safely, a bounded encrypted context package
+  moves to a brand-new native session on the target runtime, and the relay chain links both
+  sessions bidirectionally without merging runtime domains.
+- The target runtime always plans first: Codex uses the native app-server plan collaboration
+  mode while Claude and Hermes use a read-only planning contract enforced through the existing
+  approval flow. The full plan is shown in Bridge and goal-mode execution only starts after an
+  explicit user confirmation with an editable objective.
+- Codex targets execute with native `thread/goal` tracking mirrored into Bridge; Claude and
+  Hermes targets run a Bridge-orchestrated goal loop with `GOAL_STATUS` markers, bounded
+  auto-continuation and blocked/complete reporting. Stopping a goal session pauses its goal so
+  the supervisor never fights a user stop, and paused or blocked goals can be resumed.
+- Relay handoffs persist in `conversation-state-v1.sqlite` (`runtime_handoffs`,
+  `runtime_goals`) with fail-closed crash recovery: preparing/executing stages stop without
+  re-sending, completed plans are recovered from target history, and active goals reconcile
+  with the target runtime on restart.
+- Protocol stays V3 and pairing schema V4; 0.4-0.6 clients ignore the new events and metadata
+  and simply hide the relay entry.
+- Fix handoff redaction so `Authorization`/`api_key` style secrets keep their key name when
+  the value is removed.
+
 ## 0.6.9
 
 - Add model, provider, reasoning-effort and fast-mode configuration for Codex Desktop and Hermes

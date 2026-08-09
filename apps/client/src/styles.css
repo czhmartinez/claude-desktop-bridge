@@ -1999,6 +1999,159 @@ button:disabled {
   justify-content: space-between;
 }
 
+/* Cross-Desktop runtime handoff (0.7) */
+
+.runtime-handoff-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.runtime-handoff-progress {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 18px 12px;
+  text-align: center;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.runtime-handoff-progress > svg {
+  color: var(--accent);
+}
+
+.runtime-handoff-progress strong {
+  font-size: 13px;
+}
+
+.runtime-handoff-progress small {
+  max-width: 420px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.7;
+}
+
+.runtime-handoff-progress .provider-actions {
+  display: flex;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.runtime-handoff-plan {
+  display: grid;
+  gap: 7px;
+}
+
+.runtime-handoff-plan > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.runtime-handoff-plan > pre {
+  margin: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.runtime-handoff-objective {
+  display: grid;
+  gap: 7px;
+}
+
+.runtime-handoff-objective > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-handoff-objective > textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.runtime-handoff-objective > textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.goal-status > svg {
+  flex: none;
+}
+
+.goal-status.active > svg {
+  color: var(--accent);
+}
+
+.goal-status.paused > svg {
+  color: var(--warm);
+}
+
+.goal-status.blocked > svg {
+  color: var(--danger);
+}
+
+.goal-status.complete > svg {
+  color: var(--success);
+}
+
+.goal-status .goal-action {
+  flex: none;
+  margin-left: auto;
+}
+
+.relay-chain-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.relay-chain-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.relay-chain-link > svg {
+  color: var(--accent);
+  flex: none;
+}
+
+.relay-chain-link:hover {
+  border-color: var(--accent);
+  color: inherit;
+}
+
 .provider-switch-error {
   font-size: 10px;
   line-height: 1.5;
