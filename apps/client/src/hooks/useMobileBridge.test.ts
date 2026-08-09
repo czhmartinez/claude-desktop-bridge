@@ -435,6 +435,59 @@ describe("rebaseSnapshot", () => {
       status: "active",
       native: true,
     });
+
+    // The plan gate follows runtime.handoff.* events on the source session
+    // so mobile can confirm plans without touching the desktop.
+    const planReady: BridgeEvent = {
+      eventId: "handoff-plan-ready",
+      seq: 4,
+      timestamp: 4,
+      origin: "system",
+      type: "runtime.handoff.plan-ready",
+      sessionId: "codex-desktop:thread-1",
+      data: {
+        handoff: {
+          handoffId: "h1",
+          state: "plan-ready",
+          sourceRuntimeId: "codex-desktop",
+          sourceSessionId: "codex-desktop:thread-1",
+          targetRuntimeId: "hermes-desktop",
+          targetSessionId: "hermes-desktop:stored-1",
+          objective: "完成重构",
+          summary: "完成重构",
+          createdAt: 1,
+          updatedAt: 4,
+        },
+      },
+    };
+    expect(applyEventToSnapshot(snapshot, planReady, [])?.sessions[0]?.pendingRuntimeHandoff).toMatchObject({
+      handoffId: "h1",
+      state: "plan-ready",
+    });
+    const applied: BridgeEvent = {
+      eventId: "handoff-applied",
+      seq: 5,
+      timestamp: 5,
+      origin: "system",
+      type: "runtime.handoff.applied",
+      sessionId: "codex-desktop:thread-1",
+      data: {
+        handoff: {
+          handoffId: "h1",
+          state: "applied",
+          sourceRuntimeId: "codex-desktop",
+          sourceSessionId: "codex-desktop:thread-1",
+          targetRuntimeId: "hermes-desktop",
+          targetSessionId: "hermes-desktop:stored-1",
+          objective: "完成重构",
+          summary: "完成重构",
+          createdAt: 1,
+          updatedAt: 5,
+        },
+      },
+    };
+    const withGate = applyEventToSnapshot(snapshot, planReady, []);
+    expect(applyEventToSnapshot(withGate, applied, [])?.sessions[0]).not.toHaveProperty("pendingRuntimeHandoff");
   });
 });
 

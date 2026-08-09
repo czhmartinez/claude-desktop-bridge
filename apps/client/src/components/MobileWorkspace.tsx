@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRightLeft,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
@@ -918,7 +919,7 @@ export function MobileWorkspace({
     runtimeId: BridgeDesktopRuntimeId,
     action: "launch" | "quit",
   ): Promise<BridgeDesktopAppStatus[]>;
-  onRefresh(sessionId?: string): Promise<void>;
+  onRefresh(sessionId?: string): Promise<boolean>;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
 }) {
@@ -942,6 +943,7 @@ export function MobileWorkspace({
   const [stopError, setStopError] = useState<string>();
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncFlash, setSyncFlash] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
@@ -1002,11 +1004,17 @@ export function MobileWorkspace({
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await onRefresh(sessionId);
+      if (await onRefresh(sessionId)) setSyncFlash(true);
     } finally {
       setRefreshing(false);
     }
   }
+
+  useEffect(() => {
+    if (!syncFlash) return;
+    const timer = setTimeout(() => setSyncFlash(false), 2_400);
+    return () => clearTimeout(timer);
+  }, [syncFlash]);
 
   useEffect(() => {
     if (!snapshot || restoredSessionRef.current) return;
@@ -1296,7 +1304,7 @@ export function MobileWorkspace({
               disabled={refreshing}
               onClick={() => void runRefresh(selectedSession.sessionId)}
             >
-              {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : <RefreshCw size={19} />}
+              {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
             </IconButton>
           </div>
         </header>
@@ -1595,7 +1603,7 @@ export function MobileWorkspace({
               await onRefreshProviders();
               await onRefresh();
             }}
-            onChanged={onRefresh}
+            onChanged={() => void onRefresh()}
             onClose={() => setProviderOpen(false)}
           />
         )}
@@ -1667,7 +1675,7 @@ export function MobileWorkspace({
           disabled={refreshing}
           onClick={() => void runRefresh(selectedSessionId)}
         >
-          {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : <RefreshCw size={19} />}
+          {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
         </IconButton>
         <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
           {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}

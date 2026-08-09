@@ -1017,7 +1017,10 @@ export class RuntimeHandoffService {
       itemId: handoff.handoffId,
       origin: "system",
       type,
-      data: { handoff, ...data },
+      // Events travel to mobile devices; keep the same public shape as the
+      // snapshot (no plan body, no native ids) — clients fetch the plan on
+      // demand via runtime.handoff.get.
+      data: { handoff: this.publicHandoff(handoff), ...data },
     });
   }
 

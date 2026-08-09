@@ -1,3 +1,41 @@
+## Unreleased
+
+- Fix mobile-created Codex and Hermes sessions failing immediately with an unreadable history
+  and a failed first message. Both runtimes keep a brand-new session only in memory until its
+  first user message: Codex rejects `thread/read`/`thread/resume` for threads without a
+  rollout and Hermes rejects `session.resume` for lazy aliases, and neither lists them, so a
+  later refresh silently dropped the session and every follow-up call fell through to the
+  Claude broker. The adapters now track unmaterialized threads and live aliases explicitly:
+  history resolves empty, the first turn skips resume and goes straight to `turn/start` /
+  `prompt.submit`, refreshes preserve sessions the native side cannot list yet, and the Hermes
+  stored-id row folds back into the live alias once the session persists so the open
+  conversation never jumps to a new id.
+- Route requests by runtime session id ownership instead of adapter cache membership, so an
+  external-runtime session that is momentarily unknown never falls through to the Claude
+  broker with a misleading "Session not found".
+- Make the mobile force-sync button actually force: it now asks the desktop to re-discover
+  native sessions (`runtime.refresh`) before pulling events and the snapshot, and confirms a
+  successful sync with a brief check mark. The desktop also re-polls ready runtime adapters
+  (debounced) when serving `snapshot.get`, so sessions created directly inside the Codex or
+  Hermes Desktop apps reach the phone without waiting for a window activation or reconnect.
+
+## 0.7.1
+
+- Fix mobile parity for relay sessions: the host now pushes a full snapshot resync to
+  paired devices whenever the session id set changes, because event deltas only update
+  existing sessions. Relay-created sessions (and any new Claude/Codex/Hermes session)
+  appear on phones live instead of waiting for a manual refresh or reconnect.
+- Follow the relay plan gate live on mobile: `runtime.handoff.*` events now update the
+  source session's pending gate on phones, so plan confirmation and cancellation work
+  entirely from mobile; handoff event payloads use the public snapshot shape.
+- Fix Hermes session identity stability: `session.create` now exposes the persisted
+  `stored_session_id` as the canonical identity instead of the gateway's per-process live
+  alias. Relay chains, goal tracking and mobile session references survive Bridge restarts
+  instead of breaking with "未知会话" links and lost goal state; live RPC still uses the
+  alias for lazy sessions and folds gateway events back onto the canonical id.
+- Relay-created sessions now keep their 接力自/接力至 chain badges and goal status on both
+  desktop and mobile after restart.
+
 ## 0.7.0
 
 - Add cross-Desktop serial relay behind the additive `runtime.handoff.v1` capability: any Claude,

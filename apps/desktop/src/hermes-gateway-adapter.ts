@@ -290,6 +290,31 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
   private readonly sessionMap = new Map<string, RuntimeAdapterSession>();
   private readonly activeTurns = new Map<string, string>();
   private readonly pendingPermissions = new Map<string, PendingHermesPermission>();
+  // session.create returns a live alias (session_id) plus the persisted id
+  // (stored_session_id) the session gets once the first message lands. The
+  // stored id is the canonical public identity: it is what session.list
+  // returns, so it survives Bridge restarts, and relay chains, goals and
+  // mobile references keep pointing at the same conversation. The alias is
+  // only a live RPC handle inside the running gateway process —
+  // prompt.submit/interrupt/history/events use it while the session is lazy,
+  // session.resume only accepts stored ids. Keep both maps and translate at
+  // the gateway boundary.
+  private readonly liveAliases = new Set<string>();
+  private readonly storedToAlias = new Map<string, string>();
+  private readonly aliasToStored = new Map<string, string>();
+
+  /** Gateway-facing id for live RPC calls; the alias while it is live. */
+  private rpcId(nativeSessionId: string): string {
+    const alias = this.storedToAlias.get(nativeSessionId);
+    if (alias && this.liveAliases.has(alias)) return alias;
+    return nativeSessionId;
+  }
+
+  /** Canonical public id for a gateway-reported session id (alias or stored). */
+  private canonicalId(sessionId: string): string {
+    if (this.sessionMap.has(sessionId)) return sessionId;
+    return this.aliasToStored.get(sessionId) ?? sessionId;
+  }
   private client: HermesRpcClient | undefined;
   private sidecar: HermesSidecar | undefined;
   private startingChild: ChildProcessWithoutNullStreams | undefined;
@@ -314,6 +339,11 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     if (this.initialized) return;
     const lifecycleId = ++this.lifecycleId;
     this.initialized = true;
+    // The spawned gateway dies with this adapter, taking every live alias
+    // with it; forget them before reconnecting. (An externally configured
+    // gateway may outlive us, but its lazy sessions are unlistable anyway.)
+    this.liveAliases.clear();
+    this.storedToAlias.clear();
     this.setStatus("starting", "正在连接 Hermes Gateway。");
     try {
       const endpoint = await this.connectClient();
@@ -347,6 +377,9 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
       if (!session) continue;
       const prior = previous.get(session.nativeSessionId);
       if (prior) {
+        // Listed rows are stored ids — the canonical identity. Prefer the
+        // title Bridge assigned at creation over the gateway's preview title.
+        if (prior.title && prior.title !== "未命名任务") session.title = prior.title;
         if (!session.provider && prior.provider) session.provider = prior.provider;
         if (!session.model && prior.model) session.model = prior.model;
         if (!session.reasoningEffort && prior.reasoningEffort) session.reasoningEffort = prior.reasoningEffort;
@@ -358,6 +391,14 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
         session.activeTurnId = turnId;
       }
       next.set(session.nativeSessionId, session);
+    }
+    // Lazy (created but never messaged) sessions are live in the gateway yet
+    // absent from session.list; keep them so a refresh cannot drop a
+    // Bridge-created session before its first message.
+    for (const [storedId, alias] of this.storedToAlias) {
+      if (!this.liveAliases.has(alias) || next.has(storedId)) continue;
+      const prior = previous.get(storedId);
+      if (prior) next.set(storedId, prior);
     }
     this.sessionMap.clear();
     for (const [id, session] of next) this.sessionMap.set(id, session);
@@ -374,8 +415,16 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
       ...(input.title ? { title: input.title } : {}),
       source: "bridge",
     });
-    const nativeSessionId = text(result.session_id);
-    if (!nativeSessionId) throw new Error("Hermes Gateway returned an invalid session");
+    const alias = text(result.session_id);
+    if (!alias) throw new Error("Hermes Gateway returned an invalid session");
+    const storedSessionId = text(result.stored_session_id);
+    // Canonical identity is the stored id so references survive restarts.
+    const nativeSessionId = storedSessionId || alias;
+    this.liveAliases.add(alias);
+    if (storedSessionId && storedSessionId !== alias) {
+      this.storedToAlias.set(storedSessionId, alias);
+      this.aliasToStored.set(alias, storedSessionId);
+    }
     const info = record(result.info);
     const fast = booleanValue(info.fast);
     const session: RuntimeAdapterSession = {
@@ -400,7 +449,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
 
   async history(nativeSessionId: string): Promise<RuntimeAdapterHistoryItem[]> {
     await this.resume(nativeSessionId);
-    const result = await this.requireClient().request<Record<string, unknown>>("session.history", { session_id: nativeSessionId });
+    const result = await this.requireClient().request<Record<string, unknown>>("session.history", { session_id: this.rpcId(nativeSessionId) });
     const rows = Array.isArray(result.messages) ? result.messages : [];
     return rows.flatMap((item, index) => {
       const parsed = historyItem(item, index);
@@ -418,7 +467,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     let options: Record<string, unknown> = {};
     try {
       options = await this.requireClient().request<Record<string, unknown>>("model.options", {
-        session_id: nativeSessionId,
+        session_id: this.rpcId(nativeSessionId),
         explicit_only: true,
         include_unconfigured: false,
       });
@@ -527,14 +576,14 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
       const provider = change.provider === null ? undefined : change.provider ?? session.provider;
       if (!model) throw new Error("Hermes 需要先选择模型");
       const value = `${model}${provider ? ` --provider ${provider}` : ""} --session`;
-      await client.request("config.set", { session_id: nativeSessionId, key: "model", value });
+      await client.request("config.set", { session_id: this.rpcId(nativeSessionId), key: "model", value });
       session.model = model;
       if (provider) session.provider = provider;
       else delete session.provider;
     }
     if (change.reasoningEffort !== undefined) {
       await client.request("config.set", {
-        session_id: nativeSessionId,
+        session_id: this.rpcId(nativeSessionId),
         key: "reasoning",
         value: change.reasoningEffort ?? "none",
       });
@@ -543,7 +592,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     }
     if (change.fast !== undefined) {
       await client.request("config.set", {
-        session_id: nativeSessionId,
+        session_id: this.rpcId(nativeSessionId),
         key: "fast",
         value: change.fast === true ? "fast" : "normal",
       });
@@ -560,7 +609,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     await this.resume(input.nativeSessionId);
     const turnId = `hermes:${input.commandId}`;
     const result = await this.requireClient().request<Record<string, unknown>>("prompt.submit", {
-      session_id: input.nativeSessionId,
+      session_id: this.rpcId(input.nativeSessionId),
       text: input.text,
     });
     if (text(result.status) && text(result.status) !== "streaming") throw new Error(text(result.status));
@@ -579,7 +628,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     const turnId = this.activeTurns.get(input.nativeSessionId);
     if (!turnId) throw new Error("Hermes 当前没有可立即调整的任务");
     const result = await this.requireClient().request<Record<string, unknown>>("session.steer", {
-      session_id: input.nativeSessionId,
+      session_id: this.rpcId(input.nativeSessionId),
       text: input.text,
     });
     if (text(result.status) === "rejected") throw new Error("Hermes 未接受当前调整");
@@ -589,7 +638,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
   async interruptTurn(nativeSessionId: string): Promise<boolean> {
     const active = this.activeTurns.has(nativeSessionId);
     if (!active) return false;
-    await this.requireClient().request("session.interrupt", { session_id: nativeSessionId });
+    await this.requireClient().request("session.interrupt", { session_id: this.rpcId(nativeSessionId) });
     this.activeTurns.delete(nativeSessionId);
     return true;
   }
@@ -717,7 +766,7 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
   private async readConfig(nativeSessionId: string, key: string): Promise<Record<string, unknown>> {
     try {
       return await this.requireClient().request<Record<string, unknown>>("config.get", {
-        session_id: nativeSessionId,
+        session_id: this.rpcId(nativeSessionId),
         key,
       });
     } catch {
@@ -740,14 +789,34 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
   }
 
   private async resume(nativeSessionId: string): Promise<Record<string, unknown>> {
+    // Aliases are live handles inside the running gateway: prompt.submit,
+    // interrupt, history and pushed events all accept them, but
+    // session.resume only understands stored ids (and only after the first
+    // message persisted the session), so resuming a still-live session
+    // would always fail with "session not found".
+    const alias = this.storedToAlias.get(nativeSessionId);
+    if ((alias && this.liveAliases.has(alias)) || this.liveAliases.has(nativeSessionId)) {
+      const session = this.sessionMap.get(nativeSessionId);
+      return {
+        info: {
+          ...(session?.model ? { model: session.model } : {}),
+          ...(session?.provider ? { provider: session.provider } : {}),
+          ...(session?.reasoningEffort ? { reasoning_effort: session.reasoningEffort } : {}),
+          ...(session?.fast !== undefined ? { fast: session.fast } : {}),
+        },
+      };
+    }
     const result = await this.requireClient().request<Record<string, unknown>>("session.resume", { session_id: nativeSessionId });
     this.applySessionInfo(nativeSessionId, record(result.info));
     return result;
   }
 
   private handleGatewayEvent(event: HermesGatewayEvent): void {
-    const nativeSessionId = text(event.session_id);
-    if (!nativeSessionId) return;
+    const gatewaySessionId = text(event.session_id);
+    if (!gatewaySessionId) return;
+    // Events for Bridge-created lazy sessions arrive under the live alias;
+    // everything in Bridge addresses the canonical stored id.
+    const nativeSessionId = this.canonicalId(gatewaySessionId);
     const payload = record(event.payload);
     const turnId = this.activeTurns.get(nativeSessionId);
     const now = Date.now();

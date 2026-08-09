@@ -69,6 +69,22 @@ Broker 本身仍不执行会话迁移，也不为某个 Desktop 自动故障转�
 `session.configure` 调用各自 Desktop 的原生会话配置接口。Bridge UI 对所有 ready runtime
 提供相同的会话、流、审批和中断操作，并在任务标题和筛选器中显示其归属。
 
+两个外部运行时都把「新建但未发过消息」的会话只保存在内存里：Codex 线程在首个用户消息
+落盘 rollout 前不出现在 `thread/list`，且 `thread/read`/`thread/resume` 直接报错；
+Hermes 懒会话只接受创建时返回的临时别名（`prompt.submit`、中断、历史与全部推送事件都
+走别名），`session.resume` 只认持久化后的 `stored_session_id`，落盘后的 `session.list`
+行也只带 stored id。adapter 因此显式跟踪「未物化线程 / 存活别名」：历史按空返回、首轮
+跳过 resume 直发、刷新时保留原生侧还列不出的会话。Hermes 的公开会话身份始终是 stored
+id——它是 `session.list` 返回的唯一稳定值，Bridge 重启后接力链、goal 与手机端引用
+都不会漂移；别名只在网关进程内做活操作句柄，网关事件按别名映射回 stored id。控制器
+按 sessionId 的运行时归属路由，不再依据 adapter 缓存命中，避免瞬时未命中回退到错误
+Broker。
+
+手机端会话列表依赖全量快照：事件增量只更新已存在的会话，不会新增。Bridge 在每次发布
+时比对会话 id 集合，新增/移除会话（接力目标、原生侧新建）都会向已配对设备推送一次
+全量重同步；手机同时通过 `runtime.handoff.*` 事件实时跟进源会话上的计划门槛，通过
+`runtime.goal.updated` 跟进 goal 状态，因此 PC 端可做的接力操作在手机端全部可做。
+
 ## 组件
 
 | 组件 | 职责 |

@@ -125,6 +125,28 @@ export class RuntimeSessionBroker extends EventEmitter {
     return runtimes;
   }
 
+  /**
+   * Lightweight native-session re-discovery: only polls adapters that are
+   * already ready (never respawns errored runtimes), so it is cheap enough to
+   * run on mobile-originated sync requests. This is how sessions created
+   * directly inside Codex/Hermes Desktop reach the phone without waiting for
+   * a window activation or reconnect.
+   */
+  async refreshDiscoveredSessions(): Promise<void> {
+    for (const runtime of this.registry.runtimes()) {
+      if (runtime.state !== "ready") continue;
+      const adapter = this.registry.adapter(runtime.id);
+      if (!adapter) continue;
+      try {
+        await adapter.refresh();
+      } catch {
+        // Keep the last known session set; the next sync retries.
+      }
+    }
+    this.syncCachedSessions();
+    this.emit("changed");
+  }
+
   runtimes(): BridgeDesktopRuntime[] {
     return this.registry.runtimes();
   }

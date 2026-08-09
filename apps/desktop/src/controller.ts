@@ -48,7 +48,7 @@ import type { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "./platform.js";
 import type { ProviderRegistry } from "./provider-registry.js";
 import type { HandoffService } from "./handoff-service.js";
-import type { RuntimeSessionBroker } from "./runtime-session-broker.js";
+import { parseRuntimeSessionId, type RuntimeSessionBroker } from "./runtime-session-broker.js";
 import type { RuntimeHandoffService } from "./runtime-handoff-service.js";
 
 export interface LocalBridgeRequest {
@@ -67,6 +67,8 @@ class BridgeRequestError extends Error {
     this.name = "BridgeRequestError";
   }
 }
+
+const DISCOVERY_REFRESH_MIN_INTERVAL_MS = 10_000;
 
 function stringParam(params: Record<string, unknown>, key: string, required = true): string | undefined {
   const value = params[key];
@@ -236,6 +238,8 @@ export class DesktopController extends EventEmitter {
   private lastSeenAt = Date.now();
   private transportMetrics: BridgeTransportMetrics | undefined;
   private relayHealthy = false;
+  private lastPublishedSessionKey = "";
+  private lastDiscoveryRefreshAt = 0;
 
   constructor(
     private readonly app: App,
@@ -641,8 +645,15 @@ export class DesktopController extends EventEmitter {
     }));
   }
 
-  private externalSession(sessionId: string): BridgeSessionInfo | undefined {
-    return this.runtimeSessions?.session(sessionId);
+  /**
+  * Routing must follow the session id's runtime ownership, not cache
+   * membership: an external-runtime id that is momentarily unknown to the
+   * runtime broker (e.g. a just-created session still invisible to the
+   * native runtime) must never fall through to the Claude broker, where it
+   * would surface as a misleading cross-runtime "Session not found".
+   */
+  private routesToExternalRuntime(sessionId: string): boolean {
+    return Boolean(this.runtimeSessions) && parseRuntimeSessionId(sessionId) !== undefined;
   }
 
   private async connect(): Promise<void> {
@@ -829,7 +840,17 @@ export class DesktopController extends EventEmitter {
       await this.quitDesktopApp(runtimeId);
       return { desktopApps: await this.desktopAppStatuses(true) };
     }
-    if (request.method === "snapshot.get") return { snapshot: await this.snapshot() };
+    if (request.method === "snapshot.get") {
+      // Re-discover native sessions (debounced) so a phone pulling a snapshot
+      // also sees threads created directly inside the Desktop apps, instead
+      // of only the desktop's cached state.
+      const now = Date.now();
+      if (now - this.lastDiscoveryRefreshAt >= DISCOVERY_REFRESH_MIN_INTERVAL_MS) {
+        this.lastDiscoveryRefreshAt = now;
+        await this.runtimeSessions?.refreshDiscoveredSessions().catch(() => undefined);
+      }
+      return { snapshot: await this.snapshot() };
+    }
     if (request.method === "runtime.list") return { runtimes: this.desktopRuntimes() };
     if (request.method === "runtime.refresh") {
       const runtimeId = runtimeIdParam(params, "runtimeId");
@@ -850,7 +871,7 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "conversation.route.get") {
       const sessionId = stringParam(params, "sessionId")!;
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         throw new Error("各 Desktop 的会话彼此独立，不能在 Bridge 中迁移或合并。");
       }
       return {
@@ -860,7 +881,7 @@ export class DesktopController extends EventEmitter {
     if (request.method === "conversation.switch.preview") {
       if (!this.handoffs) throw new Error("Conversation handoff is unavailable");
       const sessionId = stringParam(params, "sessionId")!;
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         throw new Error("各 Desktop 的会话彼此独立，不能在 Bridge 中迁移或合并。");
       }
       const model = stringParam(params, "model", false);
@@ -941,11 +962,13 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "session.open") {
       const sessionId = stringParam(params, "sessionId")!;
-      const external = this.externalSession(sessionId);
-      if (external) {
+      if (this.routesToExternalRuntime(sessionId)) {
+        const history = await this.runtimeSessions!.history(sessionId);
+        const external = this.runtimeSessions!.session(sessionId);
+        if (!external) throw new Error("Session not found");
         return {
           session: external,
-          history: await this.runtimeSessions!.history(sessionId),
+          history,
           latestSeq: this.eventLog.latestSeq(),
         };
       }
@@ -978,7 +1001,7 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "session.history") {
       const sessionId = stringParam(params, "sessionId")!;
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         return { history: await this.runtimeSessions!.history(sessionId) };
       }
       return {
@@ -991,7 +1014,7 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "session.configuration") {
       const sessionId = stringParam(params, "sessionId")!;
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         return { configuration: await this.runtimeSessions!.configuration(sessionId) };
       }
       return {
@@ -1000,7 +1023,7 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "session.configure") {
       const sessionId = stringParam(params, "sessionId")!;
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         if (!this.runtimeSessions) throw new Error("External Desktop runtimes are unavailable");
         const input: Parameters<RuntimeSessionBroker["configureSession"]>[1] = {};
         if (Object.prototype.hasOwnProperty.call(params, "model")) {
@@ -1043,7 +1066,7 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "session.desktop.register") {
       const sessionId = stringParam(params, "sessionId")!;
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         throw new Error("外部 Desktop 会话由其原生应用管理，不需要 Claude 登记。");
       }
       return {
@@ -1052,7 +1075,7 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "session.fallback.confirm") {
       const sessionId = stringParam(params, "sessionId")!;
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         throw new Error("外部 Desktop 会话没有 Claude 回退流程。");
       }
       return {
@@ -1072,7 +1095,7 @@ export class DesktopController extends EventEmitter {
       const sessionId = stringParam(params, "sessionId")!;
       const text = stringParam(params, "text", false) ?? "";
       const attachments = attachmentsParam(params);
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         if (!text.trim()) throw new Error("Message cannot be empty");
         if (attachments.length > 0) {
           throw new Error("当前 Desktop 适配器暂不支持从 Bridge 发送图片附件。");
@@ -1106,7 +1129,7 @@ export class DesktopController extends EventEmitter {
       // Stopping a goal-mode session must also pause its goal so the
       // supervisor never fights a user-initiated stop.
       await this.runtimeHandoffs?.pauseGoal(sessionId).catch(() => ({}));
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         return { interrupted: await this.runtimeSessions!.interruptTurn(sessionId) };
       }
       return {
@@ -1200,7 +1223,7 @@ export class DesktopController extends EventEmitter {
       }
       if (!sessionId) throw new Error("sessionId is required");
       if (mode === undefined) throw new Error("mode is required");
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         throw new Error("该权限策略由对应的 Desktop 应用管理。");
       }
       const configured = await this.broker.configurePermissionPolicy(sessionId, mode);
@@ -1247,7 +1270,7 @@ export class DesktopController extends EventEmitter {
     }
     if (request.method === "evidence.list") {
       const sessionId = stringParam(params, "sessionId")!;
-      if (this.externalSession(sessionId)) {
+      if (this.routesToExternalRuntime(sessionId)) {
         return {
           evidence: {
             sessionId,
@@ -1434,6 +1457,17 @@ export class DesktopController extends EventEmitter {
   private async publish(): Promise<DesktopControlSnapshot> {
     const snapshot = await this.snapshot();
     this.emit("snapshot", snapshot);
+    // Session-set changes (new/removed sessions) have no event-level delta
+    // on mobile — applyEventToSnapshot only updates existing sessions — so
+    // push a full resync whenever the id set changes. Without this a
+    // relay-created session stays invisible on phones until a manual
+    // reconnect or refresh.
+    const sessionKey = snapshot.sessions.map((session) => session.sessionId).sort().join("\n");
+    const previousKey = this.lastPublishedSessionKey;
+    this.lastPublishedSessionKey = sessionKey;
+    if (previousKey && previousKey !== sessionKey) {
+      await this.broadcast({ kind: "snapshot", snapshot });
+    }
     return snapshot;
   }
 }

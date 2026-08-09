@@ -347,6 +347,11 @@ interface PendingApproval {
   permission: RuntimeAdapterPermission;
 }
 
+function isUnmaterializedCodexError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not materialized yet|no rollout found/iu.test(message);
+}
+
 function codexGoalToAdapterGoal(goal: Record<string, unknown>, objective: string): RuntimeAdapterGoal {
   const rawStatus = text(goal.status);
   const status: RuntimeAdapterGoal["status"] = rawStatus === "paused"
@@ -375,6 +380,11 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
   private readonly sessionMap = new Map<string, RuntimeAdapterSession>();
   private readonly activeTurns = new Map<string, string>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  // Threads created via thread/start live only in the app-server process until
+  // the first user message persists a rollout. Before that, thread/list omits
+  // them and thread/read/thread/resume reject them, so they must be tracked
+  // explicitly to survive refreshes and to skip resume/read calls.
+  private readonly unmaterialized = new Set<string>();
   private modelCatalog: BridgeModelInfo[] | undefined;
   private client: CodexRpcClient | undefined;
   private initialized = false;
@@ -399,6 +409,9 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     if (this.initialized) return;
     const lifecycleId = ++this.lifecycleId;
     this.initialized = true;
+    // A (re)start means a new app-server process: in-memory threads from any
+    // previous process are gone, so nothing can be live-but-unmaterialized.
+    this.unmaterialized.clear();
     this.setStatus("starting", "正在连接 Codex app-server。");
     try {
       const executable = await (this.options.findExecutable ?? findCodexExecutable)();
@@ -444,6 +457,8 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     for (const value of rows) {
       const session = sessionFromThread(value);
       if (!session) continue;
+      // A listed thread is backed by a rollout on disk.
+      this.unmaterialized.delete(session.nativeSessionId);
       const prior = previous.get(session.nativeSessionId);
       if (prior) {
         if (!session.provider && prior.provider) session.provider = prior.provider;
@@ -457,6 +472,15 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
         session.activeTurnId = activeTurnId;
       }
       next.set(session.nativeSessionId, session);
+    }
+    // thread/list only contains materialized threads; keep live threads that
+    // exist solely in this app-server process (no rollout yet), otherwise a
+    // refresh would silently drop Bridge-created sessions before their first
+    // message.
+    for (const nativeSessionId of this.unmaterialized) {
+      if (next.has(nativeSessionId)) continue;
+      const prior = previous.get(nativeSessionId);
+      if (prior) next.set(nativeSessionId, prior);
     }
     this.sessionMap.clear();
     for (const [id, session] of next) this.sessionMap.set(id, session);
@@ -478,6 +502,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     if (!session) throw new Error("Codex app-server returned an invalid thread");
     if (input.title) session.title = input.title;
     session.source = "bridge";
+    this.unmaterialized.add(session.nativeSessionId);
     this.sessionMap.set(session.nativeSessionId, session);
     this.applyThreadConfiguration(session.nativeSessionId, result);
     this.setSessionCount(this.sessionMap.size);
@@ -488,19 +513,34 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
 
   async history(nativeSessionId: string): Promise<RuntimeAdapterHistoryItem[]> {
     const client = this.requireClient();
-    const result = await client.request<Record<string, unknown>>("thread/read", {
-      threadId: nativeSessionId,
-      includeTurns: true,
-    });
-    return historyFromThread(result.thread);
+    if (this.unmaterialized.has(nativeSessionId)) return [];
+    try {
+      const result = await client.request<Record<string, unknown>>("thread/read", {
+        threadId: nativeSessionId,
+        includeTurns: true,
+      });
+      return historyFromThread(result.thread);
+    } catch (error) {
+      // The app-server rejects includeTurns reads before the first user
+      // message; treat that as an empty history instead of an error.
+      if (isUnmaterializedCodexError(error)) {
+        if (/not materialized yet/iu.test(error instanceof Error ? error.message : String(error))) {
+          this.unmaterialized.add(nativeSessionId);
+        }
+        return [];
+      }
+      throw error;
+    }
   }
 
   async configuration(nativeSessionId: string): Promise<RuntimeAdapterConfiguration> {
     const session = this.sessionMap.get(nativeSessionId);
     if (!session) throw new Error("Codex thread not found");
     const running = this.activeTurns.has(nativeSessionId);
-    const resumed = await this.resumeThread(nativeSessionId);
-    this.applyThreadConfiguration(nativeSessionId, resumed, running);
+    if (!this.unmaterialized.has(nativeSessionId)) {
+      const resumed = await this.resumeThread(nativeSessionId);
+      this.applyThreadConfiguration(nativeSessionId, resumed, running);
+    }
     const current = this.sessionMap.get(nativeSessionId) ?? session;
     const catalog = await this.loadModelCatalog();
     const providers = await configuredCodexProviders(current.provider);
@@ -550,6 +590,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       throw new Error("Codex 需要先选择模型");
     }
 
+    const materialized = !this.unmaterialized.has(nativeSessionId);
     const settings: Record<string, unknown> = { threadId: nativeSessionId };
     if (change.model !== undefined && nextModel) settings.model = nextModel;
     if (change.reasoningEffort !== undefined) settings.effort = change.reasoningEffort;
@@ -558,7 +599,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     }
 
     let settingsUnsupported = false;
-    if (change.provider !== undefined) {
+    if (change.provider !== undefined && materialized) {
       await this.resumeThread(nativeSessionId, {
         ...(nextModel ? { model: nextModel } : {}),
         provider: nextProvider ?? null,
@@ -567,7 +608,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
           : {}),
       });
     }
-    if (Object.keys(settings).length > 1) {
+    if (Object.keys(settings).length > 1 && materialized) {
       try {
         await client.request("thread/settings/update", settings);
       } catch (error) {
@@ -575,7 +616,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
         settingsUnsupported = true;
       }
     }
-    if (settingsUnsupported && (change.model !== undefined || change.fast !== undefined) && change.provider === undefined) {
+    if (settingsUnsupported && (change.model !== undefined || change.fast !== undefined) && change.provider === undefined && materialized) {
       await this.resumeThread(nativeSessionId, {
         ...(nextModel ? { model: nextModel } : {}),
         ...(change.fast !== undefined
@@ -607,14 +648,17 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
   async startTurn(input: RuntimeAdapterTurnInput): Promise<RuntimeAdapterTurnResult> {
     const client = this.requireClient();
     const configuredSession = this.sessionMap.get(input.nativeSessionId);
-    const resumed = await this.resumeThread(input.nativeSessionId, {
-      ...(configuredSession?.model ? { model: configuredSession.model } : {}),
-      ...(configuredSession?.provider ? { provider: configuredSession.provider } : {}),
-      ...(configuredSession?.fast !== undefined
-        ? { serviceTier: configuredSession.fast ? "priority" : "default" }
-        : {}),
-    });
-    this.applyThreadConfiguration(input.nativeSessionId, resumed, true);
+    const wasUnmaterialized = this.unmaterialized.has(input.nativeSessionId);
+    if (!wasUnmaterialized) {
+      const resumed = await this.resumeThread(input.nativeSessionId, {
+        ...(configuredSession?.model ? { model: configuredSession.model } : {}),
+        ...(configuredSession?.provider ? { provider: configuredSession.provider } : {}),
+        ...(configuredSession?.fast !== undefined
+          ? { serviceTier: configuredSession.fast ? "priority" : "default" }
+          : {}),
+      });
+      this.applyThreadConfiguration(input.nativeSessionId, resumed, true);
+    }
     const activeSession = this.sessionMap.get(input.nativeSessionId);
     const settings: Record<string, unknown> = {
       threadId: input.nativeSessionId,
@@ -622,7 +666,10 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       ...(activeSession?.reasoningEffort ? { effort: activeSession.reasoningEffort } : {}),
       ...(activeSession?.fast !== undefined ? { serviceTier: activeSession.fast ? "priority" : "default" } : {}),
     };
-    if (Object.keys(settings).length > 1) {
+    // thread/settings/update and thread/resume both reject threads that have
+    // no rollout yet; turn/start carries the same model/effort/tier fields
+    // directly, so an unmaterialized thread can skip them safely.
+    if (Object.keys(settings).length > 1 && !wasUnmaterialized) {
       await client.request<Record<string, unknown>>("thread/settings/update", settings).catch((error) => {
         if (!isUnsupportedCodexMethod(error)) throw error;
       });
@@ -637,6 +684,8 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     });
     const turnId = text(record(result.turn).id) || undefined;
     if (turnId) this.activeTurns.set(input.nativeSessionId, turnId);
+    // turn/start persists the first user message, so the rollout now exists.
+    this.unmaterialized.delete(input.nativeSessionId);
     const session = this.sessionMap.get(input.nativeSessionId);
     if (session) {
       session.turnState = "running";
@@ -914,6 +963,8 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     if (notification.method === "turn/started" && nativeSessionId) {
       const turnId = text(record(params.turn).id) || undefined;
       if (turnId) this.activeTurns.set(nativeSessionId, turnId);
+      // A turn can only start once the first user message persists a rollout.
+      this.unmaterialized.delete(nativeSessionId);
       this.emitRuntimeEvent({ type: "turn.started", nativeSessionId, ...(turnId ? { turnId } : {}), at: now });
       return;
     }

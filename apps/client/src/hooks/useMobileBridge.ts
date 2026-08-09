@@ -569,6 +569,24 @@ export function applyEventToSnapshot(
         if (goal && typeof goal.objective === "string") return { ...session, goal };
         return session;
       }
+      if (
+        event.type === "runtime.handoff.started" ||
+        event.type === "runtime.handoff.plan-ready" ||
+        event.type === "runtime.handoff.failed" ||
+        event.type === "runtime.handoff.cancelled"
+      ) {
+        // The plan gate lives on the source session; follow it live on
+        // mobile so confirmation never requires the desktop.
+        const handoff = event.data.handoff as BridgeRuntimeHandoff | undefined;
+        if (!handoff || handoff.sourceSessionId !== session.sessionId) return session;
+        return { ...session, pendingRuntimeHandoff: handoff };
+      }
+      if (event.type === "runtime.handoff.applied") {
+        const handoff = event.data.handoff as BridgeRuntimeHandoff | undefined;
+        if (!handoff || handoff.sourceSessionId !== session.sessionId) return session;
+        const { pendingRuntimeHandoff: _pending, ...rest } = session;
+        return rest;
+      }
       if (event.type === "turn.queued") {
         return {
           ...session,
@@ -2283,8 +2301,13 @@ export function useMobileBridge() {
     return desktopApps;
   }, [sendRequest]);
 
-  const refresh = useCallback(async (sessionId?: string) => {
+  const refresh = useCallback(async (sessionId?: string): Promise<boolean> => {
     try {
+      // Ask the desktop to re-discover native sessions first; otherwise a
+      // manual sync can only echo the desktop's cached snapshot and sessions
+      // created on the computer never reach the phone. Tolerate failure so
+      // older desktops still serve their cached state below.
+      await sendRequest("runtime.refresh", {}, { wait: true, timeoutMs: 45_000 }).catch(() => undefined);
       await resumeEvents();
       let snapshotSynced = false;
       let snapshotError: unknown;
@@ -2301,13 +2324,15 @@ export function useMobileBridge() {
         }
       }
       if (sessionId) await openSession(sessionId);
+      return true;
     } catch (error) {
       setState((current) => ({
         ...current,
         error: error instanceof Error ? error.message : "电脑端同步失败",
       }));
+      return false;
     }
-  }, [controlClaudeDesktop, openSession, refreshSessionList, refreshSnapshot, resumeEvents]);
+  }, [controlClaudeDesktop, openSession, refreshSessionList, refreshSnapshot, resumeEvents, sendRequest]);
 
   const forgetHost = useCallback(async (roomId: string) => {
     const crypto = cryptoByRoomRef.current.get(roomId);

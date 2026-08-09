@@ -10,6 +10,14 @@ interface GatewayEvent {
 
 class FakeHermesClient extends EventEmitter {
   readonly requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  readonly listedSessions: Array<Record<string, unknown>> = [{
+    id: "hermes-1",
+    title: "Existing Hermes task",
+    started_at: 1,
+    source: "desktop",
+  }];
+  readonly createdAliases = new Map<string, string>();
+  private nextAliasId = 0;
   private settings = {
     model: "claude-sonnet",
     provider: "anthropic",
@@ -27,13 +35,18 @@ class FakeHermesClient extends EventEmitter {
   async request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
     this.requests.push({ method, ...(params === undefined ? {} : { params }) });
     if (method === "session.list") {
+      return { sessions: [...this.listedSessions] } as T;
+    }
+    if (method === "session.create") {
+      const alias = `alias-${++this.nextAliasId}`;
+      const stored = `20260810_00000${this.nextAliasId}_abcdef`;
+      this.createdAliases.set(alias, stored);
       return {
-        sessions: [{
-          id: "hermes-1",
-          title: "Existing Hermes task",
-          started_at: 1,
-          source: "desktop",
-        }],
+        session_id: alias,
+        stored_session_id: stored,
+        message_count: 0,
+        messages: [],
+        info: { cwd: typeof params?.cwd === "string" ? params.cwd : "/workspace/hermes", lazy: true },
       } as T;
     }
     if (method === "session.resume") {
@@ -93,6 +106,18 @@ class FakeHermesClient extends EventEmitter {
     if (method === "session.history") return { messages: [] } as T;
     if (method === "prompt.submit") {
       this.running = true;
+      const sessionId = typeof params?.session_id === "string" ? params.session_id : "";
+      const stored = this.createdAliases.get(sessionId);
+      if (stored && !this.listedSessions.some((session) => session.id === stored)) {
+        this.listedSessions.push({
+          id: stored,
+          title: "第一条指令",
+          preview: "第一条指令",
+          started_at: 2,
+          message_count: 1,
+          source: "bridge",
+        });
+      }
       return { status: "streaming" } as T;
     }
     return { status: "ok", resolved: true } as T;
@@ -234,5 +259,117 @@ describe("HermesGatewayAdapter", () => {
     });
 
     await adapter.close();
+  });
+
+  it("keeps lazy Bridge-created sessions live across refreshes and skips resume for them", async () => {
+    process.env.BRIDGE_HERMES_GATEWAY_URL = "ws://127.0.0.1:8765/api/ws";
+    const client = new FakeHermesClient();
+    const adapter = new HermesGatewayAdapter({ clientFactory: async () => client });
+    await adapter.initialize();
+
+    const created = await adapter.createSession({ cwd: "/workspace/hermes", title: "手机新建" });
+    // Canonical identity is the stored id so relay chains and goals survive
+    // Bridge restarts; the alias stays an internal live-RPC handle.
+    expect(created.nativeSessionId).toBe("20260810_000001_abcdef");
+
+    // Lazy sessions are absent from session.list; a refresh must not drop them.
+    await adapter.refresh();
+    expect(adapter.sessions().map((session) => session.nativeSessionId)).toContain("20260810_000001_abcdef");
+
+    // session.resume rejects lazy sessions ("session not found"); history and
+    // the first turn must go straight to the live alias via rpc translation.
+    await expect(adapter.history("20260810_000001_abcdef")).resolves.toEqual([]);
+    await expect(adapter.startTurn({
+      nativeSessionId: "20260810_000001_abcdef",
+      text: "第一条指令",
+      commandId: "command-alias",
+      requestId: "request-alias",
+    })).resolves.toMatchObject({ state: "running" });
+    expect(client.requests.some((entry) => (
+      entry.method === "session.resume" && entry.params?.session_id === "20260810_000001_abcdef"
+    ))).toBe(false);
+    expect(client.requests).toContainEqual({
+      method: "prompt.submit",
+      params: { session_id: "alias-1", text: "第一条指令" },
+    });
+
+    await adapter.close();
+  });
+
+  it("keeps the stored id as the single stable identity after persistence", async () => {
+    process.env.BRIDGE_HERMES_GATEWAY_URL = "ws://127.0.0.1:8765/api/ws";
+    const client = new FakeHermesClient();
+    const adapter = new HermesGatewayAdapter({ clientFactory: async () => client });
+    await adapter.initialize();
+
+    const created = await adapter.createSession({ cwd: "/workspace/hermes", title: "手机新建" });
+    await adapter.startTurn({
+      nativeSessionId: created.nativeSessionId,
+      text: "第一条指令",
+      commandId: "command-fold",
+      requestId: "request-fold",
+    });
+
+    // After the first message the gateway lists the session under its stored
+    // id — exactly the identity Bridge already exposed, so the conversation
+    // never jumps ids and relay/goal references keep matching.
+    await adapter.refresh();
+    const ids = adapter.sessions().map((session) => session.nativeSessionId);
+    expect(ids).toContain("20260810_000001_abcdef");
+    expect(ids).not.toContain("alias-1");
+    expect(ids.filter((id) => id === "20260810_000001_abcdef")).toHaveLength(1);
+    expect(adapter.sessions().find((session) => session.nativeSessionId === "20260810_000001_abcdef")).toMatchObject({
+      turnState: "running",
+      title: "手机新建",
+    });
+
+    // Gateway events still arrive under the live alias and are folded back
+    // onto the canonical stored identity.
+    client.emit("event", {
+      type: "message.complete",
+      session_id: "alias-1",
+      payload: { text: "完成", status: "completed" },
+    });
+    await adapter.close();
+  });
+
+  it("re-addresses a persisted session by its stored id after a Bridge restart", async () => {
+    process.env.BRIDGE_HERMES_GATEWAY_URL = "ws://127.0.0.1:8765/api/ws";
+    const client = new FakeHermesClient();
+    const firstAdapter = new HermesGatewayAdapter({ clientFactory: async () => client });
+    await firstAdapter.initialize();
+    const created = await firstAdapter.createSession({ cwd: "/workspace/hermes", title: "接力自 测试" });
+    await firstAdapter.startTurn({
+      nativeSessionId: created.nativeSessionId,
+      text: "第一条指令",
+      commandId: "command-restart",
+      requestId: "request-restart",
+    });
+    await firstAdapter.close();
+
+    // A fresh adapter has no alias state: the session must be addressed by
+    // the same stored id Bridge handed out before the restart, with live
+    // operations going through session.resume instead of the dead alias.
+    const restarted = new HermesGatewayAdapter({ clientFactory: async () => client });
+    await restarted.initialize();
+    expect(restarted.sessions().map((session) => session.nativeSessionId)).toContain("20260810_000001_abcdef");
+    await expect(restarted.history("20260810_000001_abcdef")).resolves.toEqual([]);
+    expect(client.requests).toContainEqual({
+      method: "session.resume",
+      params: { session_id: "20260810_000001_abcdef" },
+    });
+    const resumeCalls = client.requests.filter((entry) => entry.method === "session.resume").length;
+    await expect(restarted.startTurn({
+      nativeSessionId: "20260810_000001_abcdef",
+      text: "重启后继续",
+      commandId: "command-restart-2",
+      requestId: "request-restart-2",
+    })).resolves.toMatchObject({ state: "running" });
+    expect(client.requests).toContainEqual({
+      method: "prompt.submit",
+      params: { session_id: "20260810_000001_abcdef", text: "重启后继续" },
+    });
+    expect(client.requests.filter((entry) => entry.method === "session.resume").length).toBeGreaterThan(resumeCalls);
+    await restarted.close();
   });
 });
