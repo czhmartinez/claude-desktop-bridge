@@ -61,8 +61,10 @@ import type { LocalBridgeRequest } from "../runtime/desktop.js";
 import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
+import { FileChangesCard } from "./FileChangesCard.js";
 import { IconButton } from "./IconButton.js";
 import {
+  aggregateFileChanges,
   conversationItems,
   conversationTimeline,
   desktopRuntimeId,
@@ -230,6 +232,7 @@ function DesktopSessions({
   const items = useMemo(() => (
     selectedId ? conversationItems(selectedId, history[selectedId], events, []) : []
   ), [events, history, selectedId]);
+  const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const timeline = useMemo(
     () => conversationTimeline(items, selectedEvidence?.items ?? []),
     [items, selectedEvidence?.items],
@@ -1075,11 +1078,13 @@ function DesktopSessions({
             </div>
             ) : (
               <div className="desktop-evidence-view">
+                {fileChangesSummary && <FileChangesCard summary={fileChangesSummary} />}
                 <EvidencePanel
                   state={selectedEvidence}
                   previews={artifactPreviews}
                   transfers={artifactTransfers}
                   online
+                  suppressEmpty={Boolean(fileChangesSummary)}
                   onLoadMore={loadOlderEvidence}
                   onPreview={previewArtifact}
                   onDownload={downloadArtifact}

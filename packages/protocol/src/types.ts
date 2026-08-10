@@ -605,6 +605,19 @@ export interface BridgeHistoryItem {
   toolName?: string;
   state?: BridgeTurnState;
   attachments?: Array<Omit<BridgeAttachment, "data">>;
+  /**
+   * Structured summary for file-change tool items (Codex). Lets clients
+   * aggregate edits Codex-style instead of rendering one noisy card each.
+   */
+  fileChanges?: BridgeFileChangeSummary[];
+}
+
+export interface BridgeFileChangeSummary {
+  path: string;
+  kind: "add" | "delete" | "update";
+  additions: number;
+  deletions: number;
+  movePath?: string;
 }
 
 export interface BridgeHistoryPage {

@@ -8,6 +8,7 @@ import type {
 } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  aggregateFileChanges,
   canStopBridgeTask,
   conversationItems,
   conversationTimeline,
@@ -206,6 +207,67 @@ describe("provider switching presentation", () => {
     expect(goalStatusLabel("paused")).toBe("goal 已暂停");
     expect(goalStatusLabel("blocked")).toBe("goal 受阻");
     expect(goalStatusLabel("complete")).toBe("goal 已完成");
+  });
+
+  it("aggregates file changes and keeps File change cards out of the timeline", () => {
+    const items = [
+      {
+        id: "u1",
+        sessionId: "s1",
+        role: "user" as const,
+        text: "改这几个文件",
+        createdAt: 1,
+        origin: "desktop" as const,
+      },
+      {
+        id: "tool:fc1",
+        sessionId: "s1",
+        role: "tool" as const,
+        toolName: "File change",
+        text: "File change",
+        createdAt: 2,
+        origin: "codex-host" as const,
+        state: "completed" as const,
+        fileChanges: [
+          { path: "src/a.ts", kind: "update" as const, additions: 2, deletions: 1 },
+          { path: "src/b.ts", kind: "add" as const, additions: 3, deletions: 0 },
+        ],
+      },
+      {
+        id: "tool:fc2",
+        sessionId: "s1",
+        role: "tool" as const,
+        toolName: "File change",
+        text: "File change",
+        createdAt: 3,
+        origin: "codex-host" as const,
+        state: "completed" as const,
+        fileChanges: [{ path: "src/a.ts", kind: "update" as const, additions: 1, deletions: 4 }],
+      },
+      {
+        id: "a1",
+        sessionId: "s1",
+        role: "assistant" as const,
+        text: "改完了",
+        createdAt: 4,
+        origin: "codex-host" as const,
+      },
+    ];
+    const summary = aggregateFileChanges(items);
+    expect(summary).toMatchObject({
+      totalAdditions: 6,
+      totalDeletions: 5,
+    });
+    expect(summary?.files).toEqual([
+      { path: "src/a.ts", kind: "update", additions: 3, deletions: 5 },
+      { path: "src/b.ts", kind: "add", additions: 3, deletions: 0 },
+    ]);
+    const timeline = conversationTimeline(items, []);
+    expect(timeline.filter((entry) => entry.kind === "message")).toHaveLength(2);
+    expect(timeline.every((entry) => (
+      entry.kind !== "message" || entry.item.toolName !== "File change"
+    ))).toBe(true);
+    expect(aggregateFileChanges(items.filter((item) => item.role !== "tool"))).toBeUndefined();
   });
 
   it("replaces the writable composer for a Claude official lane", () => {

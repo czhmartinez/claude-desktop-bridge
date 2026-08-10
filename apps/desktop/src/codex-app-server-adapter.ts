@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import type {
   BridgeModelInfo,
+  BridgeFileChangeSummary,
   BridgePermissionDecision,
   BridgeRuntimeProviderInfo,
 } from "@bridge/protocol";
@@ -325,6 +326,7 @@ function historyFromThread(threadValue: unknown): RuntimeAdapterHistoryItem[] {
         items.push({ id, ...(turnId ? { turnId } : {}), role: "assistant", text: text(item.text), createdAt: startedAt });
       } else if (["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"].includes(type)) {
         const toolName = type === "commandExecution" ? "Command" : type === "fileChange" ? "File change" : text(item.tool) || type;
+        const fileChanges = type === "fileChange" ? fileChangeSummaries(item) : undefined;
         items.push({
           id,
           ...(turnId ? { turnId } : {}),
@@ -333,6 +335,7 @@ function historyFromThread(threadValue: unknown): RuntimeAdapterHistoryItem[] {
           text: itemText(item) || toolName,
           createdAt: startedAt,
           state: text(item.status) === "inProgress" ? "running" : "completed",
+          ...(fileChanges ? { fileChanges } : {}),
         });
       }
     }
@@ -369,6 +372,41 @@ function codexGoalToAdapterGoal(goal: Record<string, unknown>, objective: string
     ...(typeof goal.timeUsedSeconds === "number" ? { timeUsedSeconds: goal.timeUsedSeconds } : {}),
     updatedAt: typeof goal.updatedAt === "number" ? goal.updatedAt : Date.now(),
   };
+}
+
+/**
+ * Normalize a Codex fileChange item into per-file summaries so clients can
+ * aggregate edits (已编辑 N 个文件) instead of rendering one card per edit.
+ */
+export function fileChangeSummaries(item: Record<string, unknown>): BridgeFileChangeSummary[] | undefined {
+  if (text(item.type) !== "fileChange") return undefined;
+  const changes = Array.isArray(item.changes) ? item.changes : [];
+  const summaries: BridgeFileChangeSummary[] = [];
+  for (const value of changes) {
+    const change = record(value);
+    const path = text(change.path);
+    if (!path) continue;
+    const kindValue = record(change.kind);
+    const kindType = text(kindValue.type);
+    const diff = text(change.diff);
+    let additions = 0;
+    let deletions = 0;
+    for (const line of diff.split("\n")) {
+      if (line.startsWith("+++") || line.startsWith("---")) continue;
+      if (line.startsWith("+")) additions += 1;
+      else if (line.startsWith("-")) deletions += 1;
+    }
+    summaries.push({
+      path,
+      kind: kindType === "add" ? "add" : kindType === "delete" ? "delete" : "update",
+      additions,
+      deletions,
+      ...(kindType === "update" && typeof kindValue.move_path === "string" && kindValue.move_path
+        ? { movePath: kindValue.move_path }
+        : {}),
+    });
+  }
+  return summaries.length ? summaries : undefined;
 }
 
 export interface CodexAppServerAdapterOptions {
@@ -1006,10 +1044,11 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       }
       if (["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"].includes(type)) {
         const toolName = type === "commandExecution" ? "Command" : type === "fileChange" ? "File change" : text(item.tool) || type;
+        const fileChanges = type === "fileChange" ? fileChangeSummaries(item) : undefined;
         if (notification.method === "item/started") {
-          this.emitRuntimeEvent({ type: "tool.started", nativeSessionId, ...(turnId ? { turnId } : {}), itemId, toolName, input: item, at: now });
+          this.emitRuntimeEvent({ type: "tool.started", nativeSessionId, ...(turnId ? { turnId } : {}), itemId, toolName, input: item, ...(fileChanges ? { fileChanges } : {}), at: now });
         } else {
-          this.emitRuntimeEvent({ type: "tool.completed", nativeSessionId, ...(turnId ? { turnId } : {}), itemId, toolName, output: item, at: now });
+          this.emitRuntimeEvent({ type: "tool.completed", nativeSessionId, ...(turnId ? { turnId } : {}), itemId, toolName, output: item, ...(fileChanges ? { fileChanges } : {}), at: now });
         }
       }
     }

@@ -593,7 +593,11 @@ export class RuntimeSessionBroker extends EventEmitter {
           type: "tool.started",
           ...(event.turnId ? { turnId: event.turnId } : {}),
           itemId: event.itemId,
-          data: { toolName: event.toolName, ...(event.input !== undefined ? { input: event.input } : {}) },
+          data: {
+            toolName: event.toolName,
+            ...(event.input !== undefined ? { input: event.input } : {}),
+            ...(event.fileChanges ? { fileChanges: event.fileChanges } : {}),
+          },
         };
       case "tool.progress":
         return {
@@ -607,7 +611,11 @@ export class RuntimeSessionBroker extends EventEmitter {
           type: "tool.completed",
           ...(event.turnId ? { turnId: event.turnId } : {}),
           itemId: event.itemId,
-          data: { toolName: event.toolName, ...(event.output !== undefined ? { output: event.output } : {}) },
+          data: {
+            toolName: event.toolName,
+            ...(event.output !== undefined ? { output: event.output } : {}),
+            ...(event.fileChanges ? { fileChanges: event.fileChanges } : {}),
+          },
         };
       case "permission.resolved":
         return { type: "permission.resolved", itemId: event.requestId, data: { requestId: event.requestId, decision: event.decision } };

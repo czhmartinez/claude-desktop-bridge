@@ -19,6 +19,14 @@
   (debounced) when serving `snapshot.get`, so sessions created directly inside the Codex or
   Hermes Desktop apps reach the phone without waiting for a window activation or reconnect.
 
+## 0.7.2
+
+- Aggregate Codex file edits Codex-style: the conversation no longer renders one
+  "File change" card per edit; a single 已编辑 N 个文件 card with per-file
+  +additions/−deletions lives in the 成果 column on both desktop and mobile.
+  File-change summaries flow from the Codex adapter through history and live tool
+  events as structured data.
+
 ## 0.7.1
 
 - Fix mobile parity for relay sessions: the host now pushes a full snapshot resync to

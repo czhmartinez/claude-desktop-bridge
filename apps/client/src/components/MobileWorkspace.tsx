@@ -6,6 +6,7 @@ import type {
   BridgeDesktopRuntimeId,
   BridgeEvidenceBundle,
   BridgeEvent,
+  BridgeFileChangeSummary,
   BridgeHistoryItem,
   BridgeHostSnapshot,
   BridgePermissionInfo,
@@ -66,6 +67,7 @@ import {
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
+import { FileChangesCard } from "./FileChangesCard.js";
 import { IconButton } from "./IconButton.js";
 import {
   SessionConfigurationDialog,
@@ -373,6 +375,9 @@ export function conversationItems(
         ? event.data.toolName
         : existing?.toolName ?? "工具";
       const text = eventText(event) || existing?.text || toolName;
+      const fileChanges = Array.isArray(event.data.fileChanges)
+        ? event.data.fileChanges as BridgeFileChangeSummary[]
+        : existing?.fileChanges;
       toolByItem.set(id, {
         id: `tool:${id}`,
         sessionId,
@@ -383,6 +388,7 @@ export function conversationItems(
         createdAt: existing?.createdAt ?? event.timestamp,
         origin: "claude-host",
         state: event.type === "tool.completed" ? "completed" : "running",
+        ...(fileChanges?.length ? { fileChanges } : {}),
       });
     }
     if (event.type === "turn.failed" || event.type === "turn.interrupted") {
@@ -463,13 +469,61 @@ export function conversationTimeline(
 
   const timeline: ConversationTimelineEntry[] = [];
   items.forEach((item, index) => {
-    timeline.push({ kind: "message", item });
+    // File-change tool cards are aggregated Codex-style into the 成果 tab;
+    // one card per edit would flood the conversation.
+    if (!(item.role === "tool" && item.toolName === "File change")) {
+      timeline.push({ kind: "message", item });
+    }
     for (const evidence of (evidenceAfter.get(index) ?? [])
       .sort((left, right) => left.startedAt - right.startedAt)) {
       timeline.push({ kind: "evidence", evidence });
     }
   });
   return timeline;
+}
+
+export interface FileChangeAggregate {
+  path: string;
+  kind: BridgeFileChangeSummary["kind"];
+  additions: number;
+  deletions: number;
+}
+
+export interface FileChangesSummary {
+  files: FileChangeAggregate[];
+  totalAdditions: number;
+  totalDeletions: number;
+}
+
+export function aggregateFileChanges(items: ConversationItem[]): FileChangesSummary | undefined {
+  const byPath = new Map<string, FileChangeAggregate>();
+  for (const item of items) {
+    if (item.role !== "tool" || !item.fileChanges?.length) continue;
+    for (const change of item.fileChanges) {
+      const existing = byPath.get(change.path);
+      if (existing) {
+        existing.kind = change.kind;
+        existing.additions += change.additions;
+        existing.deletions += change.deletions;
+      } else {
+        byPath.set(change.path, {
+          path: change.path,
+          kind: change.kind,
+          additions: change.additions,
+          deletions: change.deletions,
+        });
+      }
+    }
+  }
+  if (!byPath.size) return undefined;
+  const files = [...byPath.values()].sort(
+    (left, right) => (right.additions + right.deletions) - (left.additions + left.deletions),
+  );
+  return {
+    files,
+    totalAdditions: files.reduce((sum, file) => sum + file.additions, 0),
+    totalDeletions: files.reduce((sum, file) => sum + file.deletions, 0),
+  };
 }
 
 export async function fileToAttachment(file: File): Promise<BridgeAttachment> {
@@ -970,6 +1024,7 @@ export function MobileWorkspace({
       : [],
     [events, localTurns, selectedHistory, selectedSessionId],
   );
+  const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const timeline = useMemo(
     () => conversationTimeline(items, selectedEvidence?.items ?? []),
     [items, selectedEvidence?.items],
@@ -1493,11 +1548,13 @@ export function MobileWorkspace({
         </section>
         ) : (
           <section className="mobile-evidence-view">
+            {fileChangesSummary && <FileChangesCard summary={fileChangesSummary} />}
             <EvidencePanel
               state={selectedEvidence}
               previews={artifactPreviews}
               transfers={artifactTransfers}
               online={connection === "connected" && desktopOnline}
+              suppressEmpty={Boolean(fileChangesSummary)}
               onLoadMore={() => onLoadOlderEvidence(selectedSession.sessionId)}
               onPreview={onPreviewArtifact}
               onDownload={onDownloadArtifact}

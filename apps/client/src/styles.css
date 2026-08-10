@@ -2152,6 +2152,143 @@ button:disabled {
   color: inherit;
 }
 
+/* Aggregated file-changes card (Codex-style, 成果 column) */
+
+.file-changes-card {
+  display: grid;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.file-changes-card > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-changes-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--accent);
+  flex: none;
+}
+
+.file-changes-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.file-changes-title strong {
+  font-size: 13px;
+}
+
+.file-changes-title small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.file-changes-total {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-changes-total .add,
+.file-change-counts .add {
+  color: var(--success);
+}
+
+.file-changes-total .del,
+.file-change-counts .del {
+  color: var(--danger);
+}
+
+.file-changes-rows {
+  display: grid;
+}
+
+.file-change-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 11px;
+}
+
+.file-change-row + .file-change-row {
+  border-top: 1px solid var(--line);
+}
+
+.file-change-row code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  font-size: 11px;
+}
+
+.file-change-kind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.file-change-kind.add {
+  color: var(--success);
+}
+
+.file-change-kind.delete {
+  color: var(--danger);
+}
+
+.file-change-counts {
+  flex: none;
+  display: inline-flex;
+  gap: 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-changes-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 9px;
+  border: none;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.file-changes-more:hover {
+  color: inherit;
+  background: var(--surface);
+}
+
 .provider-switch-error {
   font-size: 10px;
   line-height: 1.5;

@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 import {
   CodexAppServerAdapter,
+  fileChangeSummaries,
   type CodexRpcClient,
 } from "./codex-app-server-adapter.js";
 
@@ -438,5 +439,36 @@ describe("CodexAppServerAdapter", () => {
     client.noRollout.add("thread-1");
     await expect(adapter.history("thread-1")).resolves.toEqual([]);
     await adapter.close();
+  });
+
+  it("summarizes fileChange items into per-file aggregates", () => {
+    const item = {
+      type: "fileChange",
+      id: "fc-1",
+      changes: [
+        {
+          path: "src/a.ts",
+          kind: { type: "update", move_path: null },
+          diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,3 @@\n-old\n+new\n+added\n",
+        },
+        {
+          path: "src/b.ts",
+          kind: { type: "add" },
+          diff: "+++ b/src/b.ts\n+one\n+two\n+three\n",
+        },
+        {
+          path: "src/c.ts",
+          kind: { type: "update", move_path: "src/d.ts" },
+          diff: "",
+        },
+      ],
+    };
+    expect(fileChangeSummaries(item)).toEqual([
+      { path: "src/a.ts", kind: "update", additions: 2, deletions: 1 },
+      { path: "src/b.ts", kind: "add", additions: 3, deletions: 0 },
+      { path: "src/c.ts", kind: "update", additions: 0, deletions: 0, movePath: "src/d.ts" },
+    ]);
+    expect(fileChangeSummaries({ type: "commandExecution" })).toBeUndefined();
+    expect(fileChangeSummaries({ type: "fileChange", changes: [] })).toBeUndefined();
   });
 });

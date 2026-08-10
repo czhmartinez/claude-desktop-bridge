@@ -101,6 +101,7 @@ export function EvidencePanel({
   previews,
   transfers,
   online,
+  suppressEmpty = false,
   onLoadMore,
   onPreview,
   onDownload,
@@ -109,6 +110,8 @@ export function EvidencePanel({
   previews: Record<string, BridgeArtifactPreview>;
   transfers: Record<string, number>;
   online: boolean;
+  /** The aggregated file-changes card already covers the empty state. */
+  suppressEmpty?: boolean;
   onLoadMore(): Promise<void>;
   onPreview(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownload(artifact: BridgeArtifactManifest): Promise<void>;
@@ -168,6 +171,7 @@ export function EvidencePanel({
     return <div className="evidence-empty"><AlertTriangle size={20} /><strong>成果清单暂时无法读取</strong></div>;
   }
   if (!state || state.items.length === 0) {
+    if (suppressEmpty) return null;
     return <div className="evidence-empty"><FileDiff size={22} /><strong>这个会话还没有成果证据</strong></div>;
   }
 

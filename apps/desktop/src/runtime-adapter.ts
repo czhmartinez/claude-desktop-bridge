@@ -4,6 +4,7 @@ import type {
   BridgeDesktopRuntimeId,
   BridgeDesktopRuntimeState,
   BridgeEffort,
+  BridgeFileChangeSummary,
   BridgeHistoryItem,
   BridgeModelInfo,
   BridgePermissionDecision,
@@ -58,6 +59,7 @@ export interface RuntimeAdapterHistoryItem {
   createdAt: number;
   toolName?: string;
   state?: BridgeTurnState;
+  fileChanges?: BridgeFileChangeSummary[];
 }
 
 export interface RuntimeAdapterTurnInput {
@@ -105,9 +107,9 @@ export type RuntimeAdapterEvent =
   | { type: "user.accepted"; nativeSessionId: string; turnId?: string; itemId?: string; text: string; at: number }
   | { type: "assistant.delta"; nativeSessionId: string; turnId?: string; itemId?: string; text: string; at: number }
   | { type: "assistant.completed"; nativeSessionId: string; turnId?: string; itemId?: string; text: string; at: number }
-  | { type: "tool.started"; nativeSessionId: string; turnId?: string; itemId: string; toolName: string; input?: unknown; at: number }
+  | { type: "tool.started"; nativeSessionId: string; turnId?: string; itemId: string; toolName: string; input?: unknown; fileChanges?: BridgeFileChangeSummary[]; at: number }
   | { type: "tool.progress"; nativeSessionId: string; turnId?: string; itemId: string; toolName: string; text?: string; at: number }
-  | { type: "tool.completed"; nativeSessionId: string; turnId?: string; itemId: string; toolName: string; output?: unknown; at: number }
+  | { type: "tool.completed"; nativeSessionId: string; turnId?: string; itemId: string; toolName: string; output?: unknown; fileChanges?: BridgeFileChangeSummary[]; at: number }
   | { type: "permission.requested"; permission: RuntimeAdapterPermission }
   | { type: "permission.resolved"; nativeSessionId: string; requestId: string; at: number; decision: BridgePermissionDecision }
   | { type: "goal.updated"; nativeSessionId: string; goal: RuntimeAdapterGoal }
