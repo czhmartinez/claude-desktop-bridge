@@ -19,6 +19,12 @@
   (debounced) when serving `snapshot.get`, so sessions created directly inside the Codex or
   Hermes Desktop apps reach the phone without waiting for a window activation or reconnect.
 
+## 0.7.3
+
+- De-bubble agent output on desktop and mobile: assistant messages render as continuous
+  Codex-style flowing text without cards or per-message headers, tool activity becomes
+  subtle muted work lines, and only user messages keep their accent bubble.
+
 ## 0.7.2
 
 - Aggregate Codex file edits Codex-style: the conversation no longer renders one
