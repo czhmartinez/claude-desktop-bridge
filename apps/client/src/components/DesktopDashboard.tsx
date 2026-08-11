@@ -1217,7 +1217,15 @@ function DesktopSessions({
             </div>
             ) : (
               <div className="desktop-evidence-view">
-                {fileChangesSummary && <FileChangesCard summary={fileChangesSummary} />}
+                {fileChangesSummary && (
+                  <FileChangesCard
+                    summary={fileChangesSummary}
+                    onOpenFile={(filePath) => void apiRequest({
+                      method: "runtime.file.open",
+                      params: { sessionId: selected.sessionId, path: filePath },
+                    }).then(unwrap).catch((failure) => setSessionActionError(failure instanceof Error ? failure.message : String(failure)))}
+                  />
+                )}
                 <EvidencePanel
                   state={selectedEvidence}
                   previews={artifactPreviews}

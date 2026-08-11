@@ -914,6 +914,7 @@ export function MobileWorkspace({
   onResumeRuntimeGoal,
   onArchiveSession,
   onDeleteSession,
+  onOpenRuntimeFile,
   onRefreshProviders,
   onDesktopAppAction,
   onRefresh,
@@ -993,6 +994,7 @@ export function MobileWorkspace({
   onPauseRuntimeGoal(sessionId: string): Promise<void>;
   onResumeRuntimeGoal(sessionId: string): Promise<void>;
   onArchiveSession?(sessionId: string, archived: boolean): Promise<void>;
+  onOpenRuntimeFile?(sessionId: string, filePath: string): Promise<void>;
   onDeleteSession?(sessionId: string): Promise<void>;
   onDesktopAppAction(
     runtimeId: BridgeDesktopRuntimeId,
@@ -1689,7 +1691,14 @@ export function MobileWorkspace({
         </section>
         ) : (
           <section className="mobile-evidence-view">
-            {fileChangesSummary && <FileChangesCard summary={fileChangesSummary} />}
+            {fileChangesSummary && (
+              <FileChangesCard
+                summary={fileChangesSummary}
+                {...(onOpenRuntimeFile ? {
+                  onOpenFile: (filePath) => void onOpenRuntimeFile(selectedSession.sessionId, filePath),
+                } : {})}
+              />
+            )}
             <EvidencePanel
               state={selectedEvidence}
               previews={artifactPreviews}

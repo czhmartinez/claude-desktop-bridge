@@ -35,6 +35,9 @@ import {
   type PairingBundle,
   type SocketState,
 } from "@bridge/protocol";
+import { shell } from "electron";
+import { realpath } from "node:fs/promises";
+import { isAbsolute, resolve, sep } from "node:path";
 import type { App } from "electron";
 import {
   DesktopConfigRepository,
@@ -1158,6 +1161,24 @@ export class DesktopController extends EventEmitter {
       return {
         session: await this.broker.confirmFallback(sessionId),
       };
+    }
+    if (request.method === "runtime.file.open") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const filePath = stringParam(params, "path")!;
+      if (!this.routesToExternalRuntime(sessionId) || !this.runtimeSessions) {
+        throw new Error("该会话不支持打开工作区文件");
+      }
+      const session = this.runtimeSessions.session(sessionId);
+      if (!session) throw new Error("Session not found");
+      const root = await realpath(session.cwd);
+      const candidate = isAbsolute(filePath) ? filePath : resolve(session.cwd, filePath);
+      const target = await realpath(candidate).catch(() => undefined);
+      if (!target || (target !== root && !target.startsWith(`${root}${sep}`))) {
+        throw new Error("只能打开当前工作区内的文件");
+      }
+      const error = await shell.openPath(target);
+      if (error) throw new Error(error);
+      return { opened: true, path: target };
     }
     if (request.method === "message.delivery.resolve") {
       const action = stringParam(params, "action")!;

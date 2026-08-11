@@ -14,7 +14,13 @@ const KIND_LABEL = {
  * Codex-style aggregated edit card: one collection per session instead of
  * inline per-edit cards, rendered in the 成果 column.
  */
-export function FileChangesCard({ summary }: { summary: FileChangesSummary }) {
+export function FileChangesCard({
+  summary,
+  onOpenFile,
+}: {
+  summary: FileChangesSummary;
+  onOpenFile?(filePath: string): void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const shown = expanded ? summary.files : summary.files.slice(0, COLLAPSED_ROWS);
   const hiddenCount = summary.files.length - shown.length;
@@ -32,16 +38,33 @@ export function FileChangesCard({ summary }: { summary: FileChangesSummary }) {
         </span>
       </header>
       <div className="file-changes-rows">
-        {shown.map((file) => (
-          <div className="file-change-row" key={file.path} title={`${KIND_LABEL[file.kind]} ${file.path}`}>
-            <span className={`file-change-kind ${file.kind}`}>{KIND_LABEL[file.kind]}</span>
-            <code>{file.path}</code>
-            <span className="file-change-counts">
-              <b className="add">+{file.additions}</b>
-              <b className="del">−{file.deletions}</b>
-            </span>
-          </div>
-        ))}
+        {shown.map((file) => {
+          const row = (
+            <>
+              <span className={`file-change-kind ${file.kind}`}>{KIND_LABEL[file.kind]}</span>
+              <code>{file.path}</code>
+              <span className="file-change-counts">
+                <b className="add">+{file.additions}</b>
+                <b className="del">−{file.deletions}</b>
+              </span>
+            </>
+          );
+          return onOpenFile ? (
+            <button
+              type="button"
+              className="file-change-row is-openable"
+              key={file.path}
+              title={`在电脑上打开 ${file.path}`}
+              onClick={() => onOpenFile(file.path)}
+            >
+              {row}
+            </button>
+          ) : (
+            <div className="file-change-row" key={file.path} title={`${KIND_LABEL[file.kind]} ${file.path}`}>
+              {row}
+            </div>
+          );
+        })}
       </div>
       {hiddenCount > 0 && (
         <button type="button" className="file-changes-more" onClick={() => setExpanded(true)}>

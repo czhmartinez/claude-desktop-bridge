@@ -2231,6 +2231,19 @@ button:disabled {
   font-size: 11px;
 }
 
+.file-change-row.is-openable {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-change-row.is-openable:hover {
+  background: var(--surface-2);
+}
+
 .file-change-row + .file-change-row {
   border-top: 1px solid var(--line);
 }

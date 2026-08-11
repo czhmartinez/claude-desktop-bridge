@@ -2527,6 +2527,14 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "恢复目标失败");
   }, [sendRequest]);
 
+  const openRuntimeFile = useCallback(async (sessionId: string, filePath: string) => {
+    const response = await sendRequest("runtime.file.open", {
+      sessionId,
+      path: filePath,
+    }, { wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "打开文件失败");
+  }, [sendRequest]);
+
   const archiveSession = useCallback(async (sessionId: string, archived: boolean) => {
     const response = await sendRequest("session.archive", {
       sessionId,
@@ -2572,6 +2580,7 @@ export function useMobileBridge() {
     resumeRuntimeGoal,
     archiveSession,
     deleteSession,
+    openRuntimeFile,
     refreshProviders,
     launchClaudeDesktop,
     controlDesktopApp,

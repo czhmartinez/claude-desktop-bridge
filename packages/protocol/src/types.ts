@@ -772,6 +772,7 @@ export type BridgeMethod =
   | "session.desktop.register"
   | "session.archive"
   | "session.delete"
+  | "runtime.file.open"
   | "session.fallback.confirm"
   | "message.delivery.resolve"
   | "claude.desktop.status"

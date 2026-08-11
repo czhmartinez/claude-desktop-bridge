@@ -117,6 +117,7 @@ export function App() {
         ? {
             onArchiveSession: mobile.archiveSession,
             onDeleteSession: mobile.deleteSession,
+            onOpenRuntimeFile: mobile.openRuntimeFile,
           }
         : {})}
       onRefreshProviders={mobile.refreshProviders}

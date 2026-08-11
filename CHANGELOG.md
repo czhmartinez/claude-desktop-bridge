@@ -17,6 +17,9 @@
   history time and fills data), and desktop/mobile show real <img> previews instead of
   bare file names or paths; transports that cannot replay bytes (Claude transcripts) keep
   a name chip.
+- Make Codex file-change cards actionable: each changed file row opens the real file in
+  the host's default app via a workspace-contained `runtime.file.open` RPC (desktop and
+  mobile), so the tidy 成果 list is no longer dead UI.
 
 ## 0.7.7
 ## 0.7.7
