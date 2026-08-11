@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Fix the desktop relay dialog losing its only confirm path: once the session snapshot
+  picked up the freshly previewed handoff, the dialog jumped straight to the
+  "等待确认接力" progress view with no way to accept. A server-driven `previewed`
+  handoff now renders the preview phase with the objective editor and
+  确认接力 / 取消接力 actions, so confirming also survives a reload or a second device.
 - Fix mobile-created Codex and Hermes sessions failing immediately with an unreadable history
   and a failed first message. Both runtimes keep a brand-new session only in memory until its
   first user message: Codex rejects `thread/read`/`thread/resume` for threads without a

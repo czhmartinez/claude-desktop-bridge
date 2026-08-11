@@ -29,6 +29,33 @@ function handoffStateLabel(handoff: BridgeRuntimeHandoff): string {
   return "接力失败";
 }
 
+export type RuntimeHandoffPhase = "choose" | "preview" | "progress" | "plan" | "done" | "failed";
+
+/**
+ * Phase machine for the relay dialog. A server-attached handoff always wins
+ * over the local preview; crucially, `previewed` must stay on the preview
+ * phase — mapping it to progress strands the user with no way to confirm.
+ */
+export function runtimeHandoffPhase(
+  handoff: BridgeRuntimeHandoff | undefined,
+  hasLocalPreview: boolean,
+): RuntimeHandoffPhase {
+  if (!handoff) return hasLocalPreview ? "preview" : "choose";
+  if (handoff.state === "plan-ready") return "plan";
+  if (handoff.state === "previewed") return "preview";
+  if (handoff.state === "applied") return "done";
+  if (handoff.state === "failed") return "failed";
+  if (handoff.state === "cancelled") return "choose";
+  return "progress";
+}
+
+export function selectPreviewHandoff(
+  preview: BridgeRuntimeHandoffPreview | undefined,
+  handoff: BridgeRuntimeHandoff | undefined,
+): BridgeRuntimeHandoff | undefined {
+  return preview?.handoff ?? (handoff?.state === "previewed" ? handoff : undefined);
+}
+
 export function RuntimeHandoffDialog({
   session,
   runtimes,
@@ -68,6 +95,14 @@ export function RuntimeHandoffDialog({
   // Follow the server-driven handoff attached to the session snapshot.
   const handoff = pending && pending.handoffId !== dismissedId ? pending : undefined;
 
+  // A snapshot publish can attach the freshly previewed handoff to the session
+  // while the local preview is still on screen; keep the confirm UI reachable
+  // for the server-driven row too (reload recovery, second device).
+  useEffect(() => {
+    if (handoff?.state !== "previewed") return;
+    setObjective((current) => current || handoff.objective);
+  }, [handoff?.handoffId, handoff?.state, handoff?.objective]);
+
   useEffect(() => {
     if (handoff?.state !== "plan-ready") return;
     let stale = false;
@@ -104,19 +139,13 @@ export function RuntimeHandoffDialog({
     });
   }
 
-  const phase: "choose" | "preview" | "progress" | "plan" | "done" | "failed" = handoff
-    ? handoff.state === "plan-ready"
-      ? "plan"
-      : handoff.state === "applied"
-        ? "done"
-        : handoff.state === "failed"
-          ? "failed"
-          : handoff.state === "cancelled"
-            ? "choose"
-            : "progress"
-    : preview
-      ? "preview"
-      : "choose";
+  const previewHandoff = selectPreviewHandoff(preview, handoff);
+  const previewMeta = preview
+    ? `近期对话 ${preview.recentItemCount} 条 · 成果 ${preview.artifactCount} 项 · `
+      + `${preview.gitBranch ? `分支 ${preview.gitBranch} · ` : ""}`
+      + `${preview.workspaceDirty ? "工作区有未提交改动" : "工作区干净"}`
+    : (previewHandoff?.summary ?? "");
+  const phase = runtimeHandoffPhase(handoff, Boolean(preview));
 
   return (
     <div className="modal-backdrop provider-switch-backdrop" role="presentation" onMouseDown={(event) => {
@@ -188,16 +217,12 @@ export function RuntimeHandoffDialog({
           </>
         )}
 
-        {phase === "preview" && preview && (
+        {phase === "preview" && previewHandoff && (
           <>
             <div className="provider-handoff-preview">
               <span>接力摘要</span>
-              <strong>{preview.objectiveDraft}</strong>
-              <small>
-                {`近期对话 ${preview.recentItemCount} 条 · 成果 ${preview.artifactCount} 项 · `}
-                {preview.gitBranch ? `分支 ${preview.gitBranch} · ` : ""}
-                {preview.workspaceDirty ? "工作区有未提交改动" : "工作区干净"}
-              </small>
+              <strong>{preview?.objectiveDraft ?? previewHandoff.objective}</strong>
+              <small>{previewMeta}</small>
             </div>
             <label className="runtime-handoff-objective">
               <span>执行目标（确认计划前仍可修改）</span>
@@ -208,15 +233,15 @@ export function RuntimeHandoffDialog({
               />
             </label>
             <footer className="provider-actions">
-              <button type="button" className="secondary-button" disabled={busy} onClick={() => setPreview(undefined)}>
-                返回
+              <button type="button" className="secondary-button" disabled={busy} onClick={() => void cancelActive()}>
+                取消接力
               </button>
               <button
                 type="button"
                 className="primary-button"
                 disabled={busy}
                 onClick={() => void run(async () => {
-                  await onCommit(preview.handoff.handoffId);
+                  await onCommit(previewHandoff.handoffId);
                 })}
               >
                 {busy ? <LoaderCircle className="is-spinning" size={15} /> : <Forward size={15} />}
