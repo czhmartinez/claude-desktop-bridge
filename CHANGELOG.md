@@ -1,3 +1,22 @@
+## 0.7.6
+
+- Fix the reconnect slowdown that forced re-pairing: a no-op metadata rewrite in the
+  Claude Desktop session registrar minted a fresh `updatedAt` on every reconcile, so
+  `registrationChanged` was permanently true and the event log accumulated ~240k
+  useless `session.desktop-registration` events (490 MB JSONL parsed into memory on
+  every desktop start). The registrar now returns the previous record when nothing
+  meaningful changed, and the event log streams oversized files through a compactor
+  on startup: registration churn and superseded stream deltas are dropped, only a
+  bounded tail (30k events / 32 MB) is retained, and the transcript dedup index is
+  preserved across the full history. Event-driven snapshot republishes are
+  trailing-debounced (120ms) so event bursts no longer rebuild the snapshot per
+  event, and mobile catch-up replay now applies events in a single indexed pass
+  instead of mapping every session per event.
+- Move mobile session archive/delete into the session list: each row (active and
+  archived) has its own ⋯ action opening the bottom sheet, so managing a session no
+  longer requires opening it. The conversation topbar loses the theme toggle (it
+  already lives on the home page) and keeps only conversation actions.
+
 ## 0.7.5
 
 - Give the conversation stream motion: newly arrived messages, tool lines and evidence

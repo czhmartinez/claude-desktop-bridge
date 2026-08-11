@@ -439,6 +439,19 @@ export class ClaudeDesktopSessionRegistrar {
       metadataSha256: current.hash,
     };
     if (!stillNeedsRestart) delete restored.claudePidAtRegistration;
+    // Nothing meaningful changed: keep the previous record. Minting a fresh
+    // updatedAt here on every reconcile used to make registrationChanged()
+    // permanently true, flooding the event log with no-op
+    // session.desktop-registration events after every single turn.
+    if (
+      previous.state === restored.state &&
+      previous.detail === restored.detail &&
+      previous.desktopSessionId === restored.desktopSessionId &&
+      previous.metadataPath === restored.metadataPath &&
+      previous.metadataSha256 === restored.metadataSha256 &&
+      previous.profileSessionsRoot === restored.profileSessionsRoot &&
+      previous.claudePidAtRegistration === restored.claudePidAtRegistration
+    ) return previous;
     return restored;
   }
 

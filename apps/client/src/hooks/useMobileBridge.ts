@@ -478,19 +478,14 @@ export function rebaseSnapshot(
   permissions: BridgePermissionInfo[];
   latestSeq: number;
 } {
-  let permissions = snapshot.permissions;
-  let nextSnapshot: BridgeHostSnapshot | undefined = snapshot;
   const replay = events
     .filter((event) => event.seq > snapshot.latestSeq)
     .sort((left, right) => left.seq - right.seq);
-  for (const event of replay) {
-    permissions = applyPermissionEvent(permissions, event);
-    nextSnapshot = applyEventToSnapshot(nextSnapshot, event, permissions);
-  }
-  const rebased = snapshotWithPermissions(nextSnapshot, permissions) ?? snapshot;
+  const applied = applyEventsToSnapshot(snapshot, replay, snapshot.permissions);
+  const rebased = applied.snapshot ?? snapshot;
   return {
     snapshot: rebased,
-    permissions,
+    permissions: applied.permissions,
     latestSeq: Math.max(snapshot.latestSeq, ...events.map((event) => event.seq), 0),
   };
 }
@@ -542,109 +537,178 @@ export function applyEventToSnapshot(
       sessions: current.sessions.filter((session) => session.sessionId !== event.sessionId),
     };
   }
-  return {
+  const index = current.sessions.findIndex((session) => session.sessionId === event.sessionId);
+  if (index < 0) return current;
+  const target = current.sessions[index]!;
+  const updated = applyEventToSession(target, event, hasPendingPermission);
+  if (updated === target) return current;
+  const sessions = current.sessions.slice();
+  sessions[index] = updated;
+  return { ...current, sessions };
+}
+
+function applyEventToSession(
+  session: BridgeSessionInfo,
+  event: BridgeEvent,
+  hasPendingPermission: boolean,
+): BridgeSessionInfo {
+  if (event.type === "session.archived") {
+    if (event.data.archived === true && typeof event.data.archivedAt === "number") {
+      return { ...session, archivedAt: event.data.archivedAt };
+    }
+    if (event.data.archived === false) {
+      const { archivedAt: _dropped, ...rest } = session;
+      return rest;
+    }
+    return session;
+  }
+  if (event.type === "conversation.route.changed") {
+    const route = event.data.route as BridgeConversationRoute | undefined;
+    if (route?.conversationId === session.sessionId) return sessionWithRoute(session, route);
+  }
+  if (hasPendingPermission) return { ...session, turnState: "waiting" };
+  if (event.type === "session.ownership" && typeof event.data.ownership === "string") {
+    return {
+      ...session,
+      ownership: event.data.ownership as BridgeSessionInfo["ownership"],
+    };
+  }
+  if (event.type === "session.transport" && typeof event.data.transport === "string") {
+    return {
+      ...session,
+      transport: event.data.transport as BridgeSessionInfo["transport"],
+    };
+  }
+  if (event.type === "session.ownership-conflict") {
+    return {
+      ...session,
+      ownership: "OWNERSHIP_CONFLICT",
+      turnState: "waiting",
+    };
+  }
+  if (event.type === "runtime.goal.updated") {
+    const goal = event.data.goal as BridgeRuntimeGoalInfo | undefined;
+    if (goal && typeof goal.objective === "string") return { ...session, goal };
+    return session;
+  }
+  if (
+    event.type === "runtime.handoff.started" ||
+    event.type === "runtime.handoff.plan-ready" ||
+    event.type === "runtime.handoff.failed" ||
+    event.type === "runtime.handoff.cancelled"
+  ) {
+    // The plan gate lives on the source session; follow it live on
+    // mobile so confirmation never requires the desktop.
+    const handoff = event.data.handoff as BridgeRuntimeHandoff | undefined;
+    if (!handoff || handoff.sourceSessionId !== session.sessionId) return session;
+    return { ...session, pendingRuntimeHandoff: handoff };
+  }
+  if (event.type === "runtime.handoff.applied") {
+    const handoff = event.data.handoff as BridgeRuntimeHandoff | undefined;
+    if (!handoff || handoff.sourceSessionId !== session.sessionId) return session;
+    const { pendingRuntimeHandoff: _pending, ...rest } = session;
+    return rest;
+  }
+  if (event.type === "turn.queued") {
+    return {
+      ...session,
+      turnState: "queued",
+      pendingCount: Math.max(1, session.pendingCount),
+    };
+  }
+  if (event.type === "turn.started") {
+    return {
+      ...session,
+      ownership: session.transport === "claude-desktop-managed"
+        ? "DESKTOP_MANAGED_RUNNING"
+        : "BRIDGE_RUNNING",
+      turnState: "running",
+      pendingCount: Math.max(0, session.pendingCount - 1),
+      ...(event.turnId ? { activeTurnId: event.turnId } : {}),
+    };
+  }
+  if (
+    event.type === "turn.completed" ||
+    event.type === "turn.failed" ||
+    event.type === "turn.interrupted"
+  ) {
+    const pendingCount = event.type === "turn.interrupted" && event.data.wasQueued === true
+      ? Math.max(0, session.pendingCount - 1)
+      : session.pendingCount;
+    const {
+      activeTurnId: _activeTurnId,
+      currentSummary: _currentSummary,
+      ...rest
+    } = session;
+    return {
+      ...rest,
+      ownership: session.transport === "claude-desktop-managed"
+        ? "DESKTOP_MANAGED_IDLE"
+        : "BRIDGE_IDLE",
+      turnState: pendingCount > 0 ? "queued" : "idle",
+      pendingCount,
+    };
+  }
+  return session;
+}
+
+/**
+ * Batch variant for catch-up replay: one session-index build and one final
+ * wrap for the whole event run instead of a full sessions map per event.
+ * A busy away window can queue thousands of events; per-event mapping made
+ * every reconnect O(events x sessions) and froze the phone for seconds.
+ */
+export function applyEventsToSnapshot(
+  snapshot: BridgeHostSnapshot | undefined,
+  events: BridgeEvent[],
+  permissions: BridgePermissionInfo[],
+): { snapshot: BridgeHostSnapshot | undefined; permissions: BridgePermissionInfo[] } {
+  let current = snapshotWithPermissions(snapshot, permissions);
+  let currentPermissions = permissions;
+  if (!current || events.length === 0) return { snapshot: current, permissions: currentPermissions };
+  const byId = new Map(current.sessions.map((session) => [session.sessionId, session]));
+  let providers = current.providers ?? [];
+  let providersDirty = false;
+  let sessionsDirty = false;
+  for (const event of events) {
+    currentPermissions = applyPermissionEvent(currentPermissions, event);
+    if (event.type === "provider.updated") {
+      const profile = event.data.profile as BridgeProviderProfile | undefined;
+      if (profile && typeof profile.id === "string") {
+        const index = providers.findIndex((candidate) => candidate.id === profile.id);
+        if (index < 0) providers = [...providers, profile];
+        else {
+          if (!providersDirty) providers = providers.slice();
+          providers[index] = profile;
+        }
+        providersDirty = true;
+      }
+      continue;
+    }
+    if (!event.sessionId) continue;
+    if (event.type === "session.deleted") {
+      if (byId.delete(event.sessionId)) sessionsDirty = true;
+      continue;
+    }
+    const existing = byId.get(event.sessionId);
+    if (!existing) continue;
+    const hasPendingPermission = currentPermissions.some(
+      (permission) => permission.sessionId === event.sessionId,
+    );
+    const updated = applyEventToSession(existing, event, hasPendingPermission);
+    if (updated !== existing) {
+      byId.set(event.sessionId, updated);
+      sessionsDirty = true;
+    }
+  }
+  current = {
     ...current,
-    sessions: current.sessions.map((session) => {
-      if (session.sessionId !== event.sessionId) return session;
-      if (event.type === "session.archived") {
-        if (event.data.archived === true && typeof event.data.archivedAt === "number") {
-          return { ...session, archivedAt: event.data.archivedAt };
-        }
-        if (event.data.archived === false) {
-          const { archivedAt: _dropped, ...rest } = session;
-          return rest;
-        }
-        return session;
-      }
-      if (event.type === "conversation.route.changed") {
-        const route = event.data.route as BridgeConversationRoute | undefined;
-        if (route?.conversationId === session.sessionId) return sessionWithRoute(session, route);
-      }
-      if (hasPendingPermission) return { ...session, turnState: "waiting" };
-      if (event.type === "session.ownership" && typeof event.data.ownership === "string") {
-        return {
-          ...session,
-          ownership: event.data.ownership as BridgeSessionInfo["ownership"],
-        };
-      }
-      if (event.type === "session.transport" && typeof event.data.transport === "string") {
-        return {
-          ...session,
-          transport: event.data.transport as BridgeSessionInfo["transport"],
-        };
-      }
-      if (event.type === "session.ownership-conflict") {
-        return {
-          ...session,
-          ownership: "OWNERSHIP_CONFLICT",
-          turnState: "waiting",
-        };
-      }
-      if (event.type === "runtime.goal.updated") {
-        const goal = event.data.goal as BridgeRuntimeGoalInfo | undefined;
-        if (goal && typeof goal.objective === "string") return { ...session, goal };
-        return session;
-      }
-      if (
-        event.type === "runtime.handoff.started" ||
-        event.type === "runtime.handoff.plan-ready" ||
-        event.type === "runtime.handoff.failed" ||
-        event.type === "runtime.handoff.cancelled"
-      ) {
-        // The plan gate lives on the source session; follow it live on
-        // mobile so confirmation never requires the desktop.
-        const handoff = event.data.handoff as BridgeRuntimeHandoff | undefined;
-        if (!handoff || handoff.sourceSessionId !== session.sessionId) return session;
-        return { ...session, pendingRuntimeHandoff: handoff };
-      }
-      if (event.type === "runtime.handoff.applied") {
-        const handoff = event.data.handoff as BridgeRuntimeHandoff | undefined;
-        if (!handoff || handoff.sourceSessionId !== session.sessionId) return session;
-        const { pendingRuntimeHandoff: _pending, ...rest } = session;
-        return rest;
-      }
-      if (event.type === "turn.queued") {
-        return {
-          ...session,
-          turnState: "queued",
-          pendingCount: Math.max(1, session.pendingCount),
-        };
-      }
-      if (event.type === "turn.started") {
-        return {
-          ...session,
-          ownership: session.transport === "claude-desktop-managed"
-            ? "DESKTOP_MANAGED_RUNNING"
-            : "BRIDGE_RUNNING",
-          turnState: "running",
-          pendingCount: Math.max(0, session.pendingCount - 1),
-          ...(event.turnId ? { activeTurnId: event.turnId } : {}),
-        };
-      }
-      if (
-        event.type === "turn.completed" ||
-        event.type === "turn.failed" ||
-        event.type === "turn.interrupted"
-      ) {
-        const pendingCount = event.type === "turn.interrupted" && event.data.wasQueued === true
-          ? Math.max(0, session.pendingCount - 1)
-          : session.pendingCount;
-        const {
-          activeTurnId: _activeTurnId,
-          currentSummary: _currentSummary,
-          ...rest
-        } = session;
-        return {
-          ...rest,
-          ownership: session.transport === "claude-desktop-managed"
-            ? "DESKTOP_MANAGED_IDLE"
-            : "BRIDGE_IDLE",
-          turnState: pendingCount > 0 ? "queued" : "idle",
-          pendingCount,
-        };
-      }
-      return session;
-    }),
+    ...(sessionsDirty ? { sessions: [...byId.values()] } : {}),
+    ...(providersDirty ? { providers } : {}),
+  };
+  return {
+    snapshot: snapshotWithPermissions(current, currentPermissions),
+    permissions: currentPermissions,
   };
 }
 
@@ -1038,13 +1102,9 @@ export function useMobileBridge() {
       }
       setState((current) => {
         let turns = current.localTurns;
-        let permissions = current.permissions;
-        let snapshot = current.snapshot;
         let evidence = current.evidence;
         for (const event of events) {
           turns = applyEventToTurns(turns, event);
-          permissions = applyPermissionEvent(permissions, event);
-          snapshot = applyEventToSnapshot(snapshot, event, permissions);
           const item = evidenceFromEvent(event);
           if (item) {
             evidence = {
@@ -1060,6 +1120,9 @@ export function useMobileBridge() {
             };
           }
         }
+        const applied = applyEventsToSnapshot(current.snapshot, events, current.permissions);
+        const snapshot = applied.snapshot;
+        const permissions = applied.permissions;
         return {
           ...current,
           snapshot,

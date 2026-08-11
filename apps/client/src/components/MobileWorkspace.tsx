@@ -1007,7 +1007,7 @@ export function MobileWorkspace({
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
-  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const [menuSessionId, setMenuSessionId] = useState<string>();
   const [deleteSessionConfirmOpen, setDeleteSessionConfirmOpen] = useState(false);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
@@ -1076,6 +1076,13 @@ export function MobileWorkspace({
   const archivedSessions = useMemo(() => sessions.filter((session) => (
     Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
   )), [runtimeFilter, sessions]);
+  const menuSession = menuSessionId ? sessions.find((session) => session.sessionId === menuSessionId) : undefined;
+  const canManageSessions = Boolean(onArchiveSession || onDeleteSession);
+  const menuSessionBusy = Boolean(menuSession && (
+    menuSession.turnState === "running"
+    || menuSession.turnState === "queued"
+    || menuSession.turnState === "waiting"
+  ));
   const groupedProjectIds = useMemo(
     () => grouped.map((group) => group.project?.projectId ?? group.sessions[0]!.projectId),
     [grouped],
@@ -1142,6 +1149,14 @@ export function MobileWorkspace({
       setCreateOpen(false);
       return true;
     }
+    if (deleteSessionConfirmOpen) {
+      setDeleteSessionConfirmOpen(false);
+      return true;
+    }
+    if (menuSessionId) {
+      setMenuSessionId(undefined);
+      return true;
+    }
     if (quitDesktopTarget) {
       setQuitDesktopTarget(undefined);
       return true;
@@ -1154,6 +1169,8 @@ export function MobileWorkspace({
   }, 100), [
     configurationOpen,
     createOpen,
+    deleteSessionConfirmOpen,
+    menuSessionId,
     permissionOpen,
     providerOpen,
     quitDesktopTarget,
@@ -1298,13 +1315,13 @@ export function MobileWorkspace({
     }
   }
 
-  async function archiveSelectedSession(archived: boolean): Promise<void> {
-    if (!selectedSession || !onArchiveSession || sessionActionBusy) return;
+  async function archiveSessionById(sessionId: string, archived: boolean): Promise<void> {
+    if (!onArchiveSession || sessionActionBusy) return;
     setSessionActionBusy(true);
     setSessionActionError(undefined);
     try {
-      await onArchiveSession(selectedSession.sessionId, archived);
-      setSessionMenuOpen(false);
+      await onArchiveSession(sessionId, archived);
+      setMenuSessionId(undefined);
     } catch (error) {
       setSessionActionError(error instanceof Error ? error.message : "归档设置失败");
     } finally {
@@ -1312,14 +1329,14 @@ export function MobileWorkspace({
     }
   }
 
-  async function deleteSelectedSession(): Promise<void> {
-    if (!selectedSession || !onDeleteSession || sessionActionBusy) return;
+  async function deleteSessionById(sessionId: string): Promise<void> {
+    if (!onDeleteSession || sessionActionBusy) return;
     setSessionActionBusy(true);
     setSessionActionError(undefined);
     try {
-      await onDeleteSession(selectedSession.sessionId);
+      await onDeleteSession(sessionId);
       setDeleteSessionConfirmOpen(false);
-      setSessionMenuOpen(false);
+      setMenuSessionId(undefined);
     } catch (error) {
       setSessionActionError(error instanceof Error ? error.message : "删除会话失败");
     } finally {
@@ -1382,9 +1399,6 @@ export function MobileWorkspace({
     const canStop = Boolean(stopTarget);
     const stopping = stoppingSessionId === stopTarget?.sessionId;
     const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== selectedSession.sessionId);
-    const selectedBusy = selectedSession.turnState === "running"
-      || selectedSession.turnState === "queued"
-      || selectedSession.turnState === "waiting";
     const sessionPermissions = permissions.filter((permission) => permission.sessionId === selectedSession.sessionId);
     const activePermission = sessionPermissions[0];
     const otherPermission = permissions.find((permission) => permission.sessionId !== selectedSession.sessionId);
@@ -1443,11 +1457,7 @@ export function MobileWorkspace({
               >
                 {stopping ? <LoaderCircle className="is-spinning" size={20} /> : <CircleStop size={20} />}
               </IconButton>
-            ) : (
-              <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
-                {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
-              </IconButton>
-            )}
+            ) : null}
             <IconButton
               label="强制同步"
               disabled={refreshing}
@@ -1455,26 +1465,8 @@ export function MobileWorkspace({
             >
               {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
             </IconButton>
-            {(onArchiveSession || onDeleteSession) && (
-              <IconButton label="会话操作" onClick={() => setSessionMenuOpen(true)}>
-                <MoreHorizontal size={19} />
-              </IconButton>
-            )}
           </div>
         </header>
-
-        {selectedSession.archivedAt && (
-          <div className="session-channel-warning">
-            <Archive size={17} />
-            <span><strong>此会话已归档</strong>历史完整保留；从会话操作中取消归档即可回到列表。</span>
-          </div>
-        )}
-        {sessionActionError && (
-          <div className="session-channel-warning danger">
-            <AlertTriangle size={17} />
-            <span>{sessionActionError}</span>
-          </div>
-        )}
 
         {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
           <div className="session-channel-warning">
@@ -1806,57 +1798,6 @@ export function MobileWorkspace({
             onClose={() => setConfigurationOpen(false)}
           />
         )}
-        {sessionMenuOpen && (
-          <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !sessionActionBusy) setSessionMenuOpen(false);
-          }}>
-            <section className="permission-sheet session-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="session-menu-title">
-              <header>
-                <div>
-                  <span>会话操作</span>
-                  <h2 id="session-menu-title">{selectedSession.title}</h2>
-                </div>
-                <IconButton label="关闭" disabled={sessionActionBusy} onClick={() => setSessionMenuOpen(false)}><X size={19} /></IconButton>
-              </header>
-              <div className="session-menu-actions">
-                {onArchiveSession && (
-                  selectedSession.archivedAt ? (
-                    <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={() => void archiveSelectedSession(false)}>
-                      <ArchiveRestore size={17} />取消归档
-                    </button>
-                  ) : (
-                    <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={() => void archiveSelectedSession(true)}>
-                      <Archive size={17} />归档会话
-                    </button>
-                  )
-                )}
-                {onDeleteSession && (
-                  <button
-                    type="button"
-                    className="secondary-button danger-text"
-                    disabled={sessionActionBusy || selectedBusy || Boolean(selectedSession.pendingRuntimeHandoff)}
-                    onClick={() => setDeleteSessionConfirmOpen(true)}
-                  >
-                    <Trash2 size={17} />删除会话
-                  </button>
-                )}
-              </div>
-              {(selectedBusy || selectedSession.pendingRuntimeHandoff) && onDeleteSession && (
-                <p className="session-menu-hint">任务或接力进行中，先停止再删除。</p>
-              )}
-            </section>
-          </div>
-        )}
-        <ConfirmationDialog
-          open={deleteSessionConfirmOpen}
-          title="删除会话"
-          description={`从 Bridge 列表中删除「${selectedSession.title}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
-          confirmLabel="删除会话"
-          danger
-          busy={sessionActionBusy}
-          onCancel={() => setDeleteSessionConfirmOpen(false)}
-          onConfirm={() => void deleteSelectedSession()}
-        />
         {permissionOpen && activePermission && (
           <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
             if (event.target === event.currentTarget) setPermissionOpen(false);
@@ -2078,28 +2019,40 @@ export function MobileWorkspace({
                 {expanded && (
                   <div className="session-rows" id={sessionsId}>
                     {group.sessions.map((session) => (
-                      <button
-                        type="button"
-                        className="session-row-v2"
-                        data-session-id={session.sessionId}
-                        key={session.sessionId}
-                        onClick={() => void selectSession(session.sessionId)}
-                      >
-                        <span className={`session-state-dot ${session.turnState}`} />
-                        <span className="session-row-copy">
-                          <strong>{session.title}</strong>
-                          <small>{desktopRuntimeName(desktopRuntimeId(session))} · {relativeTime(session.lastActivityAt)}{session.currentSummary ? ` · ${session.currentSummary}` : ""}</small>
-                        </span>
-                        <span className="session-row-status">{ownershipLabel(session)}</span>
-                        <ChevronRight size={18} />
-                      </button>
+                      <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
+                        <button
+                          type="button"
+                          className="session-row-hit"
+                          onClick={() => void selectSession(session.sessionId)}
+                        >
+                          <span className={`session-state-dot ${session.turnState}`} />
+                          <span className="session-row-copy">
+                            <strong>{session.title}</strong>
+                            <small>{desktopRuntimeName(desktopRuntimeId(session))} · {relativeTime(session.lastActivityAt)}{session.currentSummary ? ` · ${session.currentSummary}` : ""}</small>
+                          </span>
+                          <span className="session-row-status">{ownershipLabel(session)}</span>
+                          <ChevronRight size={18} />
+                        </button>
+                        {canManageSessions && (
+                          <IconButton
+                            label="会话操作"
+                            className="session-row-action"
+                            onClick={() => {
+                              setSessionActionError(undefined);
+                              setMenuSessionId(session.sessionId);
+                            }}
+                          >
+                            <MoreHorizontal size={18} />
+                          </IconButton>
+                        )}
+                      </div>
                     ))}
                   </div>
                 )}
               </section>
             );
           })}
-          {onArchiveSession && archivedSessions.length > 0 && (
+          {canManageSessions && archivedSessions.length > 0 && (
             <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
               <button
                 type="button"
@@ -2120,21 +2073,33 @@ export function MobileWorkspace({
               {archivedExpanded && (
                 <div className="session-rows" id="mobile-archived-sessions">
                   {archivedSessions.map((session) => (
-                    <button
-                      type="button"
-                      className="session-row-v2"
-                      data-session-id={session.sessionId}
-                      key={session.sessionId}
-                      onClick={() => void selectSession(session.sessionId)}
-                    >
-                      <span className={`session-state-dot ${session.turnState}`} />
-                      <span className="session-row-copy">
-                        <strong>{session.title}</strong>
-                        <small>{desktopRuntimeName(desktopRuntimeId(session))} · {relativeTime(session.lastActivityAt)}</small>
-                      </span>
-                      <span className="session-row-status">已归档</span>
-                      <ChevronRight size={18} />
-                    </button>
+                    <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
+                      <button
+                        type="button"
+                        className="session-row-hit"
+                        onClick={() => void selectSession(session.sessionId)}
+                      >
+                        <span className={`session-state-dot ${session.turnState}`} />
+                        <span className="session-row-copy">
+                          <strong>{session.title}</strong>
+                          <small>{desktopRuntimeName(desktopRuntimeId(session))} · {relativeTime(session.lastActivityAt)}</small>
+                        </span>
+                        <span className="session-row-status">已归档</span>
+                        <ChevronRight size={18} />
+                      </button>
+                      {canManageSessions && (
+                        <IconButton
+                          label="会话操作"
+                          className="session-row-action"
+                          onClick={() => {
+                            setSessionActionError(undefined);
+                            setMenuSessionId(session.sessionId);
+                          }}
+                        >
+                          <MoreHorizontal size={18} />
+                        </IconButton>
+                      )}
+                    </div>
                   ))}
                 </div>
               )}
@@ -2142,6 +2107,69 @@ export function MobileWorkspace({
           )}
         </div>
       </section>
+
+      {menuSession && canManageSessions && (
+        <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !sessionActionBusy) setMenuSessionId(undefined);
+        }}>
+          <section className="permission-sheet session-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="session-menu-title">
+            <header>
+              <div>
+                <span>会话操作</span>
+                <h2 id="session-menu-title">{menuSession.title}</h2>
+              </div>
+              <IconButton label="关闭" disabled={sessionActionBusy} onClick={() => setMenuSessionId(undefined)}><X size={19} /></IconButton>
+            </header>
+            <div className="session-menu-actions">
+              {onArchiveSession && (
+                menuSession.archivedAt ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={sessionActionBusy}
+                    onClick={() => void archiveSessionById(menuSession.sessionId, false)}
+                  >
+                    <ArchiveRestore size={17} />取消归档
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={sessionActionBusy}
+                    onClick={() => void archiveSessionById(menuSession.sessionId, true)}
+                  >
+                    <Archive size={17} />归档会话
+                  </button>
+                )
+              )}
+              {onDeleteSession && (
+                <button
+                  type="button"
+                  className="secondary-button danger-text"
+                  disabled={sessionActionBusy || menuSessionBusy || Boolean(menuSession.pendingRuntimeHandoff)}
+                  onClick={() => setDeleteSessionConfirmOpen(true)}
+                >
+                  <Trash2 size={17} />删除会话
+                </button>
+              )}
+            </div>
+            {(menuSessionBusy || menuSession.pendingRuntimeHandoff) && onDeleteSession && (
+              <p className="session-menu-hint">任务或接力进行中，先停止再删除。</p>
+            )}
+            {sessionActionError && <p className="session-menu-hint danger-text">{sessionActionError}</p>}
+          </section>
+        </div>
+      )}
+      <ConfirmationDialog
+        open={deleteSessionConfirmOpen && Boolean(menuSession)}
+        title="删除会话"
+        description={`从 Bridge 列表中删除「${menuSession?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
+        confirmLabel="删除会话"
+        danger
+        busy={sessionActionBusy}
+        onCancel={() => setDeleteSessionConfirmOpen(false)}
+        onConfirm={() => menuSession && void deleteSessionById(menuSession.sessionId)}
+      />
 
       {createOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {

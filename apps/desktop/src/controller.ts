@@ -242,6 +242,7 @@ export class DesktopController extends EventEmitter {
   private lastPublishedSessionKey = "";
   private lastDiscoveryRefreshAt = 0;
   private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
+  private publishTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly app: App,
@@ -293,7 +294,7 @@ export class DesktopController extends EventEmitter {
     this.eventLog.on("event", (event: BridgeEvent) => {
       this.emit("event", event);
       void this.broadcast({ kind: "event", event });
-      void this.publish();
+      this.queuePublish();
     });
     this.broker.on("changed", () => void this.publish());
     await this.broker.initialize();
@@ -1580,6 +1581,21 @@ export class DesktopController extends EventEmitter {
       const oldest = this.responseCache.keys().next().value as string | undefined;
       if (oldest) this.responseCache.delete(oldest);
     }
+  }
+
+  /**
+   * Event-driven republish, trailing-debounced: busy streams and startup
+   * storms append dozens of events per second, and rebuilding the full
+   * snapshot per event used to stall the main process. Live updates still
+   * travel per-event over the broadcast channel; this only rebuilds the
+   * snapshot, and 120ms is invisible next to relay latency.
+   */
+  private queuePublish(): void {
+    if (this.publishTimer) return;
+    this.publishTimer = setTimeout(() => {
+      this.publishTimer = undefined;
+      void this.publish();
+    }, 120);
   }
 
   private async publish(): Promise<DesktopControlSnapshot> {

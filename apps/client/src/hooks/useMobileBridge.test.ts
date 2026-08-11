@@ -1,6 +1,7 @@
 import type { BridgeEvent, BridgeHostSnapshot, BridgeResponse, PairingBundle } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  applyEventsToSnapshot,
   applyEventToTurns,
   applyEventToSnapshot,
   applyPermissionEvent,
@@ -670,5 +671,107 @@ describe("provider route events", () => {
       data: { sessionId: "session-1" },
     };
     expect(applyEventToSnapshot(snapshot, deleted, [])?.sessions).toHaveLength(0);
+  });
+
+  it("applies a catch-up batch in one pass with the same outcome as per-event replay", () => {
+    const snapshot: BridgeHostSnapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.7.6",
+        capabilities: [],
+      },
+      projects: [],
+      sessions: [1, 2, 3].map((index) => ({
+        sessionId: `session-${index}`,
+        projectId: "project-1",
+        projectName: "project",
+        cwd: "/tmp/project",
+        title: `任务 ${index}`,
+        source: "bridge" as const,
+        transport: "bridge-host" as const,
+        ownership: "BRIDGE_IDLE" as const,
+        turnState: "idle" as const,
+        lastActivityAt: 1,
+        pendingCount: 0,
+      })),
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 1,
+    } as BridgeHostSnapshot;
+    const events: BridgeEvent[] = [
+      {
+        eventId: "e1",
+        seq: 2,
+        timestamp: 2,
+        origin: "desktop",
+        type: "turn.started",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        data: {},
+      },
+      {
+        eventId: "e2",
+        seq: 3,
+        timestamp: 3,
+        origin: "desktop",
+        type: "session.archived",
+        sessionId: "session-2",
+        data: { sessionId: "session-2", archived: true, archivedAt: 3 },
+      },
+      // Events the snapshot reducer ignores must not disturb the batch.
+      {
+        eventId: "e3",
+        seq: 4,
+        timestamp: 4,
+        origin: "system",
+        type: "session.desktop-registration",
+        sessionId: "session-1",
+        data: { state: "registered" },
+      },
+      {
+        eventId: "e4",
+        seq: 5,
+        timestamp: 5,
+        origin: "desktop",
+        type: "session.deleted",
+        sessionId: "session-3",
+        data: { sessionId: "session-3" },
+      },
+    ];
+
+    const batch = applyEventsToSnapshot(snapshot, events, []);
+    expect(batch.snapshot?.sessions.map((session) => session.sessionId)).toEqual([
+      "session-1",
+      "session-2",
+    ]);
+    expect(batch.snapshot?.sessions[0]).toMatchObject({ turnState: "running", activeTurnId: "turn-1" });
+    expect(batch.snapshot?.sessions[1]?.archivedAt).toBe(3);
+
+    // Final state must equal sequential per-event application.
+    let sequential = snapshot;
+    let sequentialPermissions = snapshot.permissions;
+    for (const event of events) {
+      sequentialPermissions = applyPermissionEvent(sequentialPermissions, event);
+      sequential = applyEventToSnapshot(sequential, event, sequentialPermissions)!;
+    }
+    expect(batch.snapshot?.sessions).toEqual(sequential.sessions);
+    expect(batch.permissions).toEqual(sequentialPermissions);
   });
 });

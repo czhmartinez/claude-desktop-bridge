@@ -206,6 +206,13 @@ describe("ClaudeDesktopSessionRegistrar", () => {
       updatedAt: 200,
     });
     expect(registered.claudePidAtRegistration).toBeUndefined();
+    // Reconciling an already-registered session must be a no-op: minting a
+    // fresh updatedAt here flooded the event log with no-op
+    // session.desktop-registration events after every turn.
+    now = 300;
+    const revisited = await registrar.register(input, registered);
+    expect(revisited).toEqual(registered);
+    expect(registrar.changed(registered, revisited)).toBe(false);
     expect(await registrar.removeOwned(sessionId, registered)).toBe(true);
     await expect(access(metadataPath)).rejects.toMatchObject({ code: "ENOENT" });
   });

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { createInterface } from "node:readline";
 import type {
   BridgeEvent,
   BridgeEventType,
@@ -44,6 +46,20 @@ function isEvent(value: unknown): value is BridgeEvent {
 function textValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
+
+/**
+ * Event types whose latest-per-item payload must survive log compaction:
+ * the transcript observer consults them for edit detection and dedup after
+ * a restart (only the newest ~50 transcript messages per session, but the
+ * lookup spans every message id it has ever seen).
+ */
+const DEDUP_INDEXED_TYPES = new Set<BridgeEventType>([
+  "session.observed",
+  "user.message.accepted",
+  "assistant.completed",
+  "tool.started",
+  "tool.completed",
+]);
 
 function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
   if (!event.sessionId) return undefined;
@@ -130,17 +146,29 @@ export class SessionEventLog extends EventEmitter {
   private writeQueue: Promise<void> = Promise.resolve();
   private nextSeq = 1;
   private initialized = false;
+  private readonly compactBytes: number;
+  private readonly retainEvents: number;
+  private readonly retainBytes: number;
 
   constructor(
     readonly path: string,
     private readonly deltaWindowMs = 80,
+    compaction?: { bytesThreshold?: number; retainEvents?: number; retainBytes?: number },
   ) {
     super();
+    this.compactBytes = compaction?.bytesThreshold ?? 40 * 1024 * 1024;
+    this.retainEvents = compaction?.retainEvents ?? 30_000;
+    this.retainBytes = compaction?.retainBytes ?? 32 * 1024 * 1024;
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
+    const stats = await stat(this.path).catch(() => undefined);
+    if (stats && stats.size > this.compactBytes) {
+      await this.loadWithCompaction(stats.size);
+      return;
+    }
     let raw = "";
     try {
       raw = await readFile(this.path, "utf8");
@@ -164,6 +192,64 @@ export class SessionEventLog extends EventEmitter {
       }
     }
     this.events.sort((left, right) => left.seq - right.seq);
+  }
+
+  /**
+   * Streamed load for oversized logs: scans line by line without holding the
+   * whole file in memory, drops event types that have no replay or history
+   * value (desktop-registration churn, superseded stream deltas), keeps only
+   * a bounded tail, and rewrites the file atomically. The dedup index
+   * (itemKeys + latestItems for history-bearing types) is preserved across
+   * the full scan so transcript-observer dedup survives compaction.
+   */
+  private async loadWithCompaction(fileBytes: number): Promise<void> {
+    const retained: BridgeEvent[] = [];
+    let retainedBytes = 0;
+    let scanned = 0;
+    const reader = createInterface({
+      input: createReadStream(this.path, { encoding: "utf8" }),
+      crlfDelay: Number.POSITIVE_INFINITY,
+    });
+    for await (const line of reader) {
+      if (!line.trim()) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isEvent(parsed)) continue;
+      scanned += 1;
+      this.nextSeq = Math.max(this.nextSeq, parsed.seq + 1);
+      if (parsed.itemId) {
+        const key = `${parsed.sessionId ?? ""}\u001f${parsed.type}\u001f${parsed.itemId}`;
+        this.itemKeys.add(key);
+        if (DEDUP_INDEXED_TYPES.has(parsed.type)) this.latestItems.set(key, parsed);
+      }
+      if (parsed.type === "session.desktop-registration" || parsed.type === "assistant.delta") continue;
+      retained.push(parsed);
+      retainedBytes += line.length + 1;
+    }
+    const overflow = retained.length - this.retainEvents;
+    const events = overflow > 0 ? retained.slice(overflow) : retained;
+    let bytes = retainedBytes;
+    while (events.length && bytes > this.retainBytes) {
+      const removed = events.shift()!;
+      bytes -= JSON.stringify(removed).length + 1;
+    }
+    events.sort((left, right) => left.seq - right.seq);
+    const temporary = `${this.path}.compact-${process.pid}`;
+    await mkdir(dirname(this.path), { recursive: true });
+    await writeFile(temporary, events.map((event) => `${JSON.stringify(event)}\n`).join(""), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await rename(temporary, this.path);
+    this.events.push(...events);
+    console.warn(
+      `[bridge] event log compacted: ${scanned} events / ${Math.round(fileBytes / 1_048_576)} MB`
+        + ` -> ${events.length} events`,
+    );
   }
 
   latestSeq(): number {

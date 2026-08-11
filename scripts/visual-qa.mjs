@@ -513,6 +513,7 @@ const hostSnapshot = {
       "conversation.handoff.v1",
       "permission.policy.v1",
       "runtime.adapter.v1",
+      "session.visibility.v1",
     ],
     defaultPermissionMode: "standard",
   },

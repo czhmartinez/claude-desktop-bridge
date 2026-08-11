@@ -2929,18 +2929,12 @@ button:disabled {
 }
 
 .session-row-v2 {
-  display: grid;
+  display: flex;
   width: 100%;
   min-height: 66px;
-  grid-template-columns: 10px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 11px;
-  padding: 10px 12px;
-  border: 0;
   border-bottom: 1px solid var(--line);
   background: transparent;
-  text-align: left;
-  cursor: pointer;
 }
 
 .session-row-v2:last-child {
@@ -2949,6 +2943,27 @@ button:disabled {
 
 .session-row-v2:hover {
   background: var(--surface-2);
+}
+
+.session-row-hit {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 11px;
+  min-height: 66px;
+  padding: 10px 4px 10px 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-row-action {
+  flex: none;
+  margin-right: 6px;
+  color: var(--faint);
 }
 
 .session-state-dot {
