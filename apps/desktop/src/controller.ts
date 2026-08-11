@@ -292,6 +292,7 @@ export class DesktopController extends EventEmitter {
     if (this.runtimeSessions) {
       this.runtimeSessions.on("changed", () => void this.publish());
       await this.runtimeSessions.initialize();
+      this.runtimeSessions.setHostPermissionModes(this.config.runtimePermissionModes);
     }
     if (this.providers) {
       this.providers.on("updated", (profile) => {
@@ -1196,6 +1197,41 @@ export class DesktopController extends EventEmitter {
       if (scope === "host") {
         if (!mode) throw new Error("Host permission mode is required");
         if (!this.config) throw new Error("Desktop controller is not initialized");
+        const runtimeId = sessionId ? parseRuntimeSessionId(sessionId)?.runtimeId : undefined;
+        if (runtimeId) {
+          // Per-runtime host default: a Codex full-access toggle must not
+          // auto-approve Hermes or Claude sessions on this machine.
+          if (!this.runtimeSessions) throw new Error("External Desktop runtimes are unavailable");
+          this.config.runtimePermissionModes = {
+            ...this.config.runtimePermissionModes,
+            [runtimeId]: mode,
+          };
+          await this.repository.save(this.config);
+          await this.eventLog.append({
+            ...(sessionId ? { sessionId } : {}),
+            origin,
+            type: "permission.policy.changed",
+            data: {
+              scope,
+              mode,
+              effectiveMode: mode,
+              source: "host",
+              runtimeId,
+              changedByDeviceId: actor.deviceId,
+              changedByName: actor.name,
+            },
+          });
+          const resolvedPending = await this.runtimeSessions.setHostPermissionMode(runtimeId, mode);
+          const configuration = sessionId && this.runtimeSessions.session(sessionId)
+            ? await this.runtimeSessions.configuration(sessionId)
+            : undefined;
+          return {
+            resolvedPending,
+            runtimeId,
+            runtimePermissionMode: mode,
+            ...(configuration ? { configuration } : {}),
+          };
+        }
         this.config.defaultPermissionMode = mode;
         await this.repository.save(this.config);
         await this.eventLog.append({
@@ -1224,7 +1260,24 @@ export class DesktopController extends EventEmitter {
       if (!sessionId) throw new Error("sessionId is required");
       if (mode === undefined) throw new Error("mode is required");
       if (this.routesToExternalRuntime(sessionId)) {
-        throw new Error("该权限策略由对应的 Desktop 应用管理。");
+        if (!this.runtimeSessions) throw new Error("External Desktop runtimes are unavailable");
+        const configured = await this.runtimeSessions.configurePermissionPolicy(sessionId, mode);
+        const runtimeId = parseRuntimeSessionId(sessionId)?.runtimeId;
+        await this.eventLog.append({
+          sessionId,
+          origin,
+          type: "permission.policy.changed",
+          data: {
+            scope,
+            mode: mode ?? "inherit",
+            effectiveMode: configured.configuration.permissionPolicy?.effectiveMode ?? "standard",
+            source: configured.configuration.permissionPolicy?.source ?? "host",
+            ...(runtimeId ? { runtimeId } : {}),
+            changedByDeviceId: actor.deviceId,
+            changedByName: actor.name,
+          },
+        });
+        return configured;
       }
       const configured = await this.broker.configurePermissionPolicy(sessionId, mode);
       await this.eventLog.append({

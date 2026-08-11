@@ -5,6 +5,15 @@
   "等待确认接力" progress view with no way to accept. A server-driven `previewed`
   handoff now renders the preview phase with the objective editor and
   确认接力 / 取消接力 actions, so confirming also survives a reload or a second device.
+- Add Claude-style authorization configuration to Codex and Hermes sessions: the session
+  configuration dialog now offers 标准授权 / 完全授权 with 整台电脑 (per-runtime host
+  default, persisted in the desktop config) and 当前会话 (per-session override, persisted
+  in the conversation state store) scopes. Under 完全授权, Bridge auto-approves the
+  runtime's command and file-change approvals with an audited `Bridge 完全授权`
+  resolution and immediately sweeps already-pending approvals; questions still wait for
+  a human answer, and each runtime's host default is independent from Claude's global
+  default and from the other runtime.
+
 - Fix mobile-created Codex and Hermes sessions failing immediately with an unreadable history
   and a failed first message. Both runtimes keep a brand-new session only in memory until its
   first user message: Codex rejects `thread/read`/`thread/resume` for threads without a

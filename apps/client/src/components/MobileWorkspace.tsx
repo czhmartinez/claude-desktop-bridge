@@ -814,7 +814,7 @@ function ToolPermissionPrompt({
     <ConfirmationDialog
       open={confirmFullAccess}
       title="整台电脑启用完全授权"
-      description="Bridge 将自动批准命令和文件修改，并立即处理当前积压；Claude 的提问仍需你回答。"
+      description="Bridge 将自动批准命令和文件修改，并立即处理当前积压；模型提出的提问仍需你回答。"
       confirmLabel="启用完全授权"
       busy={busy}
       onCancel={() => setConfirmFullAccess(false)}

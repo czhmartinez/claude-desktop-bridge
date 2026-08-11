@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BridgeDesktopRuntimeId, BridgePermissionDecision } from "@bridge/protocol";
 import { SessionEventLog } from "./session-event-log.js";
+import { ConversationStateStore } from "./conversation-state-store.js";
 import {
   DesktopRuntimeAdapter,
   RuntimeAdapterRegistry,
@@ -142,6 +143,22 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
       },
     });
   }
+
+  requestQuestion(nativeSessionId: string, requestId: string): void {
+    this.emitRuntimeEvent({
+      type: "permission.requested",
+      permission: {
+        requestId,
+        nativeSessionId,
+        toolUseId: requestId,
+        toolName: "AskUserQuestion",
+        input: { questions: [] },
+        createdAt: Date.now(),
+        canAllowAlways: false,
+        question: true,
+      },
+    });
+  }
 }
 
 describe("RuntimeSessionBroker", () => {
@@ -210,5 +227,167 @@ describe("RuntimeSessionBroker", () => {
     expect(hermes.resolved).toEqual([]);
 
     await broker.close();
+  });
+
+  it("exposes a standard permission policy on runtime session configuration by default", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-broker-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-1");
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      new SessionEventLog(join(directory, "events.jsonl"), 1),
+    );
+    await broker.initialize();
+
+    const sessionId = runtimeSessionId("codex-desktop", "native-1");
+    const configuration = await broker.configuration(sessionId);
+    expect(configuration.permissionPolicy).toEqual({
+      hostMode: "standard",
+      effectiveMode: "standard",
+      source: "host",
+    });
+
+    await broker.close();
+  });
+
+  it("auto-approves non-question approvals for full-access sessions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-broker-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-1");
+    const hermes = new FakeRuntimeAdapter("hermes-desktop", "native-1");
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex, hermes]),
+      new SessionEventLog(join(directory, "events.jsonl"), 1),
+    );
+    await broker.initialize();
+
+    const codexSessionId = runtimeSessionId("codex-desktop", "native-1");
+    const hermesSessionId = runtimeSessionId("hermes-desktop", "native-1");
+    const configured = await broker.configurePermissionPolicy(codexSessionId, "full-access");
+    expect(configured.configuration.permissionPolicy).toEqual({
+      hostMode: "standard",
+      sessionMode: "full-access",
+      effectiveMode: "full-access",
+      source: "session",
+    });
+    expect(configured.resolvedPending).toBe(0);
+
+    codex.requestPermission("native-1", "auto-1");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(codex.resolved).toEqual([{ requestId: "auto-1", decision: "allow-once" }]);
+    expect(broker.listPermissions()).toHaveLength(0);
+
+    // Hermes stays on the standard flow: the approval waits for a human.
+    hermes.requestPermission("native-1", "manual-1");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(broker.listPermissions().map((permission) => permission.sessionId)).toEqual([hermesSessionId]);
+    expect(hermes.resolved).toHaveLength(0);
+
+    // Clearing the override falls back to the runtime host default.
+    const reverted = await broker.configurePermissionPolicy(codexSessionId, null);
+    expect(reverted.configuration.permissionPolicy).toEqual({
+      hostMode: "standard",
+      effectiveMode: "standard",
+      source: "host",
+    });
+
+    await broker.close();
+  });
+
+  it("never auto-approves questions, even under full-access", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-broker-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-1");
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      new SessionEventLog(join(directory, "events.jsonl"), 1),
+    );
+    await broker.initialize();
+
+    const sessionId = runtimeSessionId("codex-desktop", "native-1");
+    await broker.configurePermissionPolicy(sessionId, "full-access");
+    codex.requestQuestion("native-1", "question-1");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(codex.resolved).toHaveLength(0);
+    expect(broker.listPermissions()).toEqual([
+      expect.objectContaining({ requestId: "codex-desktop:question-1", toolName: "AskUserQuestion" }),
+    ]);
+
+    await broker.close();
+  });
+
+  it("applies per-runtime host defaults and sweeps pending approvals", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-broker-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-1");
+    const hermes = new FakeRuntimeAdapter("hermes-desktop", "native-1");
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex, hermes]),
+      new SessionEventLog(join(directory, "events.jsonl"), 1),
+    );
+    await broker.initialize();
+
+    hermes.requestPermission("native-1", "pending-1");
+    codex.requestPermission("native-1", "pending-2");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(broker.listPermissions()).toHaveLength(2);
+
+    // Host default for Hermes sweeps only Hermes pendings; Codex is untouched.
+    const resolved = await broker.setHostPermissionMode("hermes-desktop", "full-access");
+    expect(resolved).toBe(1);
+    expect(hermes.resolved).toEqual([{ requestId: "pending-1", decision: "allow-once" }]);
+    expect(codex.resolved).toHaveLength(0);
+    expect(broker.listPermissions().map((permission) => permission.requestId)).toEqual([
+      "codex-desktop:pending-2",
+    ]);
+
+    const configuration = await broker.configuration(runtimeSessionId("hermes-desktop", "native-1"));
+    expect(configuration.permissionPolicy).toEqual({
+      hostMode: "full-access",
+      effectiveMode: "full-access",
+      source: "host",
+    });
+
+    await broker.close();
+  });
+
+  it("persists session permission overrides in the conversation state store", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-broker-"));
+    directories.push(directory);
+    const store = new ConversationStateStore({
+      databasePath: join(directory, "state.sqlite"),
+      sessionsPath: join(directory, "sessions.json"),
+      queuePath: join(directory, "queue.json"),
+      masterSecret: "test-secret",
+    });
+    await store.initialize();
+
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-1");
+    const first = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      new SessionEventLog(join(directory, "events.jsonl"), 1),
+      store,
+    );
+    await first.initialize();
+    const sessionId = runtimeSessionId("codex-desktop", "native-1");
+    await first.configurePermissionPolicy(sessionId, "full-access");
+    await first.close();
+
+    const reopened = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      new SessionEventLog(join(directory, "events-2.jsonl"), 1),
+      store,
+    );
+    await reopened.initialize();
+    const configuration = await reopened.configuration(sessionId);
+    expect(configuration.permissionPolicy).toEqual({
+      hostMode: "standard",
+      sessionMode: "full-access",
+      effectiveMode: "full-access",
+      source: "session",
+    });
+    await reopened.close();
+    store.close();
   });
 });

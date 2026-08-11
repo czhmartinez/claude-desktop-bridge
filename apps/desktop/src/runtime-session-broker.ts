@@ -8,6 +8,8 @@ import type {
   BridgeHistoryPage,
   BridgePermissionDecision,
   BridgePermissionInfo,
+  BridgePermissionMode,
+  BridgePermissionPolicy,
   BridgeProjectInfo,
   BridgeSessionAllowedActions,
   BridgeSessionConfiguration,
@@ -15,6 +17,7 @@ import type {
   BridgeTurnState,
 } from "@bridge/protocol";
 import type { SessionEventLog } from "./session-event-log.js";
+import type { ConversationStateStore } from "./conversation-state-store.js";
 import {
   type DesktopRuntimeAdapter,
   type RuntimeAdapterEvent,
@@ -83,12 +86,15 @@ function safeTimestamp(value: number | undefined): number {
 export class RuntimeSessionBroker extends EventEmitter {
   private readonly sessionsByRuntime = new Map<BridgeDesktopRuntimeId, Map<string, RuntimeAdapterSession>>();
   private readonly permissions = new Map<string, StoredPermission>();
+  private readonly hostPermissionModes = new Map<BridgeDesktopRuntimeId, BridgePermissionMode>();
+  private readonly sessionPermissionModes = new Map<string, BridgePermissionMode>();
   private eventQueue: Promise<void> = Promise.resolve();
   private initialized = false;
 
   constructor(
     readonly registry: RuntimeAdapterRegistry,
     private readonly eventLog: SessionEventLog,
+    private readonly state?: ConversationStateStore,
   ) {
     super();
     registry.on("changed", () => {
@@ -113,6 +119,11 @@ export class RuntimeSessionBroker extends EventEmitter {
   async initialize(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
+    if (this.state) {
+      for (const row of this.state.listRuntimeSessionPermissions()) {
+        if (parseRuntimeSessionId(row.sessionId)) this.sessionPermissionModes.set(row.sessionId, row.permissionMode);
+      }
+    }
     await this.registry.initialize();
     this.syncCachedSessions();
     this.emit("changed");
@@ -254,6 +265,74 @@ export class RuntimeSessionBroker extends EventEmitter {
     });
     this.emit("changed");
     return this.toBridgeConfiguration(sessionId, configuration);
+  }
+
+  /**
+   * Host-level defaults are per runtime: flipping Codex into full-access must
+   * never silently auto-approve Hermes or Claude sessions on the same machine.
+   */
+  setHostPermissionModes(modes: Partial<Record<BridgeDesktopRuntimeId, BridgePermissionMode>>): void {
+    this.hostPermissionModes.clear();
+    for (const [runtimeId, mode] of Object.entries(modes)) {
+      if (runtimeId !== "codex-desktop" && runtimeId !== "hermes-desktop") continue;
+      if (mode !== "standard" && mode !== "full-access") continue;
+      this.hostPermissionModes.set(runtimeId, mode);
+    }
+  }
+
+  async setHostPermissionMode(runtimeId: BridgeDesktopRuntimeId, mode: BridgePermissionMode): Promise<number> {
+    if (mode !== "standard" && mode !== "full-access") throw new Error("Invalid permission mode");
+    this.hostPermissionModes.set(runtimeId, mode);
+    const resolved = await this.applyPolicy({ runtimeId });
+    this.emit("changed");
+    return resolved;
+  }
+
+  permissionPolicy(sessionId: string): BridgePermissionPolicy | undefined {
+    const parsed = parseRuntimeSessionId(sessionId);
+    if (!parsed) return undefined;
+    const hostMode = this.hostPermissionModes.get(parsed.runtimeId) ?? "standard";
+    const sessionMode = this.sessionPermissionModes.get(sessionId);
+    return {
+      hostMode,
+      ...(sessionMode ? { sessionMode } : {}),
+      effectiveMode: sessionMode ?? hostMode,
+      source: sessionMode ? "session" : "host",
+    };
+  }
+
+  async configurePermissionPolicy(
+    sessionId: string,
+    mode: BridgePermissionMode | null,
+  ): Promise<{ configuration: BridgeSessionConfiguration; resolvedPending: number }> {
+    this.requireSession(sessionId);
+    if (mode !== null && mode !== "standard" && mode !== "full-access") {
+      throw new Error("Invalid permission mode");
+    }
+    if (mode) this.sessionPermissionModes.set(sessionId, mode);
+    else this.sessionPermissionModes.delete(sessionId);
+    this.state?.saveRuntimeSessionPermission(sessionId, mode);
+    const resolvedPending = await this.applyPolicy({ sessionId });
+    this.emit("changed");
+    return { configuration: await this.configuration(sessionId), resolvedPending };
+  }
+
+  /**
+   * Auto-approve every pending non-question approval covered by a full-access
+   * policy; mirrors the Claude permission broker's policy sweep. Questions
+   * (AskUserQuestion / clarify) always wait for a human answer.
+   */
+  async applyPolicy(filter: { sessionId?: string; runtimeId?: BridgeDesktopRuntimeId } = {}): Promise<number> {
+    let resolved = 0;
+    for (const [requestId, pending] of [...this.permissions]) {
+      if (filter.sessionId && pending.info.sessionId !== filter.sessionId) continue;
+      if (filter.runtimeId && pending.adapter.id !== filter.runtimeId) continue;
+      if (pending.info.toolName === "AskUserQuestion") continue;
+      if (this.permissionPolicy(pending.info.sessionId)?.effectiveMode !== "full-access") continue;
+      if (await this.autoResolve(requestId, pending)) resolved += 1;
+    }
+    if (resolved > 0) this.emit("changed");
+    return resolved;
   }
 
   async startTurn(input: {
@@ -429,6 +508,7 @@ export class RuntimeSessionBroker extends EventEmitter {
     sessionId: string,
     configuration: RuntimeAdapterConfiguration,
   ): BridgeSessionConfiguration {
+    const permissionPolicy = this.permissionPolicy(sessionId);
     return {
       sessionId,
       ...(configuration.provider ? { provider: configuration.provider } : {}),
@@ -445,6 +525,7 @@ export class RuntimeSessionBroker extends EventEmitter {
       supportsFastMode: configuration.supportsFastMode,
       modelsComplete: configuration.modelsComplete,
       appliesAfterTurn: configuration.appliesAfterTurn,
+      ...(permissionPolicy ? { permissionPolicy } : {}),
     };
   }
 
@@ -514,12 +595,13 @@ export class RuntimeSessionBroker extends EventEmitter {
       ...(permission.displayName ? { displayName: permission.displayName } : {}),
       ...(permission.description ? { description: permission.description } : {}),
     };
-    this.permissions.set(requestId, {
+    const stored: StoredPermission = {
       adapter,
       nativeRequestId: permission.requestId,
       nativeSessionId: permission.nativeSessionId,
       info,
-    });
+    };
+    this.permissions.set(requestId, stored);
     const session = this.sessionsByRuntime.get(runtimeId)?.get(permission.nativeSessionId);
     if (session) {
       session.turnState = "waiting";
@@ -545,7 +627,46 @@ export class RuntimeSessionBroker extends EventEmitter {
         runtimeId,
       },
     });
+    // Full-access sessions never surface an approval prompt: non-question
+    // requests are approved immediately, exactly like Claude's policy sweep.
+    if (
+      !permission.question &&
+      this.permissionPolicy(sessionId)?.effectiveMode === "full-access" &&
+      (await this.autoResolve(requestId, stored))
+    ) {
+      this.emit("changed");
+      return;
+    }
     this.emit("changed");
+  }
+
+  private async autoResolve(requestId: string, pending: StoredPermission): Promise<boolean> {
+    const resolved = await pending.adapter
+      .resolvePermission(pending.nativeRequestId, "allow-once")
+      .catch(() => false);
+    if (!resolved) return false;
+    this.permissions.delete(requestId);
+    const session = this.sessionsByRuntime.get(pending.adapter.id)?.get(pending.nativeSessionId);
+    if (session && session.turnState === "waiting") {
+      session.turnState = "running";
+      this.upsert(pending.adapter.id, session);
+    }
+    await this.eventLog.append({
+      sessionId: pending.info.sessionId,
+      itemId: requestId,
+      origin: originFor(pending.adapter.id),
+      type: "permission.resolved",
+      data: {
+        requestId,
+        decision: "allow-once",
+        runtimeId: pending.adapter.id,
+        resolvedAt: Date.now(),
+        automatic: true,
+        resolvedByName: "Bridge 完全授权",
+        reason: "policy-full-access",
+      },
+    });
+    return true;
   }
 
   private toBridgeEvent(event: Exclude<RuntimeAdapterEvent, { type: "session.updated" } | { type: "permission.requested" } | { type: "goal.updated" } | { type: "goal.cleared" }>): {

@@ -13,10 +13,21 @@ import {
   selectBridgeEndpoint,
   type BridgeEndpoint,
   type BridgeIceServer,
+  type BridgeDesktopRuntimeId,
   type BridgePermissionMode,
 } from "@bridge/protocol";
 
 const CONFIG_VERSION = 4 as const;
+
+export type RuntimePermissionModes = Partial<Record<BridgeDesktopRuntimeId, BridgePermissionMode>>;
+
+function isRuntimePermissionModes(value: unknown): value is RuntimePermissionModes {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([runtimeId, mode]) => (
+    (runtimeId === "codex-desktop" || runtimeId === "hermes-desktop") &&
+    (mode === "standard" || mode === "full-access")
+  ));
+}
 
 export interface SecretProtector {
   available(): boolean;
@@ -109,6 +120,7 @@ interface DesktopConfigFileV4 extends Omit<DesktopConfigFileV3, "version" | "pro
   pairingEpoch: number;
   protectedEvidenceKey?: string;
   defaultPermissionMode?: BridgePermissionMode;
+  runtimePermissionModes?: RuntimePermissionModes;
 }
 
 type DesktopConfigFile = DesktopConfigFileV2 | DesktopConfigFileV3 | DesktopConfigFileV4;
@@ -146,6 +158,7 @@ export interface LoadedDesktopConfig {
   launchAtLogin: boolean;
   managedDesktopEnabled: boolean;
   defaultPermissionMode: BridgePermissionMode;
+  runtimePermissionModes: RuntimePermissionModes;
   devices: LoadedDeviceConfig[];
 }
 
@@ -192,6 +205,7 @@ function assertConfig(value: unknown): DesktopConfigFile {
     launchAtLogin?: unknown;
     managedDesktopEnabled?: unknown;
     defaultPermissionMode?: unknown;
+    runtimePermissionModes?: unknown;
     devices?: unknown;
   };
   if (
@@ -232,6 +246,10 @@ function assertConfig(value: unknown): DesktopConfigFile {
         config.defaultPermissionMode !== undefined &&
         config.defaultPermissionMode !== "standard" &&
         config.defaultPermissionMode !== "full-access"
+      ) ||
+      (
+        config.runtimePermissionModes !== undefined &&
+        !isRuntimePermissionModes(config.runtimePermissionModes)
       )
     )
   ) throw new Error("Desktop pairing epoch is invalid");
@@ -439,6 +457,7 @@ export class DesktopConfigRepository {
         launchAtLogin: config.launchAtLogin,
         managedDesktopEnabled: false,
         defaultPermissionMode: "standard",
+        runtimePermissionModes: {},
         devices: [],
       };
       await this.save(migrated);
@@ -466,6 +485,7 @@ export class DesktopConfigRepository {
       // The unsupported managed Desktop experiment remains disabled during upgrade.
       managedDesktopEnabled: false,
       defaultPermissionMode: config.defaultPermissionMode ?? "standard",
+      runtimePermissionModes: config.runtimePermissionModes ?? {},
       devices: config.devices.map((device) => loadDevice(device, this.protector)),
     };
     if (!config.protectedEvidenceKey) await this.save(loaded);
@@ -508,6 +528,7 @@ export class DesktopConfigRepository {
       launchAtLogin,
       managedDesktopEnabled: false,
       defaultPermissionMode: "standard",
+      runtimePermissionModes: {},
       devices: [],
     };
     await this.save(loaded);
@@ -536,6 +557,9 @@ export class DesktopConfigRepository {
       launchAtLogin: config.launchAtLogin,
       managedDesktopEnabled: config.managedDesktopEnabled,
       defaultPermissionMode: config.defaultPermissionMode,
+      ...(Object.keys(config.runtimePermissionModes).length
+        ? { runtimePermissionModes: config.runtimePermissionModes }
+        : {}),
       devices: config.devices.map((device) => ({
         deviceId: device.deviceId,
         name: device.name,

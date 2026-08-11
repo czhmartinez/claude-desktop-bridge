@@ -199,7 +199,7 @@ async function desktopMain(): Promise<void> {
     new CodexAppServerAdapter(),
     new HermesGatewayAdapter(),
   ]);
-  const runtimeSessions = new RuntimeSessionBroker(runtimeRegistry, eventLog);
+  const runtimeSessions = new RuntimeSessionBroker(runtimeRegistry, eventLog, conversationState);
   const handoffs = new HandoffService({
     state: conversationState,
     broker,

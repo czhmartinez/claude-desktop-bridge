@@ -107,6 +107,11 @@ export function SessionConfigurationDialog({
       ? configuration.availableReasoningEfforts
       : configuration?.availableEffortLevels ?? ["low", "medium", "high", "xhigh", "max"];
   const nativeRuntime = session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop";
+  const runtimeName = session.runtimeId === "codex-desktop"
+    ? "Codex"
+    : session.runtimeId === "hermes-desktop"
+      ? "Hermes"
+      : "Claude";
   const fastSupported = Boolean(configuration?.supportsFastMode && selectedModel?.supportsFast !== false);
 
   function chooseModel(value: string): void {
@@ -385,8 +390,10 @@ export function SessionConfigurationDialog({
         open={confirmFullAccess}
         title="启用完全授权"
         description={permissionScope === "host"
-          ? "这台电脑上的 Bridge 会话将自动批准命令和文件修改；Claude 的提问仍需你回答。"
-          : "当前会话将自动批准命令和文件修改；Claude 的提问仍需你回答。"}
+          ? nativeRuntime
+            ? `这台电脑上的 ${runtimeName} 会话将自动批准命令和文件修改；${runtimeName} 的提问仍需你回答。`
+            : "这台电脑上的 Bridge 会话将自动批准命令和文件修改；Claude 的提问仍需你回答。"
+          : `当前会话将自动批准命令和文件修改；${runtimeName} 的提问仍需你回答。`}
         confirmLabel="启用完全授权"
         busy={savingPermission}
         onCancel={() => setConfirmFullAccess(false)}

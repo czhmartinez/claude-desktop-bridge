@@ -121,6 +121,29 @@ describe("desktop configuration", () => {
     });
   });
 
+  it("persists per-runtime permission modes across restarts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await repository.loadOrCreate();
+    expect(created.runtimePermissionModes).toEqual({});
+
+    created.runtimePermissionModes = { "codex-desktop": "full-access" };
+    await repository.save(created);
+
+    expect((await repository.load())?.runtimePermissionModes).toEqual({
+      "codex-desktop": "full-access",
+    });
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      version: 4,
+      runtimePermissionModes: { "codex-desktop": "full-access" },
+    });
+  });
+
   it("refreshes a stale LAN relay address without rotating pairing secrets", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);

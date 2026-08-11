@@ -193,7 +193,8 @@ GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签
   图片附件与模型、provider、思考强度和快速模式配置只在相应 adapter 声明支持时开放；Codex/Hermes
   的这些会话级设置由 Bridge 转发给各自 Desktop，账号、token、keychain 和其他全局配置仍由原生 Desktop 管理。
 - 电脑默认与单会话授权模式、切换后立即处理待授权队列、自动批准审计，以及
-  `AskUserQuestion` 始终等待用户回答。
+  `AskUserQuestion` 始终等待用户回答。Claude 会话使用全局电脑默认；Codex 与 Hermes
+  会话使用各自运行时的电脑默认（互不影响），授权请求由 Bridge 在完全授权下立即自动批准。
 - 手机后台、网络恢复和推送唤醒统一重连 `events.resume`；进程重启后恢复最近主机、
   会话和去重后的完成事件。
 - 稳定逻辑对话 ID、每对话多 lane 单活动路由、手动接力状态机，以及 Desktop /

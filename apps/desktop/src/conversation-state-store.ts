@@ -16,6 +16,7 @@ import type {
   BridgeProviderKind,
   BridgeProviderProfile,
   BridgeRouteState,
+  BridgePermissionMode,
   BridgeRuntimeHandoff,
   BridgeRuntimeHandoffState,
   BridgeRuntimeGoalInfo,
@@ -145,6 +146,12 @@ export interface StoredRuntimeGoal extends BridgeRuntimeGoalInfo {
   handoffId: string;
   runtimeId: BridgeDesktopRuntimeId;
   nativeSessionId: string;
+}
+
+export interface StoredRuntimeSessionPermission {
+  sessionId: string;
+  permissionMode: BridgePermissionMode;
+  updatedAt: number;
 }
 
 function defaultProviderProfiles(): BridgeProviderProfile[] {
@@ -493,6 +500,12 @@ export class ConversationStateStore {
         detail TEXT,
         updated_at INTEGER NOT NULL,
         FOREIGN KEY (handoff_id) REFERENCES runtime_handoffs(id)
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS runtime_session_permissions (
+        session_id TEXT PRIMARY KEY,
+        permission_mode TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       ) STRICT;
     `);
     database.prepare(`
@@ -1035,9 +1048,43 @@ export class ConversationStateStore {
           ORDER BY updated_at ASC, session_id ASC
         `).all(...statuses) as SqlRow[]
       : this.db.prepare(
-          "SELECT * FROM runtime_goals ORDER BY updated_at ASC, session_id ASC",
-        ).all() as SqlRow[];
+         "SELECT * FROM runtime_goals ORDER BY updated_at ASC, session_id ASC",
+       ).all() as SqlRow[];
     return rows.map(runtimeGoalFromRow);
+  }
+
+  saveRuntimeSessionPermission(
+    sessionId: string,
+    permissionMode: BridgePermissionMode | null,
+  ): void {
+    if (permissionMode === null) {
+      this.db.prepare("DELETE FROM runtime_session_permissions WHERE session_id = ?").run(sessionId);
+      return;
+    }
+    this.db.prepare(`
+      INSERT INTO runtime_session_permissions(session_id, permission_mode, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        permission_mode = excluded.permission_mode,
+        updated_at = excluded.updated_at
+    `).run(sessionId, permissionMode, Date.now());
+  }
+
+  listRuntimeSessionPermissions(): StoredRuntimeSessionPermission[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM runtime_session_permissions ORDER BY updated_at ASC, session_id ASC",
+    ).all() as SqlRow[];
+    const permissions: StoredRuntimeSessionPermission[] = [];
+    for (const row of rows) {
+      const mode = String(row.permission_mode);
+      if (mode !== "standard" && mode !== "full-access") continue;
+      permissions.push({
+        sessionId: String(row.session_id),
+        permissionMode: mode,
+        updatedAt: Number(row.updated_at),
+      });
+    }
+    return permissions;
   }
 
   loadBrokerState(): ConversationBrokerState {
