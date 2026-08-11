@@ -53,6 +53,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "../hooks/useTheme.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact } from "../lib/artifact-download.js";
+import { useStreamEntrance } from "../lib/stream-entrance.js";
 import {
   collapseProjects,
   expandAllProjects,
@@ -243,6 +244,10 @@ function DesktopSessions({
     () => conversationTimeline(items, selectedEvidence?.items ?? []),
     [items, selectedEvidence?.items],
   );
+  const streamKeys = useMemo(() => timeline.map((entry) => (
+    entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
+  )), [timeline]);
+  const streamEntering = useStreamEntrance(selectedId, streamKeys);
   const grouped = useMemo(() => {
     const map = new Map<string, BridgeSessionInfo[]>();
     for (const session of snapshot.sessions.filter((candidate) => (
@@ -331,9 +336,29 @@ function DesktopSessions({
     setSelectedId(snapshot.sessions[0]?.sessionId);
   }, [selectedId, snapshot.sessions]);
 
+  const streamScrollState = useRef<{ sessionId: string | undefined; count: number }>({
+    sessionId: undefined,
+    count: 0,
+  });
   useEffect(() => {
-    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight });
-  }, [items.length]);
+    const stream = streamRef.current;
+    if (!stream) return;
+    const previous = streamScrollState.current;
+    streamScrollState.current = { sessionId: selectedId, count: streamKeys.length };
+    const jump = () => stream.scrollTo({ top: stream.scrollHeight });
+    // Session switch or a bulk (re)load lands at the bottom instantly.
+    if (previous.sessionId !== selectedId || streamKeys.length - previous.count > 6) {
+      jump();
+      return;
+    }
+    // Live appends and streaming text growth follow smoothly only while the
+    // user is pinned to the bottom; scrolling up to read must never yank
+    // the view back down.
+    const pinnedToBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
+    if (!pinnedToBottom) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    stream.scrollTo({ top: stream.scrollHeight, behavior: reduced ? "auto" : "smooth" });
+  }, [streamKeys, selectedId]);
 
   async function openSession(sessionId: string): Promise<void> {
     setHistory((current) => ({
@@ -1150,10 +1175,14 @@ function DesktopSessions({
                 <EvidenceInlineSummary
                   evidence={entry.evidence}
                   key={`evidence:${entry.evidence.id}`}
+                  entering={streamEntering(`evidence:${entry.evidence.id}`)}
                   onOpen={() => setSessionView("evidence")}
                 />
               ) : (
-                <article className={`conversation-item ${entry.item.role}`} key={entry.item.id}>
+                <article
+                  className={`conversation-item ${entry.item.role}${streamEntering(entry.item.id) ? " is-entering" : ""}`}
+                  key={entry.item.id}
+                >
                   <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
                   <div className="conversation-text">{entry.item.text}</div>
                 </article>

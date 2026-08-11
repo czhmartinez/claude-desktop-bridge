@@ -24,6 +24,8 @@
   --shadow: 0 12px 30px rgba(20, 24, 25, 0.08);
   --radius: 8px;
   --transition: 150ms ease;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --t-enter: 200ms;
 }
 
 [data-theme="dark"] {
@@ -3662,6 +3664,45 @@ button:disabled {
   position: relative;
   width: min(88%, 620px);
   margin-bottom: 13px;
+}
+
+/* Live-stream entrance: the .is-entering class is applied by StreamEntrance
+   only to items that arrive after the view's first paint, so history loads
+   never replay this. transform/opacity only, ease-out per motion tokens. */
+@keyframes stream-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.conversation-item.is-entering,
+.evidence-inline-summary.is-entering {
+  animation: stream-item-in var(--t-enter) var(--ease-out);
+}
+
+/* Banners and permission prompts mount only when their state appears, so a
+   plain mount animation is safe here (no tracker needed). */
+@keyframes stream-banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.permission-prompt,
+.desktop-channel-banner,
+.session-channel-warning,
+.relay-chain-bar {
+  animation: stream-banner-in 180ms var(--ease-out);
 }
 
 .conversation-item.user {

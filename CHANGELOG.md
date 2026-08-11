@@ -1,3 +1,14 @@
+## 0.7.5
+
+- Give the conversation stream motion: newly arrived messages, tool lines and evidence
+  summaries rise in with a 200ms ease-out transform/opacity entrance, while permission
+  prompts and status banners fade-slide on mount. A shared `StreamEntrance` tracker
+  guarantees the initial history load and bulk "load older" prepends never replay
+  entrance animations, and reduced-motion users keep the existing instant behavior.
+  Auto-scroll is now pin-aware on both clients: the view follows new content smoothly
+  only while you are at the bottom (streaming text included), scrolling up to read is
+  never yanked back down, and loading older history keeps the reading position anchored.
+
 ## 0.7.4
 
 - Add session archive and delete on desktop and mobile behind the additive

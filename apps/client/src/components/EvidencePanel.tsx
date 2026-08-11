@@ -72,12 +72,14 @@ function changeLabel(value: BridgeArtifactManifest["changeKind"]): string {
 export function EvidenceInlineSummary({
   evidence,
   onOpen,
+  entering = false,
 }: {
   evidence: BridgeEvidenceBundle;
   onOpen(): void;
+  entering?: boolean;
 }) {
   return (
-    <button type="button" className={`evidence-inline-summary ${evidence.confidence}`} onClick={onOpen}>
+    <button type="button" className={`evidence-inline-summary ${evidence.confidence}${entering ? " is-entering" : ""}`} onClick={onOpen}>
       <span className="evidence-inline-icon">
         {evidence.state === "collecting"
           ? <LoaderCircle className="is-spinning" size={17} />

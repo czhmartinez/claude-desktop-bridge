@@ -54,7 +54,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   LocalTurn,
   MobileConnectionIssue,
@@ -69,6 +69,7 @@ import {
   toggleCollapsedProject,
 } from "../lib/project-groups.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
+import { useStreamEntrance } from "../lib/stream-entrance.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
@@ -1017,6 +1018,14 @@ export function MobileWorkspace({
   const [quitDesktopTarget, setQuitDesktopTarget] = useState<BridgeDesktopRuntimeId>();
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
   const endRef = useRef<HTMLDivElement>(null);
+  const streamRef = useRef<HTMLElement>(null);
+  const streamScrollState = useRef<{
+    sessionId: string | undefined;
+    count: number;
+    firstKey: string | undefined;
+    lastKey: string | undefined;
+    height: number;
+  }>({ sessionId: undefined, count: 0, firstKey: undefined, lastKey: undefined, height: 0 });
   const fileRef = useRef<HTMLInputElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
   const restoredSessionRef = useRef(false);
@@ -1042,6 +1051,10 @@ export function MobileWorkspace({
     () => conversationTimeline(items, selectedEvidence?.items ?? []),
     [items, selectedEvidence?.items],
   );
+  const streamKeys = useMemo(() => timeline.map((entry) => (
+    entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
+  )), [timeline]);
+  const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const filtered = sessions.filter((session) => (
@@ -1147,10 +1160,42 @@ export function MobileWorkspace({
     selectedSessionId,
   ]);
 
-  useEffect(() => {
-    if (!selectedSessionId) return;
-    endRef.current?.scrollIntoView({ block: "end" });
-  }, [items.length, selectedSessionId]);
+  useLayoutEffect(() => {
+    const stream = streamRef.current;
+    if (!stream || !selectedSessionId) return;
+    const firstKey = streamKeys[0];
+    const lastKey = streamKeys[streamKeys.length - 1];
+    const previous = streamScrollState.current;
+    streamScrollState.current = {
+      sessionId: selectedSessionId,
+      count: streamKeys.length,
+      firstKey,
+      lastKey,
+      height: stream.scrollHeight,
+    };
+    const jump = () => endRef.current?.scrollIntoView({ block: "end" });
+    if (previous.sessionId !== selectedSessionId) {
+      jump();
+      return;
+    }
+    const added = streamKeys.length - previous.count;
+    // Older history prepended above: keep the reading position anchored.
+    if (added > 0 && firstKey !== previous.firstKey && lastKey === previous.lastKey) {
+      stream.scrollTop += stream.scrollHeight - previous.height;
+      return;
+    }
+    // A bulk (re)load lands at the bottom instantly.
+    if (added > 6) {
+      jump();
+      return;
+    }
+    // Live appends and streaming text growth follow smoothly only while
+    // pinned to the bottom; reading higher up is never interrupted.
+    const pinnedToBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
+    if (!pinnedToBottom) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    endRef.current?.scrollIntoView({ block: "end", behavior: reduced ? "auto" : "smooth" });
+  }, [streamKeys, selectedSessionId]);
 
   useEffect(() => {
     if (search.trim()) setCollapsedProjectIds(new Set());
@@ -1557,7 +1602,7 @@ export function MobileWorkspace({
         </div>
 
         {sessionView === "conversation" ? (
-        <section className="conversation-stream" aria-live="polite">
+        <section className="conversation-stream" aria-live="polite" ref={streamRef}>
           {selectedHistory?.hasMore && (
             <button
               type="button"
@@ -1588,10 +1633,14 @@ export function MobileWorkspace({
             <EvidenceInlineSummary
               evidence={entry.evidence}
               key={`evidence:${entry.evidence.id}`}
+              entering={streamEntering(`evidence:${entry.evidence.id}`)}
               onOpen={() => setSessionView("evidence")}
             />
           ) : (
-            <article className={`conversation-item ${entry.item.role} ${entry.item.live ? "live" : ""}`} key={entry.item.id}>
+            <article
+              className={`conversation-item ${entry.item.role} ${entry.item.live ? "live" : ""}${streamEntering(entry.item.id) ? " is-entering" : ""}`}
+              key={entry.item.id}
+            >
               <div className="conversation-item-meta">
                 <strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? runtimeName : entry.item.role === "tool" ? entry.item.toolName : "Bridge"}</strong>
                 <time>{formatTime(entry.item.createdAt)}</time>
