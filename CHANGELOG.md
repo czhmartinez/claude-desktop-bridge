@@ -1,3 +1,11 @@
+## 0.7.7
+
+- Add a composer-level liveness indicator on desktop and mobile: while a session is
+  queued or running, a line above the input box shows pulsing dots, the current
+  activity (排队等待中 / 思考中 / 正在生成回复 / 正在运行 · tool) and a ticking
+  elapsed-time counter — so a silent stretch is visibly "still working" instead of
+  looking interrupted, and the line disappearing means the turn settled.
+
 ## 0.7.6
 
 - Fix the reconnect slowdown that forced re-pairing: a no-op metadata rewrite in the

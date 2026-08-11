@@ -70,6 +70,7 @@ import {
 } from "../lib/project-groups.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
+import { sessionActivity } from "../lib/session-activity.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
@@ -85,6 +86,7 @@ import {
   type ProviderSwitchResult,
 } from "./ProviderSwitchDialog.js";
 import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
+import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
 
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
@@ -1055,6 +1057,7 @@ export function MobileWorkspace({
     entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
+  const activity = useMemo(() => sessionActivity(selectedSession, items), [selectedSession, items]);
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const filtered = sessions.filter((session) => (
@@ -1671,6 +1674,8 @@ export function MobileWorkspace({
         )}
 
         {sessionView === "conversation" && (
+        <>
+        <SessionActivityIndicator activity={activity} />
         <section className="mobile-composer">
           {officialActive ? (
             <button
@@ -1754,6 +1759,7 @@ export function MobileWorkspace({
           </>
           )}
         </section>
+        </>
         )}
         {providerOpen && providerSwitchingAvailable && (
           <ProviderSwitchDialog

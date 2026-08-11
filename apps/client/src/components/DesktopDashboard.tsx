@@ -86,6 +86,8 @@ import {
   type ProviderSwitchResult,
 } from "./ProviderSwitchDialog.js";
 import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
+import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
+import { sessionActivity } from "../lib/session-activity.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -248,6 +250,7 @@ function DesktopSessions({
     entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedId, streamKeys);
+  const activity = useMemo(() => sessionActivity(selected, items), [selected, items]);
   const grouped = useMemo(() => {
     const map = new Map<string, BridgeSessionInfo[]>();
     for (const session of snapshot.sessions.filter((candidate) => (
@@ -1232,6 +1235,8 @@ function DesktopSessions({
               </div>
             )}
             {sessionView === "conversation" && (
+            <>
+            <SessionActivityIndicator activity={activity} />
             <div className="desktop-composer">
               {officialActive ? (
                 <button
@@ -1279,6 +1284,7 @@ function DesktopSessions({
               </>
               )}
             </div>
+            </>
             )}
           </>
         ) : (
