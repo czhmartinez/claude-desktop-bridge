@@ -1,3 +1,24 @@
+## 0.7.8
+
+- Make session tool actions a first-class strip on mobile: provider, relay, model/effort
+  configuration, stop and sync now live in a horizontally scrollable chip bar under the
+  conversation title instead of competing for topbar icon space, so every runtime shows
+  the buttons it actually supports (Claude gets configuration, Codex/Hermes get provider,
+  and static placeholders disappear).
+- Fix a runtime action gap that made Claude sessions look incomplete: desktop-observed
+  Claude sessions without route-level actions now inherit canConfigure by default instead
+  of dropping the model/effort/permission configuration button.
+- Enable image attachments for Codex sessions: the app-server capability now advertises
+  attachment.image, mobile uploads are materialized into host-side temp files and sent as
+  localImage turn input items (turn/start and turn/steer), and the accepted event echoes
+  the attachments so the sender renders immediately.
+- Render conversation images on both clients: history attachments can now carry base64
+  image data (Codex thread items store host paths, so the adapter reads the files at
+  history time and fills data), and desktop/mobile show real <img> previews instead of
+  bare file names or paths; transports that cannot replay bytes (Claude transcripts) keep
+  a name chip.
+
+## 0.7.7
 ## 0.7.7
 
 - Add a composer-level liveness indicator on desktop and mobile: while a session is

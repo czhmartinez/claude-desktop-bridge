@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
-import { basename } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import type {
+  BridgeAttachment,
   BridgeDesktopRuntime,
   BridgeDesktopRuntimeId,
   BridgeEventType,
@@ -85,6 +89,7 @@ function safeTimestamp(value: number | undefined): number {
 
 export class RuntimeSessionBroker extends EventEmitter {
   private readonly sessionsByRuntime = new Map<BridgeDesktopRuntimeId, Map<string, RuntimeAdapterSession>>();
+  private readonly imageDirs = new Map<string, string>();
   private readonly permissions = new Map<string, StoredPermission>();
   private readonly hostPermissionModes = new Map<BridgeDesktopRuntimeId, BridgePermissionMode>();
   private readonly sessionPermissionModes = new Map<string, BridgePermissionMode>();
@@ -341,6 +346,7 @@ export class RuntimeSessionBroker extends EventEmitter {
    * re-discovered native copy hidden from Bridge.
    */
   removeSessionRecords(sessionId: string): void {
+    void this.cleanupImages(sessionId);
     if (this.sessionPermissionModes.delete(sessionId)) {
       this.state?.saveRuntimeSessionPermission(sessionId, null);
     }
@@ -355,6 +361,7 @@ export class RuntimeSessionBroker extends EventEmitter {
     text: string;
     commandId: string;
     requestId: string;
+    attachments?: BridgeAttachment[];
     sourceDeviceId?: string;
     steer?: boolean;
   }): Promise<{ commandId: string; state: "queued" | "running" }> {
@@ -362,11 +369,13 @@ export class RuntimeSessionBroker extends EventEmitter {
     const capabilities = adapter.status().capabilities;
     const operation = input.steer ? "turn.steer" : "turn.start";
     if (!capabilities.includes(operation)) throw new Error(`${adapter.status().name} 暂不支持该操作`);
+    const images = await this.materializeImages(input.sessionId, adapter, input.attachments ?? []);
     const payload = {
       nativeSessionId,
       text: input.text,
       commandId: input.commandId,
       requestId: input.requestId,
+      ...(images.length ? { images } : {}),
       ...(input.sourceDeviceId ? { sourceDeviceId: input.sourceDeviceId } : {}),
     };
     const result = input.steer ? await adapter.steerTurn(payload) : await adapter.startTurn(payload);
@@ -383,7 +392,13 @@ export class RuntimeSessionBroker extends EventEmitter {
       itemId: input.commandId,
       origin: originFor(adapter.id),
       type: "user.message.accepted",
-      data: { text: input.text, commandId: input.commandId, requestId: input.requestId, runtimeId: adapter.id },
+      data: {
+        text: input.text,
+        commandId: input.commandId,
+        requestId: input.requestId,
+        runtimeId: adapter.id,
+        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+      },
     });
     await this.eventLog.append({
       sessionId: input.sessionId,
@@ -457,6 +472,7 @@ export class RuntimeSessionBroker extends EventEmitter {
   }
 
   async close(): Promise<void> {
+    await Promise.allSettled([...this.imageDirs.keys()].map((sessionId) => this.cleanupImages(sessionId)));
     await this.registry.close();
   }
 
@@ -544,6 +560,43 @@ export class RuntimeSessionBroker extends EventEmitter {
     };
   }
 
+
+  /**
+   * Codex consumes localImage turn items as host paths, but mobile uploads
+   * arrive as base64 BridgeAttachments. Materialize them into a private temp
+   * directory for the duration of the turn and remove it once the turn
+   * settles (or the broker closes).
+   */
+  private async materializeImages(
+    sessionId: string,
+    adapter: DesktopRuntimeAdapter,
+    attachments: BridgeAttachment[],
+  ): Promise<string[]> {
+    const images = attachments.filter((attachment) => (
+      attachment.mimeType.startsWith("image/") && attachment.data.length > 0
+    ));
+    if (!images.length) return [];
+    const directory = join(tmpdir(), `bridge-${adapter.id}-${randomUUID()}`);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    this.imageDirs.set(sessionId, directory);
+    const paths: string[] = [];
+    for (const image of images) {
+      const extension = image.mimeType.split("/")[1] ?? "bin";
+      const safeName = basename(image.name).replace(/[^\w.\-]/gu, "_") || `image.${extension}`;
+      const path = join(directory, `${randomUUID()}.${safeName}`);
+      await writeFile(path, Buffer.from(image.data, "base64"), { mode: 0o600 });
+      paths.push(path);
+    }
+    return paths;
+  }
+
+  private async cleanupImages(sessionId: string): Promise<void> {
+    const directory = this.imageDirs.get(sessionId);
+    if (!directory) return;
+    this.imageDirs.delete(sessionId);
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+  }
+
   private async handleAdapterEvent(runtimeId: BridgeDesktopRuntimeId, event: RuntimeAdapterEvent): Promise<void> {
     if (event.type === "session.updated") {
       this.upsert(runtimeId, event.session);
@@ -576,6 +629,9 @@ export class RuntimeSessionBroker extends EventEmitter {
       } else if (event.type === "turn.interrupted") {
         session.turnState = "interrupted";
         delete session.activeTurnId;
+      }
+      if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.interrupted") {
+        void this.cleanupImages(sessionId);
       }
       this.upsert(runtimeId, session);
     }

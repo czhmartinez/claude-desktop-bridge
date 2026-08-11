@@ -155,6 +155,20 @@ function mobileConnectionLabel(
   return "局域网连接";
 }
 
+export function sessionProfile(session: BridgeSessionInfo): string {
+  const model = session.model
+    ?.replace(/^claude-/iu, "")
+    .replace(/\[1m\]/giu, " 1M")
+    .replaceAll("-", " ");
+  const native = session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop";
+  return [
+    native && session.provider ? session.provider : undefined,
+    model || "默认模型",
+    (native ? session.reasoningEffort : session.effort)?.toLocaleUpperCase(),
+    native && session.fast !== undefined ? (session.fast ? "快速" : "标准") : undefined,
+  ].filter(Boolean).join(" · ");
+}
+
 export function ownershipLabel(session: BridgeSessionInfo): string {
   const bridgeCreated = session.source === "bridge";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
@@ -1418,58 +1432,68 @@ export function MobileWorkspace({
               <i />{runtimeName} · {ownershipLabel(selectedSession)}
             </span>
           </div>
-          <div className="topbar-actions">
-            {providerSwitchingAvailable && (
-              <IconButton
-                label={`切换执行提供方，当前 ${providerName(selectedSession.activeProviderProfileId, providers)}`}
-                onClick={() => setProviderOpen(true)}
-              >
-                <ArrowRightLeft size={19} />
-              </IconButton>
-            )}
-            {runtimeHandoffAvailable && selectedSession.allowedActions?.canRelay !== false && (
-              <IconButton
-                label="接力到其他 Desktop"
-                onClick={() => setRelayOpen(true)}
-              >
-                <Forward size={19} />
-              </IconButton>
-            )}
-            {!providerSwitchingAvailable && !runtimeHandoffAvailable && desktopRuntimeId(selectedSession) !== "claude-desktop" && (
-              <span
-                className="session-provider-trigger is-static mobile-runtime-provider"
-                title={`${runtimeName} 是独立的会话域，不提供跨 Desktop 接力`}
-              >
-                <ArrowRightLeft size={15} />
-                <span>{runtimeProviderLabel(desktopRuntimeId(selectedSession))}</span>
-              </span>
-            )}
-            {canConfigure && (
-              <IconButton
-                label="模型与运行模式"
-                onClick={() => setConfigurationOpen(true)}
-              >
-                <Settings2 size={19} />
-              </IconButton>
-            )}
-            {canStop ? (
-              <IconButton
-                label={stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
-                disabled={stopping}
-                onClick={() => stopTarget && void stopTask(stopTarget.sessionId)}
-              >
-                {stopping ? <LoaderCircle className="is-spinning" size={20} /> : <CircleStop size={20} />}
-              </IconButton>
-            ) : null}
-            <IconButton
-              label="强制同步"
-              disabled={refreshing}
-              onClick={() => void runRefresh(selectedSession.sessionId)}
-            >
-              {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
-            </IconButton>
-          </div>
         </header>
+        <div className="session-action-strip" role="toolbar" aria-label="会话操作">
+          {providerSwitchingAvailable && (
+            <button
+              type="button"
+              className="session-provider-trigger"
+              onClick={() => setProviderOpen(true)}
+            >
+              <ArrowRightLeft size={14} />
+              <span>{providerName(selectedSession.activeProviderProfileId, providers)}</span>
+            </button>
+          )}
+          {runtimeHandoffAvailable && selectedSession.allowedActions?.canRelay !== false && (
+            <button
+              type="button"
+              className="session-provider-trigger"
+              onClick={() => setRelayOpen(true)}
+            >
+              <Forward size={14} />
+              <span>接力</span>
+            </button>
+          )}
+          {!providerSwitchingAvailable && !runtimeHandoffAvailable && desktopRuntimeId(selectedSession) !== "claude-desktop" && (
+            <span
+              className="session-provider-trigger is-static"
+              title={`${runtimeName} 是独立的会话域，不提供跨 Desktop 接力`}
+            >
+              <ArrowRightLeft size={14} />
+              <span>{runtimeProviderLabel(desktopRuntimeId(selectedSession))}</span>
+            </span>
+          )}
+          {canConfigure && (
+            <button
+              type="button"
+              className="session-provider-trigger"
+              onClick={() => setConfigurationOpen(true)}
+            >
+              <Settings2 size={14} />
+              <span>{sessionProfile(selectedSession)}</span>
+            </button>
+          )}
+          {canStop && (
+            <button
+              type="button"
+              className="session-provider-trigger is-stop"
+              disabled={stopping}
+              onClick={() => stopTarget && void stopTask(stopTarget.sessionId)}
+            >
+              {stopping ? <LoaderCircle className="is-spinning" size={14} /> : <CircleStop size={14} />}
+              <span>{stopping ? "停止中" : stoppingBlocker ? "停止阻塞任务" : "停止"}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="session-provider-trigger"
+            disabled={refreshing}
+            onClick={() => void runRefresh(selectedSession.sessionId)}
+          >
+            {refreshing ? <LoaderCircle className="is-spinning" size={14} /> : syncFlash ? <Check size={14} /> : <RefreshCw size={14} />}
+            <span>{syncFlash ? "已同步" : "同步"}</span>
+          </button>
+        </div>
 
         {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
           <div className="session-channel-warning">
@@ -1643,7 +1667,13 @@ export function MobileWorkspace({
               {entry.item.role === "tool" && <Wrench size={16} aria-hidden="true" />}
               {entry.item.text && <div className="conversation-text">{entry.item.text}</div>}
               {entry.item.attachments?.length ? (
-                <div className="attachment-summary">{entry.item.attachments.map((attachment) => <span key={attachment.id}>{attachment.name}</span>)}</div>
+                <div className="conversation-attachments">
+                  {entry.item.attachments.map((attachment) => attachment.data ? (
+                    <img key={attachment.id} src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" />
+                  ) : (
+                    <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
+                  ))}
+                </div>
               ) : null}
               {entry.item.delivery && <div className={`delivery-state ${entry.item.delivery}`}>{deliveryLabel(entry.item.delivery)}</div>}
               {entry.item.delivery === "uncertain" && entry.item.commandId && (

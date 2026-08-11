@@ -1173,15 +1173,13 @@ export class DesktopController extends EventEmitter {
       const text = stringParam(params, "text", false) ?? "";
       const attachments = attachmentsParam(params);
       if (this.routesToExternalRuntime(sessionId)) {
-        if (!text.trim()) throw new Error("Message cannot be empty");
-        if (attachments.length > 0) {
-          throw new Error("当前 Desktop 适配器暂不支持从 Bridge 发送图片附件。");
-        }
+        if (!text.trim() && attachments.length === 0) throw new Error("Message cannot be empty");
         const turn = await this.runtimeSessions!.startTurn({
           sessionId,
           text,
           commandId: request.idempotencyKey,
           requestId: request.requestId,
+          ...(attachments.length ? { attachments } : {}),
           ...(sourceDeviceId ? { sourceDeviceId } : {}),
           ...(request.method === "turn.steer" ? { steer: true } : {}),
         });

@@ -3,8 +3,10 @@ import { EventEmitter } from "node:events";
 import { access, readFile } from "node:fs/promises";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { resolve } from "node:path";
+import { basename, extname, resolve } from "node:path";
 import type {
+  BridgeAttachmentMime,
+  BridgeHistoryAttachment,
   BridgeModelInfo,
   BridgeFileChangeSummary,
   BridgePermissionDecision,
@@ -320,8 +322,32 @@ function historyFromThread(threadValue: unknown): RuntimeAdapterHistoryItem[] {
       const type = text(item.type);
       if (type === "userMessage") {
         const content = Array.isArray(item.content) ? item.content : [];
-        const joined = content.map((part) => text(record(part).text)).filter(Boolean).join("\n");
-        if (joined) items.push({ id, ...(turnId ? { turnId } : {}), role: "user", text: joined, createdAt: startedAt });
+        const textParts: string[] = [];
+        const imagePaths: Array<{ name: string; path: string }> = [];
+        for (const partValue of content) {
+          const part = record(partValue);
+          const partType = text(part.type);
+          if (partType === "local_image" || partType === "localImage") {
+            const path = text(part.path)
+              || text(record(part.local_image).path)
+              || text(record(part.image).path);
+            if (path) imagePaths.push({ name: basename(path), path });
+          } else {
+            const value = text(part.text);
+            if (value) textParts.push(value);
+          }
+        }
+        const joined = textParts.join("\n");
+        if (joined || imagePaths.length > 0) {
+          items.push({
+            id,
+            ...(turnId ? { turnId } : {}),
+            role: "user",
+            text: joined,
+            createdAt: startedAt,
+            ...(imagePaths.length > 0 ? { imagePaths } : {}),
+          });
+        }
       } else if (type === "agentMessage" && text(item.text)) {
         items.push({ id, ...(turnId ? { turnId } : {}), role: "assistant", text: text(item.text), createdAt: startedAt });
       } else if (["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"].includes(type)) {
@@ -348,6 +374,67 @@ interface PendingApproval {
   method: string;
   params: Record<string, unknown>;
   permission: RuntimeAdapterPermission;
+}
+
+function turnInputItems(input: RuntimeAdapterTurnInput): Array<Record<string, unknown>> {
+  return [
+    { type: "text", text: input.text, text_elements: [] },
+    // Codex turn input items: localImage carries a host-side absolute path.
+    ...(input.images ?? []).map((path) => ({ type: "localImage", path })),
+  ];
+}
+
+const MAX_HISTORY_IMAGE_BYTES = 4 * 1024 * 1024;
+const IMAGE_MIME_BY_EXT: Record<string, BridgeAttachmentMime> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+function sniffImageMime(bytes: Buffer, fallback: BridgeAttachmentMime): BridgeAttachmentMime {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 4 && bytes.toString("ascii", 0, 4) === "GIF8") return "image/gif";
+  if (bytes.length >= 12 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  return fallback;
+}
+
+/**
+ * Codex thread items store images as host paths. Read the files at history
+ * time so clients receive base64 image data instead of a bare path, and
+ * drop the desktop-internal refs before the items leave the adapter.
+ */
+async function attachImageData(items: RuntimeAdapterHistoryItem[]): Promise<RuntimeAdapterHistoryItem[]> {
+  const output: RuntimeAdapterHistoryItem[] = [];
+  for (const item of items) {
+    const refs = item.imagePaths ?? [];
+    if (!refs.length) {
+      output.push(item);
+      continue;
+    }
+    const attachments: BridgeHistoryAttachment[] = [];
+    for (const ref of refs) {
+      try {
+        const bytes = await readFile(ref.path);
+        if (bytes.byteLength > MAX_HISTORY_IMAGE_BYTES) continue;
+        const fallback = IMAGE_MIME_BY_EXT[extname(ref.path).toLowerCase().slice(1)] ?? "image/png";
+        attachments.push({
+          id: `${item.id}:image:${attachments.length}`,
+          name: ref.name,
+          mimeType: sniffImageMime(bytes, fallback),
+          size: bytes.byteLength,
+          data: bytes.toString("base64"),
+        });
+      } catch {
+        // Image vanished or is unreadable; keep the text-only history item.
+      }
+    }
+    const { imagePaths: _imagePaths, ...rest } = item;
+    output.push(attachments.length > 0 ? { ...rest, attachments } : rest);
+  }
+  return output;
 }
 
 function isUnmaterializedCodexError(error: unknown): boolean {
@@ -439,6 +526,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       "turn.interrupt",
       "permission.resolve",
       "tool.events",
+      "attachment.image",
       "goal.native",
     ]);
   }
@@ -557,7 +645,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
         threadId: nativeSessionId,
         includeTurns: true,
       });
-      return historyFromThread(result.thread);
+      return attachImageData(historyFromThread(result.thread));
     } catch (error) {
       // The app-server rejects includeTurns reads before the first user
       // message; treat that as an empty history instead of an error.
@@ -715,7 +803,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     const result = await client.request<Record<string, unknown>>("turn/start", {
       threadId: input.nativeSessionId,
       clientUserMessageId: input.requestId,
-      input: [{ type: "text", text: input.text, text_elements: [] }],
+      input: turnInputItems(input),
       ...(activeSession?.model ? { model: activeSession.model } : {}),
       ...(activeSession?.reasoningEffort ? { effort: activeSession.reasoningEffort } : {}),
       ...(activeSession?.fast !== undefined ? { serviceTier: activeSession.fast ? "priority" : "default" } : {}),
@@ -741,7 +829,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     await client.request("turn/steer", {
       threadId: input.nativeSessionId,
       clientUserMessageId: input.requestId,
-      input: [{ type: "text", text: input.text, text_elements: [] }],
+      input: turnInputItems(input),
       expectedTurnId: turnId,
     });
     return { turnId, state: "running" };

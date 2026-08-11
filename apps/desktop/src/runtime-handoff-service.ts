@@ -226,7 +226,10 @@ export class RuntimeHandoffService {
           canInterrupt: base?.canInterrupt ?? true,
           canSwitchProvider: base?.canSwitchProvider ?? false,
           canContinueOfficial: base?.canContinueOfficial ?? false,
-          canConfigure: base?.canConfigure ?? false,
+          // A Claude session without route-level actions (desktop-observed)
+          // is configurable by default; external runtimes always carry a
+          // capability-derived base, so the fallback only matters for Claude.
+          canConfigure: base?.canConfigure ?? runtimeId === "claude-desktop",
           ...(base?.reason ? { reason: base.reason } : {}),
           canRelay,
         },

@@ -6,6 +6,7 @@ import type {
   BridgeEffort,
   BridgeFileChangeSummary,
   BridgeHistoryItem,
+  BridgeHistoryAttachment,
   BridgeModelInfo,
   BridgePermissionDecision,
   BridgeRuntimeProviderInfo,
@@ -60,6 +61,9 @@ export interface RuntimeAdapterHistoryItem {
   toolName?: string;
   state?: BridgeTurnState;
   fileChanges?: BridgeFileChangeSummary[];
+  attachments?: BridgeHistoryAttachment[];
+  /** Desktop-internal image refs for Codex history; never crosses to clients. */
+  imagePaths?: Array<{ name: string; path: string }>;
 }
 
 export interface RuntimeAdapterTurnInput {
@@ -67,6 +71,8 @@ export interface RuntimeAdapterTurnInput {
   text: string;
   commandId: string;
   requestId: string;
+  /** Absolute host paths of images to attach (localImage turn input items). */
+  images?: string[];
   sourceDeviceId?: string;
 }
 

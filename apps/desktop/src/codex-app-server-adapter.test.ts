@@ -1,10 +1,19 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   CodexAppServerAdapter,
   fileChangeSummaries,
   type CodexRpcClient,
 } from "./codex-app-server-adapter.js";
+
+const directories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
 
 class FakeCodexClient extends EventEmitter implements CodexRpcClient {
   readonly requests: Array<{ method: string; params?: unknown }> = [];
@@ -20,6 +29,7 @@ class FakeCodexClient extends EventEmitter implements CodexRpcClient {
     status: { type: "idle" },
   }];
   readonly noRollout = new Set<string>();
+  historyFixture?: unknown;
   private nextThreadId = 0;
   private settings = {
     model: "gpt-5.6-terra",
@@ -103,7 +113,7 @@ class FakeCodexClient extends EventEmitter implements CodexRpcClient {
       if (this.noRollout.has(threadId)) {
         throw new Error(`thread ${threadId} is not materialized yet; includeTurns is unavailable before first user message`);
       }
-      return { thread: { turns: [] } } as T;
+      return { thread: this.historyFixture ?? { turns: [] } } as T;
     }
     if (method === "thread/goal/set") {
       const options = (params ?? {}) as Record<string, unknown>;
@@ -438,6 +448,77 @@ describe("CodexAppServerAdapter", () => {
     // from a stale list) whose rollout was never written.
     client.noRollout.add("thread-1");
     await expect(adapter.history("thread-1")).resolves.toEqual([]);
+    await adapter.close();
+  });
+
+  it("renders localImage history items as base64 attachments instead of paths", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-codex-images-"));
+    directories.push(directory);
+    const imagePath = join(directory, "shot.png");
+    // Minimal valid 1x1 PNG.
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+    await writeFile(imagePath, png);
+
+    const client = new FakeCodexClient();
+    client.historyFixture = {
+      turns: [{
+        id: "turn-1",
+        startedAt: 1_000,
+        items: [
+          {
+            id: "user-1",
+            type: "userMessage",
+            content: [
+              { type: "text", text: "看看这张图" },
+              { type: "localImage", path: imagePath },
+            ],
+          },
+          { id: "agent-1", type: "agentMessage", text: "已查看" },
+        ],
+      }],
+    };
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+    });
+    await adapter.initialize();
+
+    const history = await adapter.history("thread-1");
+    const userItem = history.find((item) => item.role === "user");
+    expect(userItem).toMatchObject({ text: "看看这张图" });
+    expect(userItem?.attachments).toEqual([{
+      id: "user-1:image:0",
+      name: "shot.png",
+      mimeType: "image/png",
+      size: png.byteLength,
+      data: png.toString("base64"),
+    }]);
+    expect(userItem?.imagePaths).toBeUndefined();
+    expect(history.every((item) => !item.imagePaths)).toBe(true);
+    await adapter.close();
+  });
+
+  it("sends images as localImage turn input items", async () => {
+    const client = new FakeCodexClient();
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+    });
+    await adapter.initialize();
+    await adapter.startTurn({
+      nativeSessionId: "thread-1",
+      text: "处理截图",
+      commandId: "command-image",
+      requestId: "request-image",
+      images: ["/tmp/shot.png"],
+    });
+    const turnStart = client.requests.find((entry) => entry.method === "turn/start");
+    expect(turnStart?.params).toMatchObject({
+      input: [
+        { type: "text", text: "处理截图", text_elements: [] },
+        { type: "localImage", path: "/tmp/shot.png" },
+      ],
+    });
     await adapter.close();
   });
 

@@ -462,13 +462,22 @@ export interface BridgeArtifactTransferChunk {
   data: string;
 }
 
+export type BridgeAttachmentMime = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+
 export interface BridgeAttachment {
   id: string;
   name: string;
-  mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  mimeType: BridgeAttachmentMime;
   size: number;
   data: string;
 }
+
+/**
+ * Attachment summary carried by history pages. `data` is omitted for
+ * transports that cannot replay image bytes (e.g. Claude transcripts);
+ * Codex runtime history fills it from the host file so clients can render.
+ */
+export type BridgeHistoryAttachment = Omit<BridgeAttachment, "data"> & { data?: string };
 
 export interface BridgeProjectInfo {
   projectId: string;
@@ -611,7 +620,7 @@ export interface BridgeHistoryItem {
   origin: BridgeOrigin;
   toolName?: string;
   state?: BridgeTurnState;
-  attachments?: Array<Omit<BridgeAttachment, "data">>;
+  attachments?: BridgeHistoryAttachment[];
   /**
    * Structured summary for file-change tool items (Codex). Lets clients
    * aggregate edits Codex-style instead of rendering one noisy card each.

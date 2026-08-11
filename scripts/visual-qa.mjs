@@ -910,7 +910,7 @@ try {
   await mobile.getByRole("button", { name: "允许一次" }).click();
   await livePermissionSheet.waitFor({ state: "detached" });
 
-  await mobile.getByLabel("切换执行提供方，当前 Claude-3p").click();
+  await mobile.getByRole("button", { name: "Claude-3p", exact: true }).click();
   const mobileProviderDialog = mobile.getByRole("dialog", { name: "切换提供方" });
   await mobileProviderDialog.locator(".provider-option").filter({ hasText: "Anthropic API" }).click();
   await mobileProviderDialog.getByText("需要在电脑端配置 API Key", { exact: true }).waitFor();
@@ -918,7 +918,7 @@ try {
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-provider-switch-390x844.png"), fullPage: true });
   await mobileProviderDialog.getByLabel("关闭").click();
 
-  await mobile.getByRole("button", { name: "模型与运行模式" }).click();
+  await mobile.getByRole("button", { name: /fable/ }).click();
   await mobile.getByText("Claude Host 实时用量").waitFor();
   await mobile.getByText("授权模式", { exact: true }).waitFor();
   await checkPage(mobile, "mobile session configuration");

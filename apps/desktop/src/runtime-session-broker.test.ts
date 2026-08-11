@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -226,6 +226,49 @@ describe("RuntimeSessionBroker", () => {
     expect(codex.resolved).toEqual([{ requestId: "approval-1", decision: "allow-once" }]);
     expect(hermes.resolved).toEqual([]);
 
+    await broker.close();
+  });
+
+  it("materializes image attachments into temp files and echoes them on the accepted event", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-images-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-1");
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"), 1);
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      eventLog,
+    );
+    await broker.initialize();
+    const sessionId = runtimeSessionId("codex-desktop", "native-1");
+    const imageData = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64").toString("base64");
+
+    await broker.startTurn({
+      sessionId,
+      text: "看这张图",
+      commandId: "command-image",
+      requestId: "request-image",
+      attachments: [{
+        id: "attach-1",
+        name: "shot.png",
+        mimeType: "image/png",
+        size: imageData.length,
+        data: imageData,
+      }],
+    });
+
+    expect(codex.turnInputs).toHaveLength(1);
+    const images = codex.turnInputs[0]!.images ?? [];
+    expect(images).toHaveLength(1);
+    const written = await readFile(images[0]!);
+    expect(written.toString("base64")).toBe(imageData);
+
+    const accepted = eventLog.replay().find((event) => event.type === "user.message.accepted");
+    expect(accepted?.data.attachments).toEqual([expect.objectContaining({
+      id: "attach-1",
+      name: "shot.png",
+      mimeType: "image/png",
+      data: imageData,
+    })]);
     await broker.close();
   });
 

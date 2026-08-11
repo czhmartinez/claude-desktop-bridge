@@ -76,6 +76,7 @@ import {
   goalStatusLabel,
   PermissionPrompt,
   runtimeProviderLabel,
+  sessionProfile,
   stoppableBridgeTask,
   supportsRuntimeHandoff,
 } from "./MobileWorkspace.js";
@@ -146,20 +147,6 @@ function transportLabel(session: BridgeSessionInfo): string {
     return "仅在 Bridge";
   }
   return "桌面会话接管";
-}
-
-function sessionProfile(session: BridgeSessionInfo): string {
-  const model = session.model
-    ?.replace(/^claude-/iu, "")
-    .replace(/\[1m\]/giu, " 1M")
-    .replaceAll("-", " ");
-  const native = session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop";
-  return [
-    native && session.provider ? session.provider : undefined,
-    model || "默认模型",
-    (native ? session.reasoningEffort : session.effort)?.toLocaleUpperCase(),
-    native && session.fast !== undefined ? (session.fast ? "快速" : "标准") : undefined,
-  ].filter(Boolean).join(" · ");
 }
 
 function DesktopSessions({
@@ -1188,6 +1175,15 @@ function DesktopSessions({
                 >
                   <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
                   <div className="conversation-text">{entry.item.text}</div>
+                  {entry.item.attachments?.length ? (
+                    <div className="conversation-attachments">
+                      {entry.item.attachments.map((attachment) => attachment.data ? (
+                        <img key={attachment.id} src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" />
+                      ) : (
+                        <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
+                      ))}
+                    </div>
+                  ) : null}
                 </article>
               ))}
               {snapshot.permissions

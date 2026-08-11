@@ -3860,6 +3860,33 @@ button:disabled {
   font-size: 11px;
 }
 
+.conversation-attachments {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.conversation-attachments img {
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .attachment-summary,
 .composer-attachments {
   display: flex;
@@ -4669,6 +4696,33 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Mobile conversation action strip: every session action lives here as a
+   labeled chip instead of competing with the title row for icon space. */
+.session-action-strip {
+  display: flex;
+  gap: 8px;
+  padding: 8px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  scrollbar-width: none;
+}
+
+.session-action-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.session-action-strip .session-provider-trigger {
+  flex: none;
+  max-width: 220px;
+  min-height: 32px;
+}
+
+.session-action-strip .session-provider-trigger.is-stop {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--line));
 }
 
 .session-provider-trigger {
