@@ -154,6 +154,14 @@ export interface StoredRuntimeSessionPermission {
   updatedAt: number;
 }
 
+export type SessionVisibility = "archived" | "deleted";
+
+export interface StoredSessionVisibility {
+  sessionId: string;
+  visibility: SessionVisibility;
+  updatedAt: number;
+}
+
 function defaultProviderProfiles(): BridgeProviderProfile[] {
   const officialReady = supportsClaudeDesktop();
   return [
@@ -505,6 +513,12 @@ export class ConversationStateStore {
       CREATE TABLE IF NOT EXISTS runtime_session_permissions (
         session_id TEXT PRIMARY KEY,
         permission_mode TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS session_visibility (
+        session_id TEXT PRIMARY KEY,
+        visibility TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       ) STRICT;
     `);
@@ -1085,6 +1099,37 @@ export class ConversationStateStore {
       });
     }
     return permissions;
+  }
+
+  setSessionVisibility(sessionId: string, visibility: SessionVisibility | null): void {
+    if (visibility === null) {
+      this.db.prepare("DELETE FROM session_visibility WHERE session_id = ?").run(sessionId);
+      return;
+    }
+    this.db.prepare(`
+      INSERT INTO session_visibility(session_id, visibility, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        visibility = excluded.visibility,
+        updated_at = excluded.updated_at
+    `).run(sessionId, visibility, Date.now());
+  }
+
+  listSessionVisibility(): StoredSessionVisibility[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM session_visibility ORDER BY updated_at ASC, session_id ASC",
+    ).all() as SqlRow[];
+    const entries: StoredSessionVisibility[] = [];
+    for (const row of rows) {
+      const visibility = String(row.visibility);
+      if (visibility !== "archived" && visibility !== "deleted") continue;
+      entries.push({
+        sessionId: String(row.session_id),
+        visibility,
+        updatedAt: Number(row.updated_at),
+      });
+    }
+    return entries;
   }
 
   loadBrokerState(): ConversationBrokerState {

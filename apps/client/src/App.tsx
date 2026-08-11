@@ -113,6 +113,12 @@ export function App() {
       onGetRuntimeHandoff={mobile.getRuntimeHandoff}
       onPauseRuntimeGoal={mobile.pauseRuntimeGoal}
       onResumeRuntimeGoal={mobile.resumeRuntimeGoal}
+      {...(mobile.state.snapshot?.host.capabilities.includes("session.visibility.v1")
+        ? {
+            onArchiveSession: mobile.archiveSession,
+            onDeleteSession: mobile.deleteSession,
+          }
+        : {})}
       onRefreshProviders={mobile.refreshProviders}
       onDesktopAppAction={mobile.controlDesktopApp}
       onRefresh={mobile.refresh}

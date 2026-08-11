@@ -28,6 +28,8 @@ const METHODS = new Set([
   "session.configuration",
   "session.configure",
   "session.desktop.register",
+  "session.archive",
+  "session.delete",
   "session.fallback.confirm",
   "message.delivery.resolve",
   "claude.desktop.status",

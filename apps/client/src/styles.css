@@ -3980,6 +3980,31 @@ button:disabled {
   background: transparent;
 }
 
+.session-menu-sheet .session-menu-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.session-menu-sheet .session-menu-actions > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+}
+
+.session-menu-sheet .session-menu-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.project-group.archived-group > .project-group-toggle {
+  opacity: 0.72;
+}
+
 .permission-queue-count {
   margin-bottom: 12px;
   padding: 8px 9px;

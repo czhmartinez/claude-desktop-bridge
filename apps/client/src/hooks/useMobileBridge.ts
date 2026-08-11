@@ -536,10 +536,26 @@ export function applyEventToSnapshot(
   }
   if (!event.sessionId) return current;
   const hasPendingPermission = permissions.some((permission) => permission.sessionId === event.sessionId);
+  if (event.type === "session.deleted") {
+    return {
+      ...current,
+      sessions: current.sessions.filter((session) => session.sessionId !== event.sessionId),
+    };
+  }
   return {
     ...current,
     sessions: current.sessions.map((session) => {
       if (session.sessionId !== event.sessionId) return session;
+      if (event.type === "session.archived") {
+        if (event.data.archived === true && typeof event.data.archivedAt === "number") {
+          return { ...session, archivedAt: event.data.archivedAt };
+        }
+        if (event.data.archived === false) {
+          const { archivedAt: _dropped, ...rest } = session;
+          return rest;
+        }
+        return session;
+      }
       if (event.type === "conversation.route.changed") {
         const route = event.data.route as BridgeConversationRoute | undefined;
         if (route?.conversationId === session.sessionId) return sessionWithRoute(session, route);
@@ -2448,6 +2464,21 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "恢复目标失败");
   }, [sendRequest]);
 
+  const archiveSession = useCallback(async (sessionId: string, archived: boolean) => {
+    const response = await sendRequest("session.archive", {
+      sessionId,
+      archived,
+    }, { wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "归档设置失败");
+  }, [sendRequest]);
+
+  const deleteSession = useCallback(async (sessionId: string) => {
+    const response = await sendRequest("session.delete", {
+      sessionId,
+    }, { wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "删除会话失败");
+  }, [sendRequest]);
+
   return {
     state,
     pair,
@@ -2476,6 +2507,8 @@ export function useMobileBridge() {
     getRuntimeHandoff,
     pauseRuntimeGoal,
     resumeRuntimeGoal,
+    archiveSession,
+    deleteSession,
     refreshProviders,
     launchClaudeDesktop,
     controlDesktopApp,

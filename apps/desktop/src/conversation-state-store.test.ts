@@ -323,4 +323,32 @@ describe("ConversationStateStore", () => {
     expect(reopened.listRuntimeGoals(["active"])).toHaveLength(0);
     reopened.close();
   });
+
+  it("persists session visibility markers across restarts", async () => {
+    const fixture = await createStore();
+    await fixture.store.initialize();
+
+    fixture.store.setSessionVisibility("session-1", "archived");
+    fixture.store.setSessionVisibility("codex-desktop:native-1", "deleted");
+    fixture.store.setSessionVisibility("junk", "nonsense" as never);
+
+    const reopened = new ConversationStateStore({
+      databasePath: fixture.databasePath,
+      sessionsPath: fixture.sessionsPath,
+      queuePath: fixture.queuePath,
+      masterSecret: "test-conversation-state-secret",
+    });
+    await reopened.initialize();
+    const entries = reopened.listSessionVisibility();
+    expect(entries).toHaveLength(2);
+    expect(entries.find((entry) => entry.sessionId === "session-1")?.visibility).toBe("archived");
+    expect(entries.find((entry) => entry.sessionId === "codex-desktop:native-1")?.visibility).toBe("deleted");
+
+    // Upgrading archived -> deleted reuses the row; clearing removes it.
+    reopened.setSessionVisibility("session-1", "deleted");
+    expect(reopened.listSessionVisibility().find((entry) => entry.sessionId === "session-1")?.visibility).toBe("deleted");
+    reopened.setSessionVisibility("session-1", null);
+    expect(reopened.listSessionVisibility().map((entry) => entry.sessionId)).toEqual(["codex-desktop:native-1"]);
+    reopened.close();
+  });
 });

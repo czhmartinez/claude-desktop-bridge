@@ -170,7 +170,8 @@ export type BridgeCapability =
   | "conversation.handoff.v1"
   | "permission.policy.v1"
   | "runtime.adapter.v1"
-  | "runtime.handoff.v1";
+  | "runtime.handoff.v1"
+  | "session.visibility.v1";
 
 /**
  * Cross-Desktop serial relay (0.7). A handoff moves a task to a brand-new
@@ -533,6 +534,12 @@ export interface BridgeSessionInfo {
   pendingRuntimeHandoff?: BridgeRuntimeHandoff;
   /** Goal-mode execution state on this session (0.7+). */
   goal?: BridgeRuntimeGoalInfo;
+  /**
+   * Set when the session is archived (0.7.4+). Archived sessions stay in the
+   * snapshot with this marker and are hidden from default session lists;
+   * deleted sessions carry a host-side tombstone and never appear at all.
+   */
+  archivedAt?: number;
 }
 
 export interface BridgeModelInfo {
@@ -754,6 +761,8 @@ export type BridgeMethod =
   | "session.configuration"
   | "session.configure"
   | "session.desktop.register"
+  | "session.archive"
+  | "session.delete"
   | "session.fallback.confirm"
   | "message.delivery.resolve"
   | "claude.desktop.status"
@@ -819,6 +828,8 @@ export type BridgeEventType =
   | "session.ownership"
   | "session.configuration"
   | "session.desktop-registration"
+  | "session.archived"
+  | "session.deleted"
   | "session.transport"
   | "session.ownership-conflict"
   | "user.message.accepted"

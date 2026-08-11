@@ -251,6 +251,7 @@ async function desktopMain(): Promise<void> {
     runtimeSessions,
     desktopAppControls,
     runtimeHandoffs,
+    conversationState,
   );
 
   let mainWindow: BrowserWindow | undefined;

@@ -19,6 +19,8 @@ import type {
 } from "@bridge/protocol";
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   ArrowRightLeft,
   Clipboard,
   ChevronDown,
@@ -194,6 +196,10 @@ function DesktopSessions({
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [providerOpen, setProviderOpen] = useState(false);
   const [relayOpen, setRelayOpen] = useState(false);
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
+  const [sessionActionBusy, setSessionActionBusy] = useState(false);
+  const [sessionActionError, setSessionActionError] = useState<string>();
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
   const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
@@ -240,7 +246,8 @@ function DesktopSessions({
   const grouped = useMemo(() => {
     const map = new Map<string, BridgeSessionInfo[]>();
     for (const session of snapshot.sessions.filter((candidate) => (
-      runtimeFilter === "all" || desktopRuntimeId(candidate) === runtimeFilter
+      !candidate.archivedAt
+      && (runtimeFilter === "all" || desktopRuntimeId(candidate) === runtimeFilter)
     ))) {
       const list = map.get(session.projectId) ?? [];
       list.push(session);
@@ -248,6 +255,14 @@ function DesktopSessions({
     }
     return [...map.entries()];
   }, [runtimeFilter, snapshot.sessions]);
+  const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
+  const archivedSessions = useMemo(() => snapshot.sessions.filter((candidate) => (
+    Boolean(candidate.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(candidate) === runtimeFilter)
+  )), [runtimeFilter, snapshot.sessions]);
+  const selectedBusy = Boolean(selected && (
+    selected.turnState === "running" || selected.turnState === "queued" || selected.turnState === "waiting"
+  ));
+  const selectedRelaying = Boolean(selected?.pendingRuntimeHandoff);
   const groupedProjectIds = useMemo(
     () => grouped.map(([groupProjectId]) => groupProjectId),
     [grouped],
@@ -710,6 +725,39 @@ function DesktopSessions({
     return result.configuration;
   }
 
+  async function archiveSelected(archived: boolean): Promise<void> {
+    if (!selected || sessionActionBusy) return;
+    setSessionActionBusy(true);
+    setSessionActionError(undefined);
+    try {
+      await apiRequest({
+        method: "session.archive",
+        params: { sessionId: selected.sessionId, archived },
+      }).then(unwrap);
+    } catch (failure) {
+      setSessionActionError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
+  async function deleteSelected(): Promise<void> {
+    if (!selected || sessionActionBusy) return;
+    setSessionActionBusy(true);
+    setSessionActionError(undefined);
+    try {
+      await apiRequest({
+        method: "session.delete",
+        params: { sessionId: selected.sessionId },
+      }).then(unwrap);
+      setDeleteSessionOpen(false);
+    } catch (failure) {
+      setSessionActionError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
   return (
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
@@ -805,6 +853,37 @@ function DesktopSessions({
           {grouped.length === 0 && (
             <div className="desktop-sidebar-empty">等待发现 Desktop 会话</div>
           )}
+          {visibilityAvailable && archivedSessions.length > 0 && (
+            <section className={archivedExpanded ? "expanded" : "collapsed"}>
+              <button
+                type="button"
+                className="desktop-project-toggle"
+                aria-expanded={archivedExpanded}
+                aria-controls="desktop-archived-sessions"
+                onClick={() => setArchivedExpanded((current) => !current)}
+              >
+                {archivedExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <strong>已归档</strong>
+                <span>{archivedSessions.length}</span>
+              </button>
+              {archivedExpanded && (
+                <div className="desktop-project-sessions" id="desktop-archived-sessions">
+                  {archivedSessions.map((session) => (
+                    <button
+                      type="button"
+                      className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
+                      onClick={() => setSelectedId(session.sessionId)}
+                      key={session.sessionId}
+                    >
+                      <span className={`session-state-dot ${session.turnState}`} />
+                      <span><strong>{session.title}</strong><small>{desktopRuntimeName(desktopRuntimeId(session))} · {sessionState(session)}</small></span>
+                      {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
         </div>
       </aside>
 
@@ -880,8 +959,40 @@ function DesktopSessions({
                     {stopping ? "停止中" : stoppingBlocker ? "停止阻塞任务" : "停止"}
                   </button>
                 )}
+                {visibilityAvailable && (
+                  <>
+                    {selected.archivedAt ? (
+                      <IconButton label="取消归档" disabled={sessionActionBusy} onClick={() => void archiveSelected(false)}>
+                        <ArchiveRestore size={16} />
+                      </IconButton>
+                    ) : (
+                      <IconButton label="归档会话" disabled={sessionActionBusy} onClick={() => void archiveSelected(true)}>
+                        <Archive size={16} />
+                      </IconButton>
+                    )}
+                    <IconButton
+                      label={selectedBusy || selectedRelaying ? "任务或接力进行中，先停止再删除" : "删除会话"}
+                      disabled={sessionActionBusy || selectedBusy || selectedRelaying}
+                      onClick={() => setDeleteSessionOpen(true)}
+                    >
+                      <Trash2 size={16} />
+                    </IconButton>
+                  </>
+                )}
               </div>
             </header>
+            {selected.archivedAt && (
+              <div className="desktop-channel-banner">
+                <Archive size={18} />
+                <span><strong>此会话已归档</strong>会话保留全部历史，取消归档后回到会话列表。</span>
+              </div>
+            )}
+            {sessionActionError && (
+              <div className="desktop-channel-banner danger">
+                <AlertTriangle size={18} />
+                <span><strong>会话操作失败</strong>{sessionActionError}</span>
+              </div>
+            )}
             {selected.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
               <div className="desktop-channel-banner">
                 <AlertTriangle size={18} />
@@ -1218,6 +1329,16 @@ function DesktopSessions({
           onClose={() => setRelayOpen(false)}
         />
       )}
+      <ConfirmationDialog
+        open={deleteSessionOpen && Boolean(selected)}
+        title="删除会话"
+        description={`从 Bridge 列表中删除「${selected?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
+        confirmLabel="删除会话"
+        danger
+        busy={sessionActionBusy}
+        onCancel={() => setDeleteSessionOpen(false)}
+        onConfirm={() => void deleteSelected()}
+      />
     </section>
   );
 }

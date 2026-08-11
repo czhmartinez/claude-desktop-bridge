@@ -23,6 +23,8 @@ import type {
 import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   ArrowLeft,
   ArrowRightLeft,
   Check,
@@ -37,6 +39,7 @@ import {
   ImagePlus,
   LoaderCircle,
   Moon,
+  MoreHorizontal,
   Play,
   Plus,
   Power,
@@ -47,6 +50,7 @@ import {
   ShieldCheck,
   Sun,
   Terminal,
+  Trash2,
   Wrench,
   X,
 } from "lucide-react";
@@ -891,6 +895,8 @@ export function MobileWorkspace({
   onGetRuntimeHandoff,
   onPauseRuntimeGoal,
   onResumeRuntimeGoal,
+  onArchiveSession,
+  onDeleteSession,
   onRefreshProviders,
   onDesktopAppAction,
   onRefresh,
@@ -969,6 +975,8 @@ export function MobileWorkspace({
   onGetRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff>;
   onPauseRuntimeGoal(sessionId: string): Promise<void>;
   onResumeRuntimeGoal(sessionId: string): Promise<void>;
+  onArchiveSession?(sessionId: string, archived: boolean): Promise<void>;
+  onDeleteSession?(sessionId: string): Promise<void>;
   onDesktopAppAction(
     runtimeId: BridgeDesktopRuntimeId,
     action: "launch" | "quit",
@@ -998,6 +1006,11 @@ export function MobileWorkspace({
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const [deleteSessionConfirmOpen, setDeleteSessionConfirmOpen] = useState(false);
+  const [sessionActionBusy, setSessionActionBusy] = useState(false);
+  const [sessionActionError, setSessionActionError] = useState<string>();
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
@@ -1032,7 +1045,8 @@ export function MobileWorkspace({
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const filtered = sessions.filter((session) => (
-      (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
+      !session.archivedAt
+      && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
       && (!query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query))
     ));
     const groups = new Map<string, BridgeSessionInfo[]>();
@@ -1046,6 +1060,9 @@ export function MobileWorkspace({
       sessions: projectSessions,
     }));
   }, [runtimeFilter, search, sessions, snapshot?.projects]);
+  const archivedSessions = useMemo(() => sessions.filter((session) => (
+    Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
+  )), [runtimeFilter, sessions]);
   const groupedProjectIds = useMemo(
     () => grouped.map((group) => group.project?.projectId ?? group.sessions[0]!.projectId),
     [grouped],
@@ -1236,6 +1253,35 @@ export function MobileWorkspace({
     }
   }
 
+  async function archiveSelectedSession(archived: boolean): Promise<void> {
+    if (!selectedSession || !onArchiveSession || sessionActionBusy) return;
+    setSessionActionBusy(true);
+    setSessionActionError(undefined);
+    try {
+      await onArchiveSession(selectedSession.sessionId, archived);
+      setSessionMenuOpen(false);
+    } catch (error) {
+      setSessionActionError(error instanceof Error ? error.message : "归档设置失败");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
+  async function deleteSelectedSession(): Promise<void> {
+    if (!selectedSession || !onDeleteSession || sessionActionBusy) return;
+    setSessionActionBusy(true);
+    setSessionActionError(undefined);
+    try {
+      await onDeleteSession(selectedSession.sessionId);
+      setDeleteSessionConfirmOpen(false);
+      setSessionMenuOpen(false);
+    } catch (error) {
+      setSessionActionError(error instanceof Error ? error.message : "删除会话失败");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
   async function addImages(files: FileList | null): Promise<void> {
     if (!files?.length) return;
     setImageError(undefined);
@@ -1291,6 +1337,9 @@ export function MobileWorkspace({
     const canStop = Boolean(stopTarget);
     const stopping = stoppingSessionId === stopTarget?.sessionId;
     const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== selectedSession.sessionId);
+    const selectedBusy = selectedSession.turnState === "running"
+      || selectedSession.turnState === "queued"
+      || selectedSession.turnState === "waiting";
     const sessionPermissions = permissions.filter((permission) => permission.sessionId === selectedSession.sessionId);
     const activePermission = sessionPermissions[0];
     const otherPermission = permissions.find((permission) => permission.sessionId !== selectedSession.sessionId);
@@ -1361,8 +1410,26 @@ export function MobileWorkspace({
             >
               {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
             </IconButton>
+            {(onArchiveSession || onDeleteSession) && (
+              <IconButton label="会话操作" onClick={() => setSessionMenuOpen(true)}>
+                <MoreHorizontal size={19} />
+              </IconButton>
+            )}
           </div>
         </header>
+
+        {selectedSession.archivedAt && (
+          <div className="session-channel-warning">
+            <Archive size={17} />
+            <span><strong>此会话已归档</strong>历史完整保留；从会话操作中取消归档即可回到列表。</span>
+          </div>
+        )}
+        {sessionActionError && (
+          <div className="session-channel-warning danger">
+            <AlertTriangle size={17} />
+            <span>{sessionActionError}</span>
+          </div>
+        )}
 
         {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
           <div className="session-channel-warning">
@@ -1690,6 +1757,57 @@ export function MobileWorkspace({
             onClose={() => setConfigurationOpen(false)}
           />
         )}
+        {sessionMenuOpen && (
+          <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !sessionActionBusy) setSessionMenuOpen(false);
+          }}>
+            <section className="permission-sheet session-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="session-menu-title">
+              <header>
+                <div>
+                  <span>会话操作</span>
+                  <h2 id="session-menu-title">{selectedSession.title}</h2>
+                </div>
+                <IconButton label="关闭" disabled={sessionActionBusy} onClick={() => setSessionMenuOpen(false)}><X size={19} /></IconButton>
+              </header>
+              <div className="session-menu-actions">
+                {onArchiveSession && (
+                  selectedSession.archivedAt ? (
+                    <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={() => void archiveSelectedSession(false)}>
+                      <ArchiveRestore size={17} />取消归档
+                    </button>
+                  ) : (
+                    <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={() => void archiveSelectedSession(true)}>
+                      <Archive size={17} />归档会话
+                    </button>
+                  )
+                )}
+                {onDeleteSession && (
+                  <button
+                    type="button"
+                    className="secondary-button danger-text"
+                    disabled={sessionActionBusy || selectedBusy || Boolean(selectedSession.pendingRuntimeHandoff)}
+                    onClick={() => setDeleteSessionConfirmOpen(true)}
+                  >
+                    <Trash2 size={17} />删除会话
+                  </button>
+                )}
+              </div>
+              {(selectedBusy || selectedSession.pendingRuntimeHandoff) && onDeleteSession && (
+                <p className="session-menu-hint">任务或接力进行中，先停止再删除。</p>
+              )}
+            </section>
+          </div>
+        )}
+        <ConfirmationDialog
+          open={deleteSessionConfirmOpen}
+          title="删除会话"
+          description={`从 Bridge 列表中删除「${selectedSession.title}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
+          confirmLabel="删除会话"
+          danger
+          busy={sessionActionBusy}
+          onCancel={() => setDeleteSessionConfirmOpen(false)}
+          onConfirm={() => void deleteSelectedSession()}
+        />
         {permissionOpen && activePermission && (
           <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
             if (event.target === event.currentTarget) setPermissionOpen(false);
@@ -1932,6 +2050,47 @@ export function MobileWorkspace({
               </section>
             );
           })}
+          {onArchiveSession && archivedSessions.length > 0 && (
+            <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
+              <button
+                type="button"
+                className="project-group-toggle"
+                aria-expanded={archivedExpanded}
+                aria-controls="mobile-archived-sessions"
+                onClick={() => setArchivedExpanded((current) => !current)}
+              >
+                <span className="project-group-toggle-copy">
+                  <span>
+                    <strong>已归档</strong>
+                    <b>{archivedSessions.length} 个会话</b>
+                  </span>
+                  <small>归档会话保留历史，可随时恢复</small>
+                </span>
+                {archivedExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+              </button>
+              {archivedExpanded && (
+                <div className="session-rows" id="mobile-archived-sessions">
+                  {archivedSessions.map((session) => (
+                    <button
+                      type="button"
+                      className="session-row-v2"
+                      data-session-id={session.sessionId}
+                      key={session.sessionId}
+                      onClick={() => void selectSession(session.sessionId)}
+                    >
+                      <span className={`session-state-dot ${session.turnState}`} />
+                      <span className="session-row-copy">
+                        <strong>{session.title}</strong>
+                        <small>{desktopRuntimeName(desktopRuntimeId(session))} · {relativeTime(session.lastActivityAt)}</small>
+                      </span>
+                      <span className="session-row-status">已归档</span>
+                      <ChevronRight size={18} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
         </div>
       </section>
 

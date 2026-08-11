@@ -335,6 +335,21 @@ export class RuntimeSessionBroker extends EventEmitter {
     return resolved;
   }
 
+  /**
+   * Drop Bridge-side records for a deleted runtime session. The native app
+   * still owns the real session; the controller's tombstone keeps the
+   * re-discovered native copy hidden from Bridge.
+   */
+  removeSessionRecords(sessionId: string): void {
+    if (this.sessionPermissionModes.delete(sessionId)) {
+      this.state?.saveRuntimeSessionPermission(sessionId, null);
+    }
+    for (const [requestId, pending] of [...this.permissions]) {
+      if (pending.info.sessionId === sessionId) this.permissions.delete(requestId);
+    }
+    this.emit("changed");
+  }
+
   async startTurn(input: {
     sessionId: string;
     text: string;

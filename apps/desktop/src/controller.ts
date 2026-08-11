@@ -50,6 +50,7 @@ import type { ProviderRegistry } from "./provider-registry.js";
 import type { HandoffService } from "./handoff-service.js";
 import { parseRuntimeSessionId, type RuntimeSessionBroker } from "./runtime-session-broker.js";
 import type { RuntimeHandoffService } from "./runtime-handoff-service.js";
+import type { ConversationStateStore, SessionVisibility } from "./conversation-state-store.js";
 
 export interface LocalBridgeRequest {
   method: BridgeRequest["method"];
@@ -240,6 +241,7 @@ export class DesktopController extends EventEmitter {
   private relayHealthy = false;
   private lastPublishedSessionKey = "";
   private lastDiscoveryRefreshAt = 0;
+  private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
 
   constructor(
     private readonly app: App,
@@ -256,12 +258,18 @@ export class DesktopController extends EventEmitter {
     private readonly runtimeSessions?: RuntimeSessionBroker,
     private readonly desktopAppControls?: ReadonlyMap<BridgeDesktopRuntimeId, ClaudeDesktopLifecycle>,
     private readonly runtimeHandoffs?: RuntimeHandoffService,
+    private readonly conversationState?: ConversationStateStore,
   ) {
     super();
   }
 
   async initialize(): Promise<void> {
     this.config = await this.repository.loadOrCreate();
+    if (this.conversationState) {
+      for (const row of this.conversationState.listSessionVisibility()) {
+        this.sessionVisibility.set(row.sessionId, { visibility: row.visibility, updatedAt: row.updatedAt });
+      }
+    }
     this.config.managedDesktopEnabled = false;
     this.config.launchAtLogin = await isLaunchAtLoginEnabled(this.app);
     await this.repository.save(this.config);
@@ -338,6 +346,7 @@ export class DesktopController extends EventEmitter {
           "conversation.handoff.v1",
           "permission.policy.v1",
           "runtime.adapter.v1",
+          "session.visibility.v1",
           ...(this.runtimeHandoffs ? ["runtime.handoff.v1" as const] : []),
         ],
         defaultPermissionMode: this.config.defaultPermissionMode,
@@ -601,8 +610,19 @@ export class DesktopController extends EventEmitter {
   }
 
   private allProjects() {
+    const visibleProjectIds = new Set(this.allSessions().map((session) => session.projectId));
     return [...this.broker.listProjects(), ...(this.runtimeSessions?.listProjects() ?? [])]
+      .filter((project) => visibleProjectIds.has(project.projectId))
       .sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.projectId.localeCompare(right.projectId));
+  }
+
+  private applySessionVisibility(sessions: BridgeSessionInfo[]): BridgeSessionInfo[] {
+    return sessions
+      .filter((session) => this.sessionVisibility.get(session.sessionId)?.visibility !== "deleted")
+      .map((session) => {
+        const entry = this.sessionVisibility.get(session.sessionId);
+        return entry?.visibility === "archived" ? { ...session, archivedAt: entry.updatedAt } : session;
+      });
   }
 
   private allSessions(): BridgeSessionInfo[] {
@@ -610,12 +630,13 @@ export class DesktopController extends EventEmitter {
       state === "waiting" ? 3 : state === "running" ? 2 : state === "queued" ? 1 : 0
     );
     const sessions = [...this.broker.listSessions(), ...(this.runtimeSessions?.listSessions() ?? [])];
-    return (this.runtimeHandoffs?.enrichSessions(sessions) ?? sessions)
+    const enriched = (this.runtimeHandoffs?.enrichSessions(sessions) ?? sessions)
       .sort((left, right) => (
         priority(right.turnState) - priority(left.turnState)
         || right.lastActivityAt - left.lastActivityAt
         || left.sessionId.localeCompare(right.sessionId)
       ));
+    return this.applySessionVisibility(enriched);
   }
 
   private listedSessions(
@@ -655,6 +676,15 @@ export class DesktopController extends EventEmitter {
    */
   private routesToExternalRuntime(sessionId: string): boolean {
     return Boolean(this.runtimeSessions) && parseRuntimeSessionId(sessionId) !== undefined;
+  }
+
+  private setSessionVisibility(sessionId: string, visibility: SessionVisibility | null): void {
+    if (visibility) {
+      this.sessionVisibility.set(sessionId, { visibility, updatedAt: Date.now() });
+    } else {
+      this.sessionVisibility.delete(sessionId);
+    }
+    this.conversationState?.setSessionVisibility(sessionId, visibility);
   }
 
   private async connect(): Promise<void> {
@@ -1073,6 +1103,51 @@ export class DesktopController extends EventEmitter {
       return {
         session: await this.broker.registerDesktopSession(sessionId),
       };
+    }
+    if (request.method === "session.archive") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const archived = params.archived !== false;
+      const session = this.allSessions().find((candidate) => candidate.sessionId === sessionId);
+      if (!session) throw new Error("Session not found");
+      const archivedAt = archived ? Date.now() : undefined;
+      this.setSessionVisibility(sessionId, archived ? "archived" : null);
+      await this.eventLog.append({
+        sessionId,
+        origin,
+        type: "session.archived",
+        data: { sessionId, archived: archivedAt !== undefined, ...(archivedAt ? { archivedAt } : {}) },
+      });
+      return {
+        session: this.allSessions().find((candidate) => candidate.sessionId === sessionId),
+      };
+    }
+    if (request.method === "session.delete") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const session = this.allSessions().find((candidate) => candidate.sessionId === sessionId);
+      if (!session) throw new Error("Session not found");
+      if (session.turnState === "running" || session.turnState === "queued" || session.turnState === "waiting") {
+        throw new Error("任务仍在进行中，请先停止再删除会话");
+      }
+      const pendingHandoff = session.pendingRuntimeHandoff;
+      if (pendingHandoff && !["applied", "cancelled", "failed"].includes(pendingHandoff.state)) {
+        throw new Error("跨 Desktop 接力尚未完成，请先取消接力再删除会话");
+      }
+      if (this.routesToExternalRuntime(sessionId)) {
+        this.runtimeSessions?.removeSessionRecords(sessionId);
+      } else {
+        await this.broker.removeSessionRecords(sessionId);
+      }
+      // Tombstone: native runtimes re-discover their own sessions on every
+      // refresh, so deletion persists as a visibility marker rather than a
+      // destructive delete in the native app.
+      this.setSessionVisibility(sessionId, "deleted");
+      await this.eventLog.append({
+        sessionId,
+        origin,
+        type: "session.deleted",
+        data: { sessionId },
+      });
+      return { deleted: true, sessionId };
     }
     if (request.method === "session.fallback.confirm") {
       const sessionId = stringParam(params, "sessionId")!;

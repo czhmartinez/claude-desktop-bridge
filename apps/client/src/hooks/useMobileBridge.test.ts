@@ -593,4 +593,82 @@ describe("provider route events", () => {
       allowedActions: { canSend: true },
     });
   });
+
+  it("applies session archive and delete events to the snapshot", () => {
+    const snapshot: BridgeHostSnapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.7.4",
+        capabilities: ["session.visibility.v1"],
+      },
+      projects: [],
+      sessions: [{
+        sessionId: "session-1",
+        projectId: "project-1",
+        projectName: "project",
+        cwd: "/tmp/project",
+        title: "维护任务",
+        source: "bridge",
+        transport: "bridge-host",
+        ownership: "BRIDGE_IDLE",
+        turnState: "idle",
+        lastActivityAt: 1,
+        pendingCount: 0,
+      }],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 1,
+    } as BridgeHostSnapshot;
+
+    const archived: BridgeEvent = {
+      eventId: "archive-1",
+      seq: 2,
+      timestamp: 2,
+      origin: "desktop",
+      type: "session.archived",
+      sessionId: "session-1",
+      data: { sessionId: "session-1", archived: true, archivedAt: 2 },
+    };
+    expect(applyEventToSnapshot(snapshot, archived, [])?.sessions[0]?.archivedAt).toBe(2);
+
+    const restored: BridgeEvent = {
+      eventId: "archive-2",
+      seq: 3,
+      timestamp: 3,
+      origin: "desktop",
+      type: "session.archived",
+      sessionId: "session-1",
+      data: { sessionId: "session-1", archived: false },
+    };
+    const withArchived = applyEventToSnapshot(snapshot, archived, []);
+    expect(applyEventToSnapshot(withArchived, restored, [])?.sessions[0]?.archivedAt).toBeUndefined();
+
+    const deleted: BridgeEvent = {
+      eventId: "delete-1",
+      seq: 4,
+      timestamp: 4,
+      origin: "desktop",
+      type: "session.deleted",
+      sessionId: "session-1",
+      data: { sessionId: "session-1" },
+    };
+    expect(applyEventToSnapshot(snapshot, deleted, [])?.sessions).toHaveLength(0);
+  });
 });

@@ -1,5 +1,14 @@
-## Unreleased
+## 0.7.4
 
+- Add session archive and delete on desktop and mobile behind the additive
+  `session.visibility.v1` capability. Archiving hides a session from the default
+  lists into a collapsed 已归档 section (full history preserved, one-tap restore);
+  deleting removes Bridge-side records (session configuration, queued turns,
+  terminal receipts, permission overrides) and writes a tombstone so native
+  re-discovery by the Claude catalog or the Codex/Hermes adapters never brings
+  the session back. Native apps keep their own data untouched. Sessions with a
+  running/queued/waiting turn or an active cross-Desktop relay refuse deletion;
+  `session.archived` / `session.deleted` events keep phones in sync live.
 - Fix the desktop relay dialog losing its only confirm path: once the session snapshot
   picked up the freshly previewed handoff, the dialog jumped straight to the
   "等待确认接力" progress view with no way to accept. A server-driven `previewed`

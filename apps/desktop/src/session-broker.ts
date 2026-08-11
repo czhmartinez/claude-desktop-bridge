@@ -897,6 +897,33 @@ export class SessionBroker extends EventEmitter {
     };
   }
 
+  /**
+   * Drop every Bridge-side record for a session deleted from the workspace.
+   * Callers must refuse busy sessions; native Claude transcripts stay
+   * untouched, and the controller's tombstone keeps re-discovered copies of
+   * the native session hidden from Bridge.
+   */
+  async removeSessionRecords(sessionId: string): Promise<void> {
+    this.bridgeSessions.delete(sessionId);
+    this.sessionConfigurations.delete(sessionId);
+    for (let index = this.pending.length - 1; index >= 0; index -= 1) {
+      if (this.pending[index]!.sessionId === sessionId) this.pending.splice(index, 1);
+    }
+    for (const [key, receipt] of [...this.terminalTurns]) {
+      if (receipt.sessionId === sessionId) this.terminalTurns.delete(key);
+    }
+    this.permissionBroker.cancelSession(sessionId);
+    const state = this.runtimeStates.get(sessionId);
+    if (state) {
+      if (state.releaseTimer) clearTimeout(state.releaseTimer);
+      this.runtimeStates.delete(sessionId);
+      await state.host?.close().catch(() => undefined);
+    }
+    await this.saveSessions();
+    await this.saveQueue();
+    this.emit("changed");
+  }
+
   async configureSession(input: ConfigureSessionInput): Promise<BridgeSessionConfiguration> {
     await this.initialize();
     const session = this.session(input.sessionId);
