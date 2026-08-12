@@ -102,12 +102,14 @@ and device coverage to mature.
 
 - [ ] 仓库保持 Public，默认分支为 `main`。
 - [ ] 英文 README 已就绪：`README_EN.md`。
+- [ ] 落地页已上线：https://czhmartinez.github.io/claude-desktop-bridge/ 。
 - [ ] 仓库描述覆盖 Claude/Codex/Hermes，而非只写 Claude。
 - [ ] 仓库 Topics 已添加：`claude-desktop`、`codex`、`electron`、`android`、`webrtc`、
   `end-to-end-encryption`、`remote-control`、`typescript`、`open-source`。
 - [ ] README 首屏有架构图、功能列表、快速开始和 Release 下载链接。
 - [ ] 提供一个演示视频或动态 GIF（手机遥控 + 跨 Desktop 接力）。
 - [ ] 有可点开的 Release 与 CI 徽章。
+- [ ] GitHub Discussions 已有欢迎帖与 Q&A 入口。
 - [ ] 确认申请表单中的 ChatGPT/GitHub 账号信息正确，并由本人提交。
 - [ ] 提交后记录申请日期与邮箱，滚动审核通常需要等待。
 

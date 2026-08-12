@@ -22,6 +22,9 @@ Desktop、Hermes Desktop 统一成一套会话体验，但不合并任何原生�
 
 ## 四、GitHub 阵地
 
+- 落地页（已部署）：https://czhmartinez.github.io/claude-desktop-bridge/
+- 仓库主页：已指向落地页
+- 社区入口：已创建 Announcements 欢迎帖
 - 仓库描述建议：
   `Open-source, end-to-end encrypted remote control and cross-desktop relay for Claude, Codex, and Hermes Desktop`
 - Topics：`claude-desktop`、`codex`、`hermes`、`electron`、`android`、`ios`、`capacitor`、

@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest an improvement for Bridge.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the workflow or pain point.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the change as concretely as possible.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Desktop
+        - Mobile
+        - Protocol / relay
+        - Documentation
+        - Other
+    validations:
+      required: true
