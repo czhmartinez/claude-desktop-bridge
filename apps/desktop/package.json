@@ -3,7 +3,7 @@
   "productName": "Bridge",
   "description": "Secure mobile access to independent local Desktop runtimes.",
   "author": "Bridge Contributors",
-  "version": "0.7.9",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "main": "dist/main.cjs",

@@ -29,7 +29,8 @@ function defaultChromePath() {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 const chrome = process.env.CHROME_PATH ?? defaultChromePath();
-const artifactDir = resolve("artifacts", "visual-qa");
+const qaTheme = process.env.BRIDGE_QA_THEME;
+const artifactDir = resolve("artifacts", qaTheme ? `visual-qa-${qaTheme}` : "visual-qa");
 const axePath = resolve("node_modules", "axe-core", "axe.min.js");
 const errors = [];
 const now = Date.now();
@@ -464,6 +465,9 @@ function watch(page, name) {
 }
 
 async function checkPage(page, name) {
+  // Let entrance animations settle (max stagger 385ms + 320ms duration) so axe
+  // measures final-state colors instead of mid-fade opacity artifacts.
+  await page.waitForTimeout(750);
   const overflow = await page.evaluate(() => ({
     horizontal: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
     empty: document.body.getBoundingClientRect().height < 100,
@@ -814,11 +818,15 @@ await waitForSocket(desktopSocket);
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 
 try {
+  const applyTheme = async (context) => {
+    if (qaTheme) await context.addInitScript((theme) => localStorage.setItem("bridge-theme", theme), qaTheme);
+  };
   const pairingContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
     serviceWorkers: "block",
     bypassCSP: true,
   });
+  await applyTheme(pairingContext);
   const pairingPage = await pairingContext.newPage();
   watch(pairingPage, "pairing");
   await pairingPage.goto(baseUrl, { waitUntil: "networkidle" });
@@ -832,6 +840,7 @@ try {
     serviceWorkers: "block",
     bypassCSP: true,
   });
+  await applyTheme(mobileContext);
   const mobile = await mobileContext.newPage();
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
@@ -1004,6 +1013,7 @@ try {
     serviceWorkers: "block",
     bypassCSP: true,
   });
+  await applyTheme(desktopContext);
   const desktop = await desktopContext.newPage();
   watch(desktop, "desktop");
   await desktop.addInitScript(({

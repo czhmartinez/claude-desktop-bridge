@@ -1,3 +1,50 @@
+## 0.8.0
+
+- Redesign the entire frontend on the Sunstone 2030 (renew) visual baseline:
+  - Dark is now the flagship theme and the default for new installs: a pure-black
+    base with warm white-opacity surface steps replaces the cool gray palette,
+    and the accent moves from green to terracotta clay (dark `#E0885F`, light
+    `#D97757`). The light theme keeps the same language on a warm ivory axis.
+    Returning users keep their stored theme choice.
+  - Typography is finalized: DM Sans for UI text (self-hosted variable woff2 via
+    Fontsource, CSP `font-src 'self'` compliant), Inter for tabular numerals,
+    JetBrains Mono for code, system PingFang/YaHei stack for Chinese.
+  - Liquid glass material, restricted to transient layers per the glass
+    discipline: dialogs, sheets, permission prompts, artifact previews, the
+    mobile top chrome, the floating composer, and the pairing hero card are
+    glass (blur 26px + saturate 180%, hairline border, top highlight, deep
+    shadow); canvas content cards stay flat with the four-piece treatment
+    (fill + 1px hairline + top 1px highlight + soft shadow). Glass panels get a
+    pointer-follow specular highlight (fine-pointer devices only).
+  - Motion is spring-disciplined: staggered-rise entrances for first-paint
+    lists (55ms steps, capped at the 8th item), glass-pop dialog entrances
+    (scale 0.97, never from 0), scrim fades, press states scale to 0.94-0.97,
+    interactions ≤200ms and entrances ≤320ms, transform/opacity only, and the
+    global `prefers-reduced-motion` guard collapses it all; glass falls back to
+    solid surfaces under `prefers-reduced-transparency`.
+  - Contrast is WCAG AA clean in both themes: on-tint semantic text uses
+    dedicated ink tokens (`--accent-ink`/`--warm-ink`/`--danger-ink`/
+    `--success-ink`), primary buttons pair deep clay with white text in light
+    (5.6:1) and bright clay with dark warm ink in dark (~6.8:1), and
+    informational microcopy no longer uses the decorative faint tone.
+  - Brand assets unify on the new neon-sign logo (master: `assets/logo.png`):
+    a photoreal orange neon arch between a monitor and a phone, joined by a
+    glowing lock node on a rain-damp concrete wall. Desktop icons
+    (icns/ico/png), Android and iOS launchers with adaptive foregrounds,
+    splash screens, PWA icons and favicons, the in-app BrandMark, the site
+    mark, and both social previews all derive from that single master, and
+    the architecture diagram on the site is recolored to match.
+- Restyle the landing site (site/) to the same baseline: pure-black warm dark,
+  self-hosted DM Sans, liquid-glass sticky header, asymmetric hero with the
+  real product conversation in a floating phone frame, a runtime-name marquee,
+  four-piece feature/security/download cards, and GSAP scroll entrances gated
+  behind `prefers-reduced-motion` with a no-CDN fallback that keeps content
+  visible.
+- Extend `scripts/visual-qa.mjs` with a theme matrix: `BRIDGE_QA_THEME=light|dark`
+  renders the full screenshot + axe matrix per theme into separate artifact
+  folders, and axe now waits for entrance animations to settle before measuring
+  contrast so mid-fade opacity no longer reads as false violations.
+
 ## 0.7.9
 
 - Fix relay tunnel drops and mobile pairing failures on the hosted relay:
