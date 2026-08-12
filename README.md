@@ -1,5 +1,7 @@
 # Bridge
 
+> English: [README_EN.md](README_EN.md) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+
 Bridge 0.7 是一个独立的多 Desktop 协作产品：它给 Claude Desktop、Codex Desktop 和 Hermes Desktop
 提供一致的会话、发送、流式输出、审批、追问和中断体验，并支持把一段任务经用户确认后
 跨 Desktop 串行接力，但不会把三者的原生会话、账号、模型、权限或历史合并到一起。
@@ -301,3 +303,7 @@ STUN/TURN。FCM/APNs 凭据、各平台签名和自动更新渠道仍属于正�
 详见 [发布手册](docs/RELEASE.md) 与 [安全模型](docs/SECURITY.md)。
 
 License: MIT
+
+申请 OpenAI 开源计划与推广材料见
+[OpenAI 开源申请与推广手册](docs/OPENAI-OPEN-SOURCE.md) 与
+[推广手册](docs/PROMOTION.md)。
