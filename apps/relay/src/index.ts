@@ -14,6 +14,7 @@ const allowedOrigins = (process.env.BRIDGE_ALLOWED_ORIGINS ?? "")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
+const maxFramesPerMinute = Number(process.env.BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE ?? 6000);
 
 const store = dataPath.endsWith(".json")
   ? new JsonFileRelayStore(dataPath)
@@ -23,6 +24,9 @@ const relay = await startRelayServer({
   port,
   store,
   trustProxy: process.env.BRIDGE_TRUST_PROXY === "1",
+  maxFramesPerMinute: Number.isFinite(maxFramesPerMinute) && maxFramesPerMinute > 0
+    ? maxFramesPerMinute
+    : 6000,
   ...(allowedOrigins.length ? { allowedOrigins } : {}),
 });
 const backups = scheduleRelayBackups(store, backupDirectory);

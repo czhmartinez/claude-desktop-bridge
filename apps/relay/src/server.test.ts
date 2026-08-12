@@ -464,4 +464,106 @@ describe("relay v3", () => {
       method: "turn.start",
     });
   });
+
+  it("allows native WebView origins and loopback browsers while blocking remote http origins", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+      allowedOrigins: ["https://relay.alioxis.com"],
+    });
+    relays.push(relay);
+
+    async function upgradeResult(origin?: string): Promise<number> {
+      return new Promise((resolve, reject) => {
+        const socket = new WebSocket(relay.url, {
+          headers: origin ? { origin } : undefined,
+        });
+        const timeout = setTimeout(() => {
+          socket.terminate();
+          reject(new Error("Timed out waiting for the relay upgrade"));
+        }, 3_000);
+        socket.on("open", () => {
+          clearTimeout(timeout);
+          socket.close(1000);
+          resolve(200);
+        });
+        socket.on("unexpected-response", (_request, response) => {
+          clearTimeout(timeout);
+          resolve(response.statusCode ?? 0);
+        });
+        socket.on("error", () => {
+          clearTimeout(timeout);
+          resolve(0);
+        });
+      });
+    }
+
+    // Native mobile WebViews and Electron file contexts must never be blocked.
+    for (const origin of [
+      "capacitor://localhost",
+      "bridge://localhost",
+      "http://localhost",
+      "https://localhost",
+      "ionic://localhost",
+      "file://",
+      "null",
+      undefined,
+    ]) {
+      await expect(upgradeResult(origin)).resolves.toBe(200);
+    }
+
+    // A remote attacker page is still rejected unless explicitly allowed.
+    await expect(upgradeResult("https://evil.example")).resolves.toBe(403);
+    await expect(upgradeResult("https://relay.alioxis.com")).resolves.toBe(200);
+  });
+
+  it("applies the per-connection frame budget without killing normal relay traffic", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+      maxFramesPerMinute: 5,
+    });
+    relays.push(relay);
+    const socket = new WebSocket(relay.url);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for the relay upgrade")), 3_000);
+      socket.on("open", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      socket.on("error", reject);
+    });
+    socket.send(JSON.stringify({
+      type: "hello",
+      version: PROTOCOL_VERSION,
+      roomId: "frame-budget-room-12345678",
+      role: "desktop",
+      deviceId: "frame-budget-host",
+      authToken: "x".repeat(43),
+      create: true,
+    }));
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for relay ready")), 3_000);
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as { type?: string };
+        if (frame.type === "ready") {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+    const errors: string[] = [];
+    socket.on("message", (data) => {
+      const frame = JSON.parse(data.toString()) as { type?: string; code?: string };
+      if (frame.type === "error" && frame.code) errors.push(frame.code);
+    });
+    for (let index = 0; index < 10; index += 1) {
+      socket.send(JSON.stringify({ type: "ping", at: Date.now() }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(errors).toContain("RATE_LIMITED");
+    socket.close();
+  });
 });

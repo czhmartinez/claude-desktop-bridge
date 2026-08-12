@@ -70,6 +70,13 @@ curl -fsS https://relay.alioxis.com/ready
 npm run probe:relay
 ```
 
+`BRIDGE_ALLOWED_ORIGINS` 必须同时包含托管页面域名与原生客户端的 WebView 来源；
+Capacitor 客户端在 Android 上报 `https://localhost`（旧版本为 `http://localhost`）、
+在 iOS 上报 `capacitor://localhost`，Electron 桌面加载 `file://` 页面时可能上报
+`null`。这些来源不会因为配置缺失而被中继拒绝。`BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE`
+是每连接每分钟的帧预算（默认 6000）：桌面会把每条事件扇出给每个已配对设备，
+历史 600/min 上限会在活跃会话中把隧道掐断，导致手机反复掉线与配对失败。
+
 Bridge 不从 `BRIDGE_SERVICE_ORIGIN` 自动派生 STUN 地址。ICE 必须显式配置，
 例如 Cloudflare 的公共 STUN：
 

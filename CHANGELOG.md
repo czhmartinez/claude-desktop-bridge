@@ -1,3 +1,24 @@
+## 0.7.9
+
+- Fix relay tunnel drops and mobile pairing failures on the hosted relay:
+  - The relay no longer rejects native WebView origins. Capacitor mobile clients
+    connect from `capacitor://localhost` (iOS), `http://localhost`/`https://localhost`
+    (Android) and Electron loads `file://`, which the strict `BRIDGE_ALLOWED_ORIGINS`
+    allowlist previously answered with HTTP 403 — pairing appeared to work only
+    from browsers or clients that sent no Origin header. Non-browser origins and
+    loopback origins are now always allowed; the allowlist still rejects remote
+    web pages.
+  - The per-connection frame budget is configurable and raised from 600 to
+    `BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE` (default 6000). The desktop fans out every
+    event to every paired device, so a busy session with a phone attached could
+    trip the old 600/min cap and have its tunnel killed with `RATE_LIMITED`,
+    forcing repeated reconnects and making the host look offline.
+  - Mobile pairing retries no longer burn the QR: the relay binds a device to the
+    first installation `instanceId`, and a transient handshake failure used to mint
+    a fresh random instanceId on retry, producing `PAIRING_ALREADY_USED` until a new
+    QR was generated. The provisional instanceId is now persisted per room/device
+    and reused on re-scan, then cleared after a successful import.
+
 ## 0.7.8
 
 - Make session tool actions a first-class strip on mobile: provider, relay, model/effort

@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { isIP, type AddressInfo } from "node:net";
 import {
   isEnvelopeFromConnection,
   PROTOCOL_VERSION,
@@ -18,6 +18,9 @@ const MAX_FRAME_BYTES = 1024 * 1024;
 const MAX_PAIRING_WINDOW_MS = 10 * 60 * 1000;
 const MAX_MIGRATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const ROOM_RATE_WINDOW_MS = 60 * 60 * 1000;
+/** Per-connection frame budget per minute; the desktop fans out every event to
+ *  every paired device, so the historical 600/min cap killed tunnels mid-stream. */
+const DEFAULT_MAX_FRAMES_PER_MINUTE = 6000;
 
 interface AuthenticatedClient {
   connectionId: string;
@@ -54,6 +57,7 @@ export interface RelayServerOptions {
   pushDispatcher?: PushDispatcher;
   maxRooms?: number;
   roomCreationsPerIpPerHour?: number;
+  maxFramesPerMinute?: number;
   trustProxy?: boolean;
 }
 
@@ -73,6 +77,31 @@ function hashesMatch(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function isBrowserOrigin(origin: string): boolean {
+  return origin.startsWith("http://") || origin.startsWith("https://");
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]" ||
+    hostname === "::1" ||
+    (isIP(hostname) === 4 && hostname.startsWith("127."))
+  );
+}
+
+function originAllowed(origin: string, allowedOrigins: Set<string>): boolean {
+  if (!origin) return true;
+  if (!isBrowserOrigin(origin)) return true;
+  const url = new URL(origin);
+  // Native WebViews (Capacitor/Electron) commonly report http://localhost or
+  // https://localhost as their page origin; loopback origins cannot be forged
+  // by a remote attacker, so they are always allowed.
+  if (isLoopbackHost(url.hostname)) return true;
+  return allowedOrigins.has(origin);
 }
 
 function safeSend(ws: WebSocket, frame: unknown): void {
@@ -96,6 +125,7 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
   const store = options.store ?? new MemoryRelayStore();
   const logger = options.logger ?? console;
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
+  const maxFramesPerMinute = options.maxFramesPerMinute ?? DEFAULT_MAX_FRAMES_PER_MINUTE;
   const pushDispatcher = options.pushDispatcher ?? new EnvironmentPushDispatcher();
   const maxRooms = options.maxRooms ?? 100_000;
   const roomCreationsPerIpPerHour = options.roomCreationsPerIpPerHour ?? 20;
@@ -347,7 +377,7 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
           state.rateCount = 0;
         }
         state.rateCount += 1;
-        if (state.rateCount > 600) {
+        if (state.rateCount > maxFramesPerMinute) {
           sendError(ws, "RATE_LIMITED", "Too many messages", 1008);
           return;
         }
@@ -584,7 +614,7 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
     const hostHeader = request.headers.host ?? "localhost";
     const url = new URL(request.url ?? "/", `http://${hostHeader}`);
     const origin = request.headers.origin;
-    if (url.pathname !== "/ws" || (allowedOrigins.size > 0 && origin && !allowedOrigins.has(origin))) {
+    if (url.pathname !== "/ws" || (allowedOrigins.size > 0 && origin && !originAllowed(origin, allowedOrigins))) {
       socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;

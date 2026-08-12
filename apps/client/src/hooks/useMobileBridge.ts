@@ -149,6 +149,7 @@ const INITIAL_STATE: MobileBridgeState = {
 
 const LOCAL_EVIDENCE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const LAST_ACTIVE_HOST_KEY = "bridge.mobile.last-active-host.v1";
+const PENDING_PAIRING_INSTANCE_PREFIX = "bridge.mobile.pending-pairing-instance.v1.";
 
 function readLastActiveHost(): string | undefined {
   try {
@@ -164,6 +165,37 @@ function writeLastActiveHost(roomId?: string): void {
     else localStorage.removeItem(LAST_ACTIVE_HOST_KEY);
   } catch {
     // The vault still retains pairing state when browser storage is unavailable.
+  }
+}
+
+/**
+ * Pairing claims are single-use on the relay: the first hello binds the
+ * device to an installation instanceId, and every later hello must present
+ * the same value. A transient handshake failure (e.g. the desktop is
+ * momentarily offline and `snapshot.get` times out) used to burn the QR
+ * because `fromPairing` minted a fresh random instanceId on each retry.
+ * Persist the provisional instanceId per room/device so re-scanning the same
+ * QR reclaims the same slot instead of failing with PAIRING_ALREADY_USED.
+ */
+function pendingPairingInstanceId(roomId: string, deviceId: string): string {
+  const key = `${PENDING_PAIRING_INSTANCE_PREFIX}${roomId}:${deviceId}`;
+  try {
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const value = randomId(12);
+    localStorage.setItem(key, value);
+    return value;
+  } catch {
+    return randomId(12);
+  }
+}
+
+function clearPendingPairingInstanceId(roomId: string, deviceId: string): void {
+  try {
+    localStorage.removeItem(`${PENDING_PAIRING_INSTANCE_PREFIX}${roomId}:${deviceId}`);
+  } catch {
+    // Non-fatal; a stale key is harmless because the installed identity
+    // carries the same instanceId after importPairing.
   }
 }
 
@@ -1678,7 +1710,9 @@ export function useMobileBridge() {
     const previousLastActiveHost = readLastActiveHost();
     let preparedCrypto: BridgeCrypto | undefined;
     try {
-      const crypto = await BridgeCrypto.fromPairing(pairing);
+      const crypto = await BridgeCrypto.fromPairing(pairing, {
+        instanceId: pendingPairingInstanceId(pairing.roomId, pairing.deviceId),
+      });
       preparedCrypto = crypto;
       await start(crypto, true, undefined, pairing);
       const connectDeadline = Date.now() + 20_000;
@@ -1695,6 +1729,7 @@ export function useMobileBridge() {
       });
       confirmedPairingSnapshot(pairing, response);
       await bridgeVault.importPairing(pairing, crypto);
+      clearPendingPairingInstanceId(pairing.roomId, pairing.deviceId);
       cryptoByRoomRef.current.set(crypto.identity.roomId, crypto);
       const nextHost = hostSummary({
         hostId: pairing.hostId,
