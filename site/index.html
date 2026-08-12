@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Bridge is an open-source, end-to-end encrypted remote and collaboration layer for Claude Desktop, Codex Desktop, and Hermes Desktop."
+    />
+    <meta property="og:title" content="Bridge" />
+    <meta
+      property="og:description"
+      content="One encrypted remote for Claude, Codex, and Hermes Desktop."
+    />
+    <meta property="og:image" content="assets/social-preview.png" />
+    <link rel="icon" href="assets/bridge-mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>Bridge - Encrypted remote control for Claude, Codex, and Hermes Desktop</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Bridge home">
+        <img src="assets/bridge-mark.svg" alt="" width="30" height="30" />
+        <span>Bridge</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#security">Security</a>
+        <a href="#download">Download</a>
+      </nav>
+      <a class="button button-small" href="https://github.com/czhmartinez/claude-desktop-bridge">GitHub</a>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Open source &middot; MIT &middot; End-to-end encrypted</p>
+          <h1>Bridge</h1>
+          <p class="lede">One encrypted remote for Claude, Codex, and Hermes Desktop.</p>
+          <p class="hero-text">
+            Control desktop AI agents from your phone, keep every native session,
+            account, model, and permission separate, and hand work between desktops
+            only when you explicitly approve it.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#download">Download</a>
+            <a class="button button-secondary" href="https://github.com/czhmartinez/claude-desktop-bridge">View on GitHub</a>
+          </div>
+        </div>
+        <div class="hero-visual">
+          <img src="assets/social-preview.png" alt="Bridge remote control for Claude, Codex, and Hermes Desktop" />
+        </div>
+      </section>
+
+      <section class="section" id="features">
+        <div class="section-heading">
+          <p class="eyebrow">What it does</p>
+          <h2>Unified control. Separate native worlds.</h2>
+          <p>
+            Bridge is not a remote desktop and not an input automator. It is a protocol
+            and host layer that gives one consistent interface to three desktop runtimes.
+          </p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <h3>One session surface</h3>
+            <p>Send, stream, approve, ask, steer, and stop Claude, Codex, and Hermes sessions from desktop or mobile.</p>
+          </article>
+          <article class="feature-card">
+            <h3>End-to-end encryption</h3>
+            <p>Per-device AES-256-GCM keys, WebRTC direct connections, and an encrypted WSS relay that never sees message content.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Cross-desktop relay</h3>
+            <p>Hand a bounded, redacted, encrypted task context to another runtime after two human confirmations and a read-only plan.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Local-first adapters</h3>
+            <p>Claude Agent SDK, official Codex app-server over stdio, and a loopback-only Hermes Gateway with process-scoped tokens.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Real evidence</h3>
+            <p>Image attachments, file-change summaries, artifact previews, and host-side file opening render as actual content, not paths.</p>
+          </article>
+          <article class="feature-card">
+            <h3>Built to recover</h3>
+            <p>Offline queues, event replay, push wake, fast reconnect, session archive, delete, and crash-safe relay recovery.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section section-band" id="architecture">
+        <div class="section-heading">
+          <p class="eyebrow">Architecture</p>
+          <h2>Phone, desktop host, and relay.</h2>
+          <p>
+            Devices prefer a direct WebRTC data channel. When they cannot connect directly,
+            traffic falls back to a self-hostable relay that stores only ciphertext and routing metadata.
+          </p>
+        </div>
+        <div class="diagram" role="img" aria-label="Architecture diagram showing mobile clients connecting to Bridge Desktop through WebRTC or an encrypted relay, with adapters for Claude, Codex, and Hermes">
+          <svg viewBox="0 0 960 360" xmlns="http://www.w3.org/2000/svg" role="presentation">
+            <g font-family="Helvetica, Arial, sans-serif" font-size="14" font-weight="600">
+              <rect x="40" y="40" width="200" height="72" rx="8" fill="#171d1a" stroke="#67d7a5" stroke-width="2"/>
+              <text x="140" y="70" fill="#d9f3e8" text-anchor="middle">Android / iOS</text>
+              <text x="140" y="92" fill="#8fa098" text-anchor="middle" font-weight="400">mobile client</text>
+
+              <rect x="720" y="40" width="200" height="72" rx="8" fill="#171d1a" stroke="#ffb764" stroke-width="2"/>
+              <text x="820" y="70" fill="#ffe5c2" text-anchor="middle">Bridge Desktop</text>
+              <text x="820" y="92" fill="#8fa098" text-anchor="middle" font-weight="400">Electron host</text>
+
+              <rect x="370" y="40" width="220" height="72" rx="8" fill="#171d1a" stroke="#67d7a5" stroke-width="2"/>
+              <text x="480" y="70" fill="#d9f3e8" text-anchor="middle">Encrypted Relay</text>
+              <text x="480" y="92" fill="#8fa098" text-anchor="middle" font-weight="400">self-hostable WSS</text>
+
+              <rect x="370" y="240" width="220" height="56" rx="8" fill="#171d1a" stroke="#8fa098" stroke-width="1"/>
+              <text x="480" y="272" fill="#b8c2bd" text-anchor="middle">STUN</text>
+
+              <rect x="680" y="230" width="270" height="104" rx="8" fill="#121614" stroke="#263029" stroke-width="1"/>
+              <text x="815" y="254" fill="#9aa8a0" text-anchor="middle" font-weight="400">Runtime adapters</text>
+              <text x="815" y="280" fill="#d9f3e8" text-anchor="middle">Claude &middot; Codex &middot; Hermes</text>
+              <text x="815" y="304" fill="#8fa098" text-anchor="middle" font-weight="400">native boundaries stay intact</text>
+            </g>
+            <g stroke="#4b5b52" stroke-width="2" fill="none">
+              <path d="M240 76h130"/>
+              <path d="M590 76h130"/>
+              <path d="M480 112v128"/>
+              <path d="M820 112v118"/>
+              <path d="M480 240v0"/>
+            </g>
+            <g fill="#67d7a5">
+              <circle cx="240" cy="76" r="4"/>
+              <circle cx="590" cy="76" r="4"/>
+              <circle cx="480" cy="112" r="4"/>
+              <circle cx="820" cy="112" r="4"/>
+            </g>
+            <text x="285" y="58" fill="#8fa098" font-family="Helvetica, Arial, sans-serif" font-size="12">WebRTC / WSS</text>
+            <text x="595" y="58" fill="#8fa098" font-family="Helvetica, Arial, sans-serif" font-size="12">WSS</text>
+            <text x="492" y="150" fill="#8fa098" font-family="Helvetica, Arial, sans-serif" font-size="12">ciphertext only</text>
+          </svg>
+        </div>
+        <p class="section-note">
+          Read the full
+          <a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/docs/ARCHITECTURE.md">architecture document</a>
+          for adapter contracts, ownership states, and the relay state machine.
+        </p>
+      </section>
+
+      <section class="section" id="security">
+        <div class="section-heading">
+          <p class="eyebrow">Security</p>
+          <h2>Safe boundaries are a product feature.</h2>
+          <p>Bridge deliberately refuses the shortcuts that make agent remotes risky.</p>
+        </div>
+        <div class="security-grid">
+          <div class="security-item">
+            <strong>No accessibility access</strong>
+            <span>No synthetic clicks, keyboard events, or clipboard reads.</span>
+          </div>
+          <div class="security-item">
+            <strong>No private CDP</strong>
+            <span>Bridge uses public interfaces and read-only transcript observation.</span>
+          </div>
+          <div class="security-item">
+            <strong>No OAuth extraction</strong>
+            <span>Credentials stay inside each desktop runtime.</span>
+          </div>
+          <div class="security-item">
+            <strong>No hidden chain-of-thought</strong>
+            <span>Only bounded, user-visible context travels between devices.</span>
+          </div>
+          <div class="security-item">
+            <strong>No automatic failover</strong>
+            <span>Cross-desktop relay always waits for explicit human approval.</span>
+          </div>
+          <div class="security-item">
+            <strong>No credential migration</strong>
+            <span>Relay packages never contain keys, OAuth tokens, or API secrets.</span>
+          </div>
+        </div>
+        <p class="section-note">
+          Full details in the
+          <a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/docs/SECURITY.md">security model</a>.
+        </p>
+      </section>
+
+      <section class="section section-band" id="download">
+        <div class="section-heading">
+          <p class="eyebrow">Download</p>
+          <h2>Try it today.</h2>
+          <p>
+            Prebuilt desktop installers and Android APKs are published for every release.
+            The repository is MIT licensed and ready to build yourself.
+          </p>
+        </div>
+        <div class="download-grid">
+          <a class="download-card" href="https://github.com/czhmartinez/claude-desktop-bridge/releases/latest">
+            <strong>Desktop</strong>
+            <span>macOS and Windows installers</span>
+          </a>
+          <a class="download-card" href="https://github.com/czhmartinez/claude-desktop-bridge/releases/latest">
+            <strong>Android</strong>
+            <span>APK builds for side loading</span>
+          </a>
+          <a class="download-card" href="https://github.com/czhmartinez/claude-desktop-bridge">
+            <strong>Source</strong>
+            <span>TypeScript monorepo with CI and QA</span>
+          </a>
+        </div>
+        <p class="section-note">
+          Quick start: <code>npm ci</code> then <code>npm run dev:desktop</code>.
+          Requires Node.js 22.13 or newer.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <a class="brand" href="#top">
+          <img src="assets/bridge-mark.svg" alt="" width="26" height="26" />
+          <span>Bridge</span>
+        </a>
+        <p>MIT licensed. Built for people who want their desktop agents to follow them.</p>
+        <nav aria-label="Footer">
+          <a href="https://github.com/czhmartinez/claude-desktop-bridge">GitHub</a>
+          <a href="https://github.com/czhmartinez/claude-desktop-bridge/releases">Releases</a>
+          <a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/README_EN.md">README</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

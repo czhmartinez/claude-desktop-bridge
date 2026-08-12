@@ -106,6 +106,8 @@ Prebuilt installers are published to
 for macOS, Windows, and Android. The mobile app is built on Capacitor with iOS support in
 the same source tree.
 
+Landing page: <https://czhmartinez.github.io/claude-desktop-bridge/>
+
 ## Verification
 
 The repository ships with unit tests, contract probes, packaged-desktop QA, real pairing
