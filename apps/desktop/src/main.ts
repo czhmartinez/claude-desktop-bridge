@@ -1,6 +1,11 @@
 import { join } from "node:path";
 import { rename, writeFile } from "node:fs/promises";
-import { parseBridgeIceServers, relayPathForUrl, type BridgeDesktopRuntimeId } from "@bridge/protocol";
+import {
+  DEFAULT_BRIDGE_ICE_SERVERS_JSON,
+  parseBridgeIceServers,
+  relayPathForUrl,
+  type BridgeDesktopRuntimeId,
+} from "@bridge/protocol";
 import {
   app,
   BrowserWindow,
@@ -90,7 +95,7 @@ const DEFAULT_ICE_SERVERS = parseBridgeIceServers(
   firstNonEmpty([
     process.env.BRIDGE_ICE_SERVERS,
     __BRIDGE_DEFAULT_ICE_SERVERS__,
-    '[{"urls":"stun:stun.cloudflare.com:3478"}]',
+    DEFAULT_BRIDGE_ICE_SERVERS_JSON,
   ])!,
 );
 
@@ -161,7 +166,15 @@ async function desktopMain(): Promise<void> {
   });
   await evidence.initialize();
   const runtimePaths = claudeRuntimePaths();
-  const observer = new TranscriptObserver({ paths: runtimePaths, eventLog, evidence });
+  const observer = new TranscriptObserver({
+    paths: runtimePaths,
+    eventLog,
+    evidence,
+    // Keep direct Claude Desktop transcript changes on the same cadence as
+    // Codex/Hermes native runtime events.
+    pollIntervalMs: 900,
+    catalogIntervalMs: 2_000,
+  });
   await observer.start();
   const desktopRegistrar = new ClaudeDesktopSessionRegistrar({ paths: runtimePaths });
   let runtimeStatus = (): ReturnType<SessionBroker["runtimeStatus"]> => ({

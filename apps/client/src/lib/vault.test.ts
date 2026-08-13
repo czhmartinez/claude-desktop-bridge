@@ -1,4 +1,9 @@
-import { BridgeCrypto, bridgeEndpoint, type BridgeHostSnapshot } from "@bridge/protocol";
+import {
+  BridgeCrypto,
+  DEFAULT_BRIDGE_ICE_SERVERS,
+  bridgeEndpoint,
+  type BridgeHostSnapshot,
+} from "@bridge/protocol";
 import { indexedDB } from "fake-indexeddb";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BridgeVault } from "./vault.js";
@@ -58,6 +63,52 @@ beforeAll(() => {
 });
 
 describe("BridgeVault pairing migration", () => {
+  it("upgrades the historical Cloudflare-only ICE default without removing the paired host", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    const pairing = await BridgeCrypto.createDevicePairing({
+      hostId: "ice-default-host",
+      pairingEpoch: 1,
+      roomId: "ice-default-room",
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Studio Mac",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    });
+
+    const crypto = await vault.importPairing(pairing.pairing);
+    const migrated = (await vault.listHosts())[0];
+    expect(migrated).toMatchObject({
+      hostId: "ice-default-host",
+      roomId: "ice-default-room",
+      crypto: expect.objectContaining({ identity: expect.objectContaining({ deviceId: crypto.identity.deviceId }) }),
+      iceServers: DEFAULT_BRIDGE_ICE_SERVERS,
+    });
+
+    // A normal host touch persists the smooth transport upgrade without
+    // changing any pairing identity or encrypted content.
+    await vault.touchHost(crypto);
+    expect((await vault.listHosts())[0]?.iceServers).toEqual(DEFAULT_BRIDGE_ICE_SERVERS);
+    await vault.clear();
+  });
+
+  it("keeps an explicitly configured ICE list for an existing pairing", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    const explicitIce = [{ urls: "stun:stun.example.net:3478" }];
+    const pairing = await BridgeCrypto.createDevicePairing({
+      hostId: "ice-custom-host",
+      pairingEpoch: 1,
+      roomId: "ice-custom-room",
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Studio Mac",
+      iceServers: explicitIce,
+    });
+
+    await vault.importPairing(pairing.pairing);
+    expect((await vault.listHosts())[0]?.iceServers).toEqual(explicitIce);
+    await vault.clear();
+  });
+
   it("prefers the packaged Relay while retaining an existing public Relay as fallback", async () => {
     const vault = new BridgeVault();
     await vault.clear();

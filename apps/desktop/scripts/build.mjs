@@ -29,7 +29,7 @@ const sharedDefine = {
     buildEnvironmentValue(
       process.env,
       "BRIDGE_ICE_SERVERS",
-      '[{"urls":"stun:stun.cloudflare.com:3478"}]',
+      '[{"urls":"stun:stun.alioxis.com:3478"},{"urls":"stun:stun.cloudflare.com:3478"}]',
     ),
   ),
 };

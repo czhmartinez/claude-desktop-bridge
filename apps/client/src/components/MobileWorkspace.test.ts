@@ -398,6 +398,41 @@ describe("conversationItems", () => {
     ]);
   });
 
+  it("replaces a native stream with its synchronized final history when no completion event arrives", () => {
+    const events: BridgeEvent[] = [
+      {
+        eventId: "delta-1",
+        sessionId: "session-1",
+        turnId: "native-turn-1",
+        itemId: "stream-item",
+        seq: 1,
+        timestamp: 1,
+        origin: "codex-host",
+        type: "assistant.delta",
+        data: { text: "正在生成" },
+      },
+      {
+        eventId: "observed-final",
+        sessionId: "session-1",
+        turnId: "native-turn-1",
+        itemId: "native-final",
+        seq: 2,
+        timestamp: 2,
+        origin: "codex-host",
+        type: "session.observed",
+        data: { role: "assistant", text: "正在生成的最终回答" },
+      },
+    ];
+
+    expect(conversationItems("session-1", undefined, events, [])).toEqual([
+      expect.objectContaining({
+        id: "native-final",
+        role: "assistant",
+        text: "正在生成的最终回答",
+      }),
+    ]);
+  });
+
   it("does not render Claude interruption and resume sentinels from cached history or events", () => {
     const events: BridgeEvent[] = [
       {

@@ -9,6 +9,7 @@ import { DesktopDashboard } from "./components/DesktopDashboard.js";
 import { HostBrowser } from "./components/HostBrowser.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
 import { PairingScreen } from "./components/PairingScreen.js";
+import { PairingSyncScreen } from "./components/PairingSyncScreen.js";
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
@@ -19,6 +20,8 @@ export function App() {
 
   useEffect(() => registerMobileBackHandler(() => {
     if (window.bridgeDesktop) return false;
+    // The secure import must finish before a back gesture can change route.
+    if (mobile.state.pairingSync) return true;
     if (pairingOpen && mobile.state.hosts.length > 0) {
       setPairingOpen(false);
       return true;
@@ -34,10 +37,12 @@ export function App() {
     mobile.backToHosts,
     mobile.state.activeHostId,
     mobile.state.hosts.length,
+    mobile.state.pairingSync,
     pairingOpen,
   ]);
 
   if (window.bridgeDesktop) return <DesktopDashboard theme={theme} onToggleTheme={toggleTheme} />;
+  if (mobile.state.pairingSync) return <PairingSyncScreen sync={mobile.state.pairingSync} />;
   if (mobile.state.loading && mobile.state.hosts.length === 0 && !pairingOpen) {
     return <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>;
   }

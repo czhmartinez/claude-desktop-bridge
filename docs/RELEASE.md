@@ -77,15 +77,15 @@ Capacitor 客户端在 Android 上报 `https://localhost`（旧版本为 `http:/
 是每连接每分钟的帧预算（默认 6000）：桌面会把每条事件扇出给每个已配对设备，
 历史 600/min 上限会在活跃会话中把隧道掐断，导致手机反复掉线与配对失败。
 
-Bridge 不从 `BRIDGE_SERVICE_ORIGIN` 自动派生 STUN 地址。ICE 必须显式配置，
-例如 Cloudflare 的公共 STUN：
+Bridge 不从 `BRIDGE_SERVICE_ORIGIN` 自动派生 STUN 地址。ICE 必须显式配置；
+默认优先使用自托管 STUN，并保留 Cloudflare 作为备用：
 
 ```bash
-BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]'
+BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.alioxis.com:3478"},{"urls":"stun:stun.cloudflare.com:3478"}]'
 ```
 
-自托管 Coturn 仍是高级选项；使用时再开放 TCP/UDP `3478`。TURN 长期密钥不得
-打进客户端，必须由服务端换取短期凭据后下发。
+这里默认只包含 STUN，不包含 TURN 或长期凭据。若另行配置 TURN，长期密钥不得打进
+客户端，必须由服务端换取短期凭据后下发。
 
 ## 3. 推送配置
 
@@ -116,7 +116,7 @@ BRIDGE_APNS_PRODUCTION=1
 BRIDGE_RELAY_URL=ws://127.0.0.1:8788/ws \
 BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
 BRIDGE_SERVICE_ORIGIN=https://你的域名 \
-BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]' \
+BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.alioxis.com:3478"},{"urls":"stun:stun.cloudflare.com:3478"}]' \
 BRIDGE_PAIRING_BASE_URL=https://你的域名 \
 BRIDGE_MAC_SIGN_IDENTITY='Developer ID Application: 你的名称 (TEAMID)' \
 npm run make -w @bridge/desktop
@@ -241,7 +241,7 @@ npm run test:desktop:packaged:windows
 ```bash
 VITE_BRIDGE_PUBLIC_RELAY_URL=wss://你的域名/ws \
 VITE_BRIDGE_SERVICE_ORIGIN=https://你的域名 \
-VITE_BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.cloudflare.com:3478"}]' \
+VITE_BRIDGE_ICE_SERVERS='[{"urls":"stun:stun.alioxis.com:3478"},{"urls":"stun:stun.cloudflare.com:3478"}]' \
 VITE_BRIDGE_PUSH_ENABLED=true \
 npm run build:android:debug
 npm run sync -w @bridge/mobile

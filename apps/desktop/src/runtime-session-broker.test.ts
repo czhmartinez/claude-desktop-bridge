@@ -27,6 +27,7 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
   readonly turnInputs: RuntimeAdapterTurnInput[] = [];
   readonly resolved: Array<{ requestId: string; decision: BridgePermissionDecision }> = [];
   private readonly rows = new Map<string, RuntimeAdapterSession>();
+  private readonly historyRows = new Map<string, RuntimeAdapterHistoryItem[]>();
 
   constructor(id: Exclude<BridgeDesktopRuntimeId, "claude-desktop">, nativeSessionId: string) {
     super(id, id === "codex-desktop" ? "Codex Desktop" : "Hermes Desktop", [
@@ -50,6 +51,7 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
       turnState: "idle",
       transport: id === "codex-desktop" ? "codex-app-server" : "hermes-gateway",
     });
+    this.historyRows.set(nativeSessionId, []);
   }
 
   async initialize(): Promise<void> {
@@ -79,7 +81,7 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
   }
 
   async history(nativeSessionId: string): Promise<RuntimeAdapterHistoryItem[]> {
-    return [{ id: `history:${nativeSessionId}`, role: "assistant", text: this.id, createdAt: 3 }];
+    return (this.historyRows.get(nativeSessionId) ?? []).map((item) => ({ ...item }));
   }
 
   async configuration(nativeSessionId: string): Promise<RuntimeAdapterConfiguration> {
@@ -159,6 +161,35 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
       },
     });
   }
+
+  setHistory(nativeSessionId: string, items: RuntimeAdapterHistoryItem[]): void {
+    this.historyRows.set(nativeSessionId, items.map((item) => ({ ...item })));
+  }
+
+  updateSession(nativeSessionId: string, change: Partial<RuntimeAdapterSession>): void {
+    const session = this.rows.get(nativeSessionId);
+    if (!session) throw new Error("Session not found");
+    const next = { ...session, ...change };
+    this.rows.set(nativeSessionId, next);
+    this.emitRuntimeEvent({ type: "session.updated", session: { ...next } });
+  }
+
+  emitAssistantDelta(nativeSessionId: string, turnId: string, text: string): void {
+    this.emitRuntimeEvent({
+      type: "assistant.delta",
+      nativeSessionId,
+      turnId,
+      itemId: `${turnId}:stream`,
+      text,
+      at: Date.now(),
+    });
+  }
+
+  mutateSilently(nativeSessionId: string, change: Partial<RuntimeAdapterSession>): void {
+    const session = this.rows.get(nativeSessionId);
+    if (!session) throw new Error("Session not found");
+    this.rows.set(nativeSessionId, { ...session, ...change });
+  }
 }
 
 describe("RuntimeSessionBroker", () => {
@@ -210,10 +241,7 @@ describe("RuntimeSessionBroker", () => {
     });
     expect(codex.turnInputs).toHaveLength(1);
     expect(hermes.turnInputs).toHaveLength(0);
-    await expect(broker.history(codexSessionId)).resolves.toMatchObject({
-      sessionId: codexSessionId,
-      items: [{ role: "assistant", text: "codex-desktop" }],
-    });
+    await expect(broker.history(codexSessionId)).resolves.toMatchObject({ sessionId: codexSessionId, items: [] });
 
     codex.requestPermission("same-native-id", "approval-1");
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -226,6 +254,141 @@ describe("RuntimeSessionBroker", () => {
     expect(codex.resolved).toEqual([{ requestId: "approval-1", decision: "allow-once" }]);
     expect(hermes.resolved).toEqual([]);
 
+    await broker.close();
+  });
+
+  it("publishes native history and session updates without an explicit client refresh", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-live-sync-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-live");
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"), 1);
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      eventLog,
+      undefined,
+      { liveSyncIntervalMs: 60_000 },
+    );
+    await broker.initialize();
+    const sessionId = runtimeSessionId("codex-desktop", "native-live");
+    const received: string[] = [];
+    eventLog.on("event", (event) => received.push(event.type));
+
+    codex.setHistory("native-live", [{
+      id: "native-message-1",
+      turnId: "native-turn-1",
+      role: "assistant",
+      text: "来自 Codex Desktop 的最新内容",
+      createdAt: 10,
+    }]);
+    codex.updateSession("native-live", {
+      turnState: "running",
+      activeTurnId: "native-turn-1",
+      lastActivityAt: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await broker.syncLiveHistories();
+
+    expect(received).toContain("runtime.updated");
+    expect(eventLog.replay().filter((event) => event.sessionId === sessionId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "session.observed",
+        itemId: "native-message-1",
+        data: expect.objectContaining({ text: "来自 Codex Desktop 的最新内容" }),
+      }),
+    ]));
+
+    await broker.syncLiveHistories();
+    expect(eventLog.replay().filter((event) => event.itemId === "native-message-1")).toHaveLength(1);
+    await broker.close();
+  });
+
+  it("discovers a native-only update without an adapter notification", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-silent-sync-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-silent");
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"), 1);
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      eventLog,
+      undefined,
+      { liveSyncIntervalMs: 60_000 },
+    );
+    await broker.initialize();
+    const sessionId = runtimeSessionId("codex-desktop", "native-silent");
+
+    codex.setHistory("native-silent", [{
+      id: "native-silent-message",
+      turnId: "native-silent-turn",
+      role: "assistant",
+      text: "没有主动通知的原生更新",
+      createdAt: 20,
+    }]);
+    codex.mutateSilently("native-silent", {
+      title: "Native-only update",
+      turnState: "running",
+      activeTurnId: "native-silent-turn",
+      lastActivityAt: 20,
+    });
+    await broker.refreshDiscoveredSessions();
+    await broker.syncLiveHistories();
+
+    expect(eventLog.replay().filter((event) => event.sessionId === sessionId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "runtime.updated",
+        data: expect.objectContaining({ session: expect.objectContaining({ title: "Native-only update" }) }),
+      }),
+      expect.objectContaining({
+        type: "session.observed",
+        itemId: "native-silent-message",
+        data: expect.objectContaining({ text: "没有主动通知的原生更新" }),
+      }),
+    ]));
+    await broker.close();
+  });
+
+  it("waits for an active native stream to finish before importing its final history", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-stream-history-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "native-stream");
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"), 1);
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      eventLog,
+      undefined,
+      { liveSyncIntervalMs: 60_000 },
+    );
+    await broker.initialize();
+    const sessionId = runtimeSessionId("codex-desktop", "native-stream");
+
+    codex.setHistory("native-stream", [{
+      id: "native-final-message",
+      turnId: "native-stream-turn",
+      role: "assistant",
+      text: "完成的原生回复",
+      createdAt: 30,
+    }]);
+    codex.updateSession("native-stream", {
+      turnState: "running",
+      activeTurnId: "native-stream-turn",
+      lastActivityAt: 30,
+    });
+    codex.emitAssistantDelta("native-stream", "native-stream-turn", "完成的");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await broker.syncLiveHistories();
+
+    expect(eventLog.replay().filter((event) => event.itemId === "native-final-message")).toHaveLength(0);
+
+    codex.mutateSilently("native-stream", {
+      turnState: "idle",
+      lastActivityAt: 31,
+    });
+    await broker.refreshDiscoveredSessions();
+    await broker.syncLiveHistories();
+
+    expect(eventLog.replay().filter((event) => event.itemId === "native-final-message")).toEqual([
+      expect.objectContaining({ type: "session.observed", data: expect.objectContaining({ text: "完成的原生回复" }) }),
+    ]);
+    expect(eventLog.replay().filter((event) => event.type === "assistant.delta")).toHaveLength(1);
     await broker.close();
   });
 

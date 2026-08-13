@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -192,6 +192,87 @@ describe("CodexAppServerAdapter", () => {
     expect(client.responses).toContainEqual({ id: 42, result: { decision: "accept" } });
 
     await adapter.close();
+  });
+
+  it("recovers native Codex activity from rollout files after Bridge starts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-codex-rollout-"));
+    directories.push(directory);
+    const rolloutDirectory = join(directory, "sessions");
+    const nativeSessionId = "00000000-0000-4000-8000-000000000001";
+    const rolloutPath = join(
+      rolloutDirectory,
+      "2026",
+      "08",
+      "12",
+      `rollout-2026-08-12T00-00-00-${nativeSessionId}.jsonl`,
+    );
+    await mkdir(join(rolloutDirectory, "2026", "08", "12"), { recursive: true });
+    await writeFile(rolloutPath, `${JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "external-turn-1" },
+    })}\n`);
+
+    const client = new FakeCodexClient();
+    client.listedThreads[0] = {
+      ...client.listedThreads[0],
+      id: nativeSessionId,
+      status: { type: "idle" },
+    };
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+      rolloutDirectory,
+      rolloutPollIntervalMs: 10,
+      rolloutDiscoveryIntervalMs: 60_000,
+      rolloutIndexIntervalMs: 1,
+    });
+    const events: Array<{ type?: string; session?: { turnState?: string } }> = [];
+    adapter.on("event", (event) => events.push(event as { type?: string; session?: { turnState?: string } }));
+
+    try {
+      await adapter.initialize();
+      expect(adapter.sessions()).toEqual([
+        expect.objectContaining({
+          nativeSessionId,
+          turnState: "running",
+          activeTurnId: "external-turn-1",
+        }),
+      ]);
+
+      await appendFile(rolloutPath, `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "external-turn-1" },
+      })}\n`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(adapter.sessions()).toEqual([
+        expect.objectContaining({ nativeSessionId, turnState: "idle" }),
+      ]);
+      expect(adapter.sessions()[0]).not.toHaveProperty("activeTurnId");
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "session.updated",
+        session: expect.objectContaining({ turnState: "idle" }),
+      }));
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("normalizes current Codex thread status variants", async () => {
+    const client = new FakeCodexClient();
+    client.listedThreads[0] = { ...client.listedThreads[0], status: "waitingForApproval" };
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+    });
+    try {
+      await adapter.initialize();
+      expect(adapter.sessions()).toEqual([
+        expect.objectContaining({ nativeSessionId: "thread-1", turnState: "waiting" }),
+      ]);
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("sends native model, provider, effort and fast settings to the next Codex turn", async () => {

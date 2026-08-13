@@ -27,6 +27,7 @@ import {
   type RuntimeAdapterEvent,
   type RuntimeAdapterConfiguration,
   type RuntimeAdapterConfigurationChange,
+  type RuntimeAdapterHistoryItem,
   type RuntimeAdapterPermission,
   type RuntimeAdapterSession,
   RuntimeAdapterRegistry,
@@ -87,12 +88,45 @@ function safeTimestamp(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : Date.now();
 }
 
+function historySignature(item: RuntimeAdapterHistoryItem): string {
+  return JSON.stringify({
+    role: item.role,
+    text: item.text,
+    toolName: item.toolName,
+    state: item.state,
+    fileChanges: item.fileChanges,
+    attachments: item.attachments,
+  });
+}
+
+function sessionFingerprint(session: BridgeSessionInfo): string {
+  return JSON.stringify({
+    title: session.title,
+    lastActivityAt: session.lastActivityAt,
+    turnState: session.turnState,
+    activeTurnId: session.activeTurnId,
+    model: session.model,
+    provider: session.provider,
+    reasoningEffort: session.reasoningEffort,
+    fast: session.fast,
+  });
+}
+
+export interface RuntimeSessionBrokerOptions {
+  liveSyncIntervalMs?: number;
+}
+
 export class RuntimeSessionBroker extends EventEmitter {
   private readonly sessionsByRuntime = new Map<BridgeDesktopRuntimeId, Map<string, RuntimeAdapterSession>>();
   private readonly imageDirs = new Map<string, string>();
   private readonly permissions = new Map<string, StoredPermission>();
   private readonly hostPermissionModes = new Map<BridgeDesktopRuntimeId, BridgePermissionMode>();
   private readonly sessionPermissionModes = new Map<string, BridgePermissionMode>();
+  private readonly observedHistory = new Map<string, Map<string, string>>();
+  private readonly historySyncPending = new Set<string>();
+  private readonly publishedSessionFingerprints = new Map<string, string>();
+  private readonly liveSyncIntervalMs: number;
+  private liveSyncTimer: ReturnType<typeof setTimeout> | undefined;
   private eventQueue: Promise<void> = Promise.resolve();
   private initialized = false;
 
@@ -100,10 +134,19 @@ export class RuntimeSessionBroker extends EventEmitter {
     readonly registry: RuntimeAdapterRegistry,
     private readonly eventLog: SessionEventLog,
     private readonly state?: ConversationStateStore,
+    options: RuntimeSessionBrokerOptions = {},
   ) {
     super();
+    this.liveSyncIntervalMs = Math.max(500, options.liveSyncIntervalMs ?? 1_200);
     registry.on("changed", () => {
+      const before = this.sessionFingerprints();
       this.syncCachedSessions();
+      this.queueChangedHistories(before);
+      this.eventQueue = this.eventQueue
+        .catch(() => undefined)
+        .then(async () => {
+          await this.publishChangedRuntimeSessions(before);
+        });
       this.emit("changed");
     });
     registry.on("adapter-error", (runtimeId: BridgeDesktopRuntimeId, error: Error) => {
@@ -131,12 +174,17 @@ export class RuntimeSessionBroker extends EventEmitter {
     }
     await this.registry.initialize();
     this.syncCachedSessions();
+    this.seedPublishedSessionFingerprints();
     this.emit("changed");
+    this.scheduleLiveSync();
   }
 
   async refresh(runtimeId?: BridgeDesktopRuntimeId): Promise<BridgeDesktopRuntime[]> {
+    const before = this.sessionFingerprints();
     const runtimes = await this.registry.refresh(runtimeId);
     this.syncCachedSessions();
+    this.queueChangedHistories(before);
+    await this.publishChangedRuntimeSessions(before);
     this.emit("changed");
     return runtimes;
   }
@@ -149,6 +197,7 @@ export class RuntimeSessionBroker extends EventEmitter {
    * a window activation or reconnect.
    */
   async refreshDiscoveredSessions(): Promise<void> {
+    const before = this.sessionFingerprints();
     for (const runtime of this.registry.runtimes()) {
       if (runtime.state !== "ready") continue;
       const adapter = this.registry.adapter(runtime.id);
@@ -160,7 +209,28 @@ export class RuntimeSessionBroker extends EventEmitter {
       }
     }
     this.syncCachedSessions();
-    this.emit("changed");
+    const historiesChanged = this.queueChangedHistories(before);
+    const runtimeChanged = await this.publishChangedRuntimeSessions(before);
+    if (historiesChanged || runtimeChanged) this.emit("changed");
+  }
+
+  /**
+   * Reconcile native histories into the shared event log. Native desktop apps
+   * do not all emit the same live notifications, so this is the common
+   * fallback that keeps Bridge desktop and phones current without a manual
+   * refresh or changing the selected session.
+   */
+  async syncLiveHistories(): Promise<void> {
+    const active = this.listSessions()
+      .filter((session) => (
+        session.turnState === "running" || session.turnState === "waiting" || session.turnState === "queued"
+      ))
+      .map((session) => session.sessionId);
+    const candidates = [...new Set([...this.historySyncPending, ...active])].slice(0, 18);
+    for (const sessionId of candidates) {
+      const synced = await this.syncSessionHistory(sessionId).then(() => true, () => false);
+      if (synced) this.historySyncPending.delete(sessionId);
+    }
   }
 
   runtimes(): BridgeDesktopRuntime[] {
@@ -472,8 +542,167 @@ export class RuntimeSessionBroker extends EventEmitter {
   }
 
   async close(): Promise<void> {
+    if (this.liveSyncTimer) clearTimeout(this.liveSyncTimer);
+    this.liveSyncTimer = undefined;
+    this.initialized = false;
     await Promise.allSettled([...this.imageDirs.keys()].map((sessionId) => this.cleanupImages(sessionId)));
     await this.registry.close();
+  }
+
+  private scheduleLiveSync(): void {
+    if (!this.initialized || this.liveSyncTimer) return;
+    this.liveSyncTimer = setTimeout(() => {
+      this.liveSyncTimer = undefined;
+      this.eventQueue = this.eventQueue
+        .catch(() => undefined)
+        .then(async () => {
+          await this.refreshDiscoveredSessions();
+          await this.syncLiveHistories();
+        })
+        .finally(() => this.scheduleLiveSync());
+    }, this.liveSyncIntervalMs);
+    this.liveSyncTimer.unref?.();
+  }
+
+  private async syncSessionHistory(sessionId: string): Promise<void> {
+    const { adapter, nativeSessionId } = this.requireSession(sessionId);
+    const history = await adapter.history(nativeSessionId);
+    const known = this.observedHistory.get(sessionId) ?? new Map<string, string>();
+    for (const item of history) {
+      const signature = historySignature(item);
+      const previous = known.get(item.id);
+      if (previous === signature) continue;
+      if (item.role === "user" || item.role === "assistant") {
+        if (item.role === "assistant" && this.hasLiveAssistantStream(sessionId, item.turnId)) {
+          continue;
+        }
+        if (this.hasRecordedMessage(sessionId, item)) {
+          known.set(item.id, signature);
+          continue;
+        }
+        await this.eventLog.append({
+          sessionId,
+          ...(item.turnId ? { turnId: item.turnId } : {}),
+          itemId: item.id,
+          timestamp: safeTimestamp(item.createdAt),
+          origin: originFor(adapter.id),
+          type: "session.observed",
+          data: {
+            role: item.role,
+            text: item.text,
+            runtimeId: adapter.id,
+            ...(item.attachments?.length ? { attachments: item.attachments } : {}),
+          },
+        });
+        known.set(item.id, signature);
+        continue;
+      }
+      if (item.role !== "tool") {
+        known.set(item.id, signature);
+        continue;
+      }
+      const type: BridgeEventType = item.state === "running" ? "tool.started" : "tool.completed";
+      const existing = this.eventLog.latestItem(sessionId, type, item.id);
+      if (
+        existing &&
+        existing.data.summary === item.text &&
+        existing.data.toolName === (item.toolName ?? "Tool")
+      ) {
+        known.set(item.id, signature);
+        continue;
+      }
+      await this.eventLog.append({
+        sessionId,
+        ...(item.turnId ? { turnId: item.turnId } : {}),
+        itemId: item.id,
+        timestamp: safeTimestamp(item.createdAt),
+        origin: originFor(adapter.id),
+        type,
+        data: {
+          toolName: item.toolName ?? "Tool",
+          summary: item.text,
+          runtimeId: adapter.id,
+          ...(item.fileChanges?.length ? { fileChanges: item.fileChanges } : {}),
+        },
+      });
+      known.set(item.id, signature);
+    }
+    this.observedHistory.set(sessionId, known);
+  }
+
+  private sessionFingerprints(): Map<string, string> {
+    return new Map(this.listSessions().map((session) => [session.sessionId, sessionFingerprint(session)]));
+  }
+
+  private seedPublishedSessionFingerprints(): void {
+    this.publishedSessionFingerprints.clear();
+    for (const session of this.listSessions()) {
+      this.publishedSessionFingerprints.set(session.sessionId, sessionFingerprint(session));
+    }
+  }
+
+  private async publishChangedRuntimeSessions(before: Map<string, string>): Promise<boolean> {
+    let changed = false;
+    const current = this.listSessions();
+    const currentIds = new Set(current.map((session) => session.sessionId));
+    for (const session of current) {
+      if (before.get(session.sessionId) === sessionFingerprint(session)) continue;
+      if (await this.publishRuntimeSession(session)) changed = true;
+    }
+    for (const sessionId of this.publishedSessionFingerprints.keys()) {
+      if (!currentIds.has(sessionId)) this.publishedSessionFingerprints.delete(sessionId);
+    }
+    return changed;
+  }
+
+  private async publishRuntimeSession(session: BridgeSessionInfo): Promise<boolean> {
+    if (!session.runtimeId) return false;
+    const fingerprint = sessionFingerprint(session);
+    if (this.publishedSessionFingerprints.get(session.sessionId) === fingerprint) return false;
+    this.publishedSessionFingerprints.set(session.sessionId, fingerprint);
+    await this.eventLog.append({
+      sessionId: session.sessionId,
+      timestamp: safeTimestamp(session.lastActivityAt),
+      origin: originFor(session.runtimeId),
+      type: "runtime.updated",
+      data: { runtimeId: session.runtimeId, session },
+    });
+    return true;
+  }
+
+  private hasRecordedMessage(sessionId: string, item: RuntimeAdapterHistoryItem): boolean {
+    const observed = this.eventLog.latestItem(sessionId, "session.observed", item.id);
+    if (observed?.data.text === item.text) return true;
+    const type = item.role === "user" ? "user.message.accepted" : "assistant.completed";
+    const recorded = this.eventLog.latestItem(sessionId, type, item.id);
+    if (recorded?.data.text === item.text) return true;
+    return this.eventLog.replay(Math.max(0, this.eventLog.latestSeq() - 1_000), 1_000, sessionId)
+      .some((event) => (
+        (event.type === "session.observed" || event.type === type) &&
+        (event.itemId === item.id || (
+          Boolean(item.turnId) && event.turnId === item.turnId && event.data.text === item.text
+        )) &&
+        event.data.text === item.text
+      ));
+  }
+
+  private hasLiveAssistantStream(sessionId: string, turnId: string | undefined): boolean {
+    if (!turnId) return false;
+    const session = this.session(sessionId);
+    if (!session || !["running", "waiting", "queued"].includes(session.turnState)) return false;
+    const events = this.eventLog.replay(Math.max(0, this.eventLog.latestSeq() - 1_000), 1_000, sessionId);
+    return events.some((event) => event.type === "assistant.delta" && event.turnId === turnId)
+      && !events.some((event) => event.type === "assistant.completed" && event.turnId === turnId);
+  }
+
+  private queueChangedHistories(before: Map<string, string>): boolean {
+    let changed = false;
+    for (const session of this.listSessions()) {
+      if (before.get(session.sessionId) === sessionFingerprint(session)) continue;
+      this.historySyncPending.add(session.sessionId);
+      changed = true;
+    }
+    return changed;
   }
 
   private requireAdapter(runtimeId: BridgeDesktopRuntimeId, capability: string): DesktopRuntimeAdapter {
@@ -600,6 +829,10 @@ export class RuntimeSessionBroker extends EventEmitter {
   private async handleAdapterEvent(runtimeId: BridgeDesktopRuntimeId, event: RuntimeAdapterEvent): Promise<void> {
     if (event.type === "session.updated") {
       this.upsert(runtimeId, event.session);
+      this.historySyncPending.add(runtimeSessionId(runtimeId, event.session.nativeSessionId));
+      await this.publishRuntimeSession(
+        this.toBridgeSession(this.requireAdapter(runtimeId, "session.history"), event.session),
+      );
       this.emit("changed");
       return;
     }
@@ -614,6 +847,7 @@ export class RuntimeSessionBroker extends EventEmitter {
     }
     const nativeSessionId = event.nativeSessionId;
     const sessionId = runtimeSessionId(runtimeId, nativeSessionId);
+    this.historySyncPending.add(sessionId);
     const session = this.sessionsByRuntime.get(runtimeId)?.get(nativeSessionId);
     if (session) {
       session.lastActivityAt = event.at;

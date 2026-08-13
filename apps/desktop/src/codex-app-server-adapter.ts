@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { access, readFile } from "node:fs/promises";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline";
-import { basename, extname, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import type {
   BridgeAttachmentMime,
   BridgeHistoryAttachment,
@@ -23,6 +24,7 @@ import {
   type RuntimeAdapterTurnInput,
   type RuntimeAdapterTurnResult,
 } from "./runtime-adapter.js";
+import { CodexRolloutActivityObserver, type CodexRolloutActivity } from "./codex-rollout-activity.js";
 
 type JsonRpcId = string | number;
 
@@ -197,6 +199,11 @@ async function findCodexExecutable(): Promise<string | undefined> {
   return undefined;
 }
 
+function codexRolloutDirectory(): string {
+  const codexHome = process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex");
+  return join(codexHome, "sessions");
+}
+
 async function configuredCodexProviders(currentProvider?: string): Promise<BridgeRuntimeProviderInfo[]> {
   const codexHome = process.env.CODEX_HOME || (process.env.HOME ? `${process.env.HOME}/.codex` : undefined);
   const providers = new Map<string, BridgeRuntimeProviderInfo>();
@@ -271,9 +278,13 @@ function timestamp(value: unknown): number {
 }
 
 function turnState(status: unknown): RuntimeAdapterSession["turnState"] {
-  const type = text(record(status).type);
-  if (type === "active") return "running";
-  if (type === "systemError") return "failed";
+  const type = text(record(status).type) || text(status);
+  if (["active", "running", "inProgress", "in_progress"].includes(type)) return "running";
+  if (["queued", "pending"].includes(type)) return "queued";
+  if (["waiting", "waitingForApproval", "requiresAction"].includes(type)) return "waiting";
+  if (["completed", "complete", "done"].includes(type)) return "completed";
+  if (["interrupted", "cancelled", "canceled"].includes(type)) return "interrupted";
+  if (["systemError", "failed", "error"].includes(type)) return "failed";
   return "idle";
 }
 
@@ -499,12 +510,21 @@ export function fileChangeSummaries(item: Record<string, unknown>): BridgeFileCh
 export interface CodexAppServerAdapterOptions {
   clientFactory?: (executablePath: string) => Promise<CodexRpcClient>;
   findExecutable?: () => Promise<string | undefined>;
+  /** Override for tests or non-default CODEX_HOME layouts. */
+  rolloutDirectory?: string;
+  rolloutPollIntervalMs?: number;
+  rolloutDiscoveryIntervalMs?: number;
+  rolloutIndexIntervalMs?: number;
+  rolloutActiveGraceMs?: number;
 }
 
 export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
   private readonly sessionMap = new Map<string, RuntimeAdapterSession>();
   private readonly activeTurns = new Map<string, string>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly rolloutObserver: CodexRolloutActivityObserver;
+  private readonly rolloutPollIntervalMs: number;
+  private readonly rolloutDiscoveryIntervalMs: number;
   // Threads created via thread/start live only in the app-server process until
   // the first user message persists a rollout. Before that, thread/list omits
   // them and thread/read/thread/resume reject them, so they must be tracked
@@ -514,6 +534,10 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
   private client: CodexRpcClient | undefined;
   private initialized = false;
   private lifecycleId = 0;
+  private rolloutTimer: ReturnType<typeof setTimeout> | undefined;
+  private rolloutPolling = false;
+  private nextRolloutDiscoveryAt = 0;
+  private refreshPromise: Promise<void> | undefined;
 
   constructor(private readonly options: CodexAppServerAdapterOptions = {}) {
     super("codex-desktop", "Codex Desktop", [
@@ -529,6 +553,13 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       "attachment.image",
       "goal.native",
     ]);
+    this.rolloutObserver = new CodexRolloutActivityObserver({
+      rolloutDirectory: options.rolloutDirectory ?? codexRolloutDirectory(),
+      ...(options.rolloutIndexIntervalMs !== undefined ? { indexIntervalMs: options.rolloutIndexIntervalMs } : {}),
+      ...(options.rolloutActiveGraceMs !== undefined ? { inferredActiveGraceMs: options.rolloutActiveGraceMs } : {}),
+    });
+    this.rolloutPollIntervalMs = options.rolloutPollIntervalMs ?? 1_500;
+    this.rolloutDiscoveryIntervalMs = options.rolloutDiscoveryIntervalMs ?? 2_500;
   }
 
   async initialize(): Promise<void> {
@@ -566,6 +597,7 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
         ...(text(initialized.userAgent) ? { appVersion: text(initialized.userAgent) } : {}),
         sessionCount: this.sessionMap.size,
       });
+      this.scheduleRolloutPoll();
     } catch {
       if (lifecycleId !== this.lifecycleId) return;
       await this.client?.close().catch(() => undefined);
@@ -575,10 +607,23 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
   }
 
   async refresh(): Promise<void> {
+    if (this.refreshPromise) return this.refreshPromise;
+    const refresh = this.refreshSessions();
+    this.refreshPromise = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.refreshPromise === refresh) this.refreshPromise = undefined;
+    }
+  }
+
+  private async refreshSessions(): Promise<void> {
+    const lifecycleId = this.lifecycleId;
     const client = this.requireClient();
     const result = await client.request<Record<string, unknown>>("thread/list", { limit: 100, archived: false });
+    if (lifecycleId !== this.lifecycleId) return;
     const rows = Array.isArray(result.data) ? result.data : [];
-    const previous = this.sessionMap;
+    const previous = new Map(this.sessionMap);
     const next = new Map<string, RuntimeAdapterSession>();
     for (const value of rows) {
       const session = sessionFromThread(value);
@@ -608,9 +653,19 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
       const prior = previous.get(nativeSessionId);
       if (prior) next.set(nativeSessionId, prior);
     }
+    const externalActivity = await this.rolloutObserver.observe([...next.keys()]);
+    for (const [nativeSessionId, session] of next) {
+      this.applyExternalActivity(session, externalActivity.get(nativeSessionId));
+    }
     this.sessionMap.clear();
     for (const [id, session] of next) this.sessionMap.set(id, session);
     this.setSessionCount(this.sessionMap.size);
+    for (const [nativeSessionId, session] of next) {
+      const prior = previous.get(nativeSessionId);
+      if (prior && this.activityChanged(prior, session)) {
+        this.emitRuntimeEvent({ type: "session.updated", session: { ...session } });
+      }
+    }
   }
 
   sessions(): RuntimeAdapterSession[] {
@@ -953,6 +1008,8 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
 
   async close(): Promise<void> {
     this.lifecycleId += 1;
+    if (this.rolloutTimer) clearTimeout(this.rolloutTimer);
+    this.rolloutTimer = undefined;
     const client = this.client;
     this.client = undefined;
     this.initialized = false;
@@ -968,6 +1025,68 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
   private requireClient(): CodexRpcClient {
     if (!this.client) throw new Error("Codex app-server is unavailable");
     return this.client;
+  }
+
+  private scheduleRolloutPoll(): void {
+    if (this.rolloutTimer || !this.initialized) return;
+    this.rolloutTimer = setTimeout(() => {
+      this.rolloutTimer = undefined;
+      void this.pollRolloutActivity();
+    }, this.rolloutPollIntervalMs);
+  }
+
+  private async pollRolloutActivity(): Promise<void> {
+    if (!this.initialized || this.rolloutPolling) return;
+    const lifecycleId = this.lifecycleId;
+    this.rolloutPolling = true;
+    try {
+      const now = Date.now();
+      if (now >= this.nextRolloutDiscoveryAt) {
+        this.nextRolloutDiscoveryAt = now + this.rolloutDiscoveryIntervalMs;
+        await this.refresh();
+        return;
+      }
+      const externalActivity = await this.rolloutObserver.observe([...this.sessionMap.keys()], now);
+      if (lifecycleId !== this.lifecycleId) return;
+      for (const [nativeSessionId, activity] of externalActivity) {
+        const session = this.sessionMap.get(nativeSessionId);
+        if (!session) continue;
+        const updated = { ...session };
+        this.applyExternalActivity(updated, activity);
+        if (!this.activityChanged(session, updated)) continue;
+        this.sessionMap.set(nativeSessionId, updated);
+        this.emitRuntimeEvent({ type: "session.updated", session: { ...updated } });
+      }
+    } catch {
+      // Rollout observation is advisory; app-server remains usable on its own.
+    } finally {
+      this.rolloutPolling = false;
+      if (lifecycleId === this.lifecycleId) this.scheduleRolloutPoll();
+    }
+  }
+
+  private applyExternalActivity(session: RuntimeAdapterSession, activity: CodexRolloutActivity | undefined): void {
+    const activeTurnId = this.activeTurns.get(session.nativeSessionId);
+    if (activeTurnId) {
+      session.turnState = "running";
+      session.activeTurnId = activeTurnId;
+      return;
+    }
+    if (!activity) return;
+    session.lastActivityAt = Math.max(session.lastActivityAt, activity.lastActivityAt);
+    if (activity.state === "running") {
+      session.turnState = "running";
+      if (activity.activeTurnId) session.activeTurnId = activity.activeTurnId;
+      return;
+    }
+    if (activity.definitive || session.turnState === "idle") {
+      session.turnState = "idle";
+      delete session.activeTurnId;
+    }
+  }
+
+  private activityChanged(previous: RuntimeAdapterSession, next: RuntimeAdapterSession): boolean {
+    return previous.turnState !== next.turnState || previous.activeTurnId !== next.activeTurnId;
   }
 
   private async loadModelCatalog(): Promise<{ models: BridgeModelInfo[]; complete: boolean }> {

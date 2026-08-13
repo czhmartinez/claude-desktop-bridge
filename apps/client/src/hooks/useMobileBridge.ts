@@ -7,6 +7,7 @@ import {
   bridgeIceServers,
   cryptoWithRelayEndpoint,
   normalizeBridgeEndpoints,
+  preferredBridgeIceServers,
   randomId,
   type BridgeAttachment,
   type BridgeDeliveryState,
@@ -95,10 +96,23 @@ export interface LocalTurn {
   error?: string;
 }
 
+export type PairingSyncStage = "connecting" | "verifying" | "syncing" | "ready";
+
+export interface PairingSyncState {
+  roomId: string;
+  desktopName: string;
+  stage: PairingSyncStage;
+  progress: number;
+}
+
 interface PendingResponse {
   resolve(response: BridgeResponse): void;
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+interface PairingConnectionPhase {
+  provisional: boolean;
 }
 
 interface MobileBridgeState {
@@ -121,6 +135,7 @@ interface MobileBridgeState {
   connectionIssue: MobileConnectionIssue | undefined;
   transportMetrics: BridgeTransportMetrics | undefined;
   pendingOutbound: number;
+  pairingSync: PairingSyncState | undefined;
   error: string | undefined;
 }
 
@@ -144,6 +159,7 @@ const INITIAL_STATE: MobileBridgeState = {
   connectionIssue: undefined,
   transportMetrics: undefined,
   pendingOutbound: 0,
+  pairingSync: undefined,
   error: undefined,
 };
 
@@ -235,6 +251,23 @@ function relayIssue(code: string, fallback: string): MobileConnectionIssue {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function advancePairingSync(
+  current: MobileBridgeState,
+  roomId: string,
+  stage: PairingSyncStage,
+  progress: number,
+): MobileBridgeState {
+  if (!current.pairingSync || current.pairingSync.roomId !== roomId) return current;
+  return {
+    ...current,
+    pairingSync: {
+      ...current.pairingSync,
+      stage,
+      progress,
+    },
+  };
 }
 
 export function confirmedPairingSnapshot(
@@ -584,6 +617,17 @@ function applyEventToSession(
   event: BridgeEvent,
   hasPendingPermission: boolean,
 ): BridgeSessionInfo {
+  if (event.type === "runtime.updated") {
+    const updated = event.data.session as Partial<BridgeSessionInfo> | undefined;
+    if (updated?.sessionId === session.sessionId) {
+      const { allowedActions, ...fields } = updated;
+      return {
+        ...session,
+        ...fields,
+        ...(allowedActions ? { allowedActions } : {}),
+      };
+    }
+  }
   if (event.type === "session.archived") {
     if (event.data.archived === true && typeof event.data.archivedAt === "number") {
       return { ...session, archivedAt: event.data.archivedAt };
@@ -926,6 +970,7 @@ export function useMobileBridge() {
   const cryptoByRoomRef = useRef(new Map<string, BridgeCrypto>());
   const socketRef = useRef<BridgeTransport | undefined>(undefined);
   const connectionTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pairingSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingResponsesRef = useRef(new Map<string, PendingResponse>());
   const envelopeRequestsRef = useRef(new Map<string, string>());
 
@@ -1233,6 +1278,7 @@ export function useMobileBridge() {
     bootstrap = false,
     focusSessionId?: string,
     provisionalPairing?: PairingBundle,
+    pairingPhase?: PairingConnectionPhase,
   ) => {
     if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
     socketRef.current?.close();
@@ -1349,7 +1395,9 @@ export function useMobileBridge() {
           crypto,
           role: "mobile",
           RTCPeerConnectionImpl: globalThis.RTCPeerConnection,
-          iceServers: bridgeIceServers(provisionalPairing?.iceServers ?? storedHost?.iceServers),
+          iceServers: bridgeIceServers(preferredBridgeIceServers(
+            provisionalPairing?.iceServers ?? storedHost?.iceServers,
+          )),
         })
       : relay;
     socketRef.current = socket;
@@ -1357,6 +1405,7 @@ export function useMobileBridge() {
     let authenticatedDesktop = false;
     let authenticationTimer: ReturnType<typeof setTimeout> | undefined;
     const isCurrent = () => socketRef.current === socket;
+    const isProvisionalPairing = () => pairingPhase?.provisional ?? Boolean(provisionalPairing);
     socket.onState((connection) => {
       if (!isCurrent()) return;
       setState((current) => ({
@@ -1367,6 +1416,9 @@ export function useMobileBridge() {
       if (connection === "connected") {
         if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
         if (authenticationTimer) clearTimeout(authenticationTimer);
+        if (isProvisionalPairing()) {
+          setState((current) => advancePairingSync(current, roomId, "verifying", 38));
+        }
         authenticationTimer = setTimeout(() => {
           if (!isCurrent() || authenticatedDesktop) return;
           setState((current) => ({
@@ -1385,7 +1437,7 @@ export function useMobileBridge() {
             : undefined,
         }));
         const active = relayEndpoints.find((endpoint) => endpoint.url === socket.endpoint);
-        if (active && !provisionalPairing) {
+        if (active && !isProvisionalPairing()) {
           void bridgeVault.setActiveEndpoint(roomId, active.id).then((host) => {
             if (!host) return;
             cryptoByRoomRef.current.set(roomId, host.crypto);
@@ -1397,7 +1449,7 @@ export function useMobileBridge() {
             }));
           }).catch(() => undefined);
         }
-        if (!provisionalPairing) void (async () => {
+        if (!isProvisionalPairing()) void (async () => {
           const bootstrapResume = bootstrapPending;
           bootstrapPending = false;
           await resumeEvents(bootstrapResume);
@@ -1522,7 +1574,7 @@ export function useMobileBridge() {
             socketRef.current = undefined;
             cryptoRef.current = undefined;
           }
-          if (!provisionalPairing) writeLastActiveHost();
+          if (!isProvisionalPairing()) writeLastActiveHost();
           socket.close();
           setState((current) => ({
             ...current,
@@ -1543,8 +1595,9 @@ export function useMobileBridge() {
             connectionIssue: undefined,
             transportMetrics: undefined,
             pendingOutbound: 0,
+            pairingSync: undefined,
             error: issue.message,
-            hosts: provisionalPairing
+            hosts: isProvisionalPairing()
               ? current.hosts
               : current.hosts.map((host) => host.roomId === roomId
                   ? { ...host, needsRepair: true, status: "offline" }
@@ -1647,6 +1700,7 @@ export function useMobileBridge() {
     return () => {
       active = false;
       if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
+      if (pairingSyncTimerRef.current) clearTimeout(pairingSyncTimerRef.current);
       socketRef.current?.close();
       for (const pending of pendingResponsesRef.current.values()) clearTimeout(pending.timer);
       pendingResponsesRef.current.clear();
@@ -1695,7 +1749,18 @@ export function useMobileBridge() {
   }, [reconnectAndResume]);
 
   const pair = useCallback(async (pairing: PairingBundle): Promise<boolean> => {
-    setState((current) => ({ ...current, loading: true, error: undefined }));
+    if (pairingSyncTimerRef.current) clearTimeout(pairingSyncTimerRef.current);
+    setState((current) => ({
+      ...current,
+      loading: true,
+      error: undefined,
+      pairingSync: {
+        roomId: pairing.roomId,
+        desktopName: pairing.desktopName,
+        stage: "connecting",
+        progress: 14,
+      },
+    }));
     if (
       Capacitor.isNativePlatform() &&
       pairing.relayEndpoints.every((endpoint) => isLoopbackRelay(endpoint.url))
@@ -1703,18 +1768,20 @@ export function useMobileBridge() {
       setState((current) => ({
         ...current,
         loading: false,
+        pairingSync: undefined,
         error: "电脑端二维码来自旧版本，请先更新电脑端 Bridge。",
       }));
       return false;
     }
     const previousLastActiveHost = readLastActiveHost();
     let preparedCrypto: BridgeCrypto | undefined;
+    const pairingPhase: PairingConnectionPhase = { provisional: true };
     try {
       const crypto = await BridgeCrypto.fromPairing(pairing, {
         instanceId: pendingPairingInstanceId(pairing.roomId, pairing.deviceId),
       });
       preparedCrypto = crypto;
-      await start(crypto, true, undefined, pairing);
+      await start(crypto, true, undefined, pairing, pairingPhase);
       const connectDeadline = Date.now() + 20_000;
       while (socketRef.current?.state !== "connected") {
         if (cryptoRef.current !== crypto) {
@@ -1727,10 +1794,13 @@ export function useMobileBridge() {
         wait: true,
         timeoutMs: 20_000,
       });
-      confirmedPairingSnapshot(pairing, response);
+      const verifiedSnapshot = confirmedPairingSnapshot(pairing, response);
+      setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 56));
       await bridgeVault.importPairing(pairing, crypto);
       clearPendingPairingInstanceId(pairing.roomId, pairing.deviceId);
       cryptoByRoomRef.current.set(crypto.identity.roomId, crypto);
+      pairingPhase.provisional = false;
+      const verifiedState = rebaseSnapshot(verifiedSnapshot, stateRef.current.events);
       const nextHost = hostSummary({
         hostId: pairing.hostId,
         pairingEpoch: pairing.pairingEpoch,
@@ -1740,22 +1810,46 @@ export function useMobileBridge() {
         serviceOrigin: pairing.serviceOrigin,
         relayEndpoints: pairing.relayEndpoints,
         activeEndpoint: pairing.activeEndpoint,
-        iceServers: pairing.iceServers,
+        iceServers: preferredBridgeIceServers(pairing.iceServers),
         updatedAt: Date.now(),
         needsRepair: false,
         crypto,
-      });
+      }, verifiedState.snapshot, verifiedState.permissions);
       setState((current) => ({
         ...current,
         loading: false,
-        hosts: [nextHost, ...current.hosts.filter((host) => host.hostId !== nextHost.hostId)],
+        hosts: [
+          hostWithRuntimeState(nextHost, verifiedState.snapshot, verifiedState.permissions),
+          ...current.hosts.filter((host) => host.hostId !== nextHost.hostId),
+        ],
+        snapshot: verifiedState.snapshot,
+        permissions: verifiedState.permissions,
+        desktopName: verifiedState.snapshot.host.name,
+        desktopOnline: true,
+        latestSeq: verifiedState.latestSeq,
+        pairingSync: current.pairingSync?.roomId === crypto.identity.roomId
+          ? { ...current.pairingSync, stage: "syncing", progress: 66 }
+          : current.pairingSync,
       }));
       writeLastActiveHost(crypto.identity.roomId);
-      await start(crypto, true).catch(() => setState((current) => ({
-        ...current,
-        loading: false,
-        error: "配对已保存，正在等待电脑恢复连接。",
-      })));
+      setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 72));
+      await resumeEvents(true);
+      setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 80));
+      const snapshotSynced = await refreshSnapshot().catch(() => false);
+      if (!snapshotSynced) await refreshSessionList().catch(() => false);
+      setState((current) => advancePairingSync(current, crypto.identity.roomId, "ready", 100));
+      void nativePushRegistration().then((push) => {
+        if (push && cryptoRef.current === crypto && socketRef.current?.state === "connected") {
+          socketRef.current.registerPushToken(push.platform, push.token);
+        }
+      }).catch(() => undefined);
+      pairingSyncTimerRef.current = setTimeout(() => {
+        setState((current) => (
+          current.pairingSync?.roomId === crypto.identity.roomId && current.pairingSync.stage === "ready"
+            ? { ...current, pairingSync: undefined }
+            : current
+        ));
+      }, 650);
       return true;
     } catch (error) {
       if (preparedCrypto && cryptoRef.current === preparedCrypto) {
@@ -1774,6 +1868,7 @@ export function useMobileBridge() {
       setState((current) => ({
         ...current,
         loading: false,
+        pairingSync: undefined,
         activeHostId: undefined,
         desktopName: undefined,
         connection: "closed",
@@ -1790,7 +1885,7 @@ export function useMobileBridge() {
       }));
       return false;
     }
-  }, [sendRequest, start]);
+  }, [refreshSessionList, refreshSnapshot, resumeEvents, sendRequest, start]);
 
   const selectHost = useCallback(async (roomId: string, focusSessionId?: string) => {
     let crypto = cryptoByRoomRef.current.get(roomId);
@@ -1835,6 +1930,7 @@ export function useMobileBridge() {
       localTurns: [],
       latestSeq: 0,
       connectionIssue: undefined,
+      pairingSync: undefined,
       error: undefined,
     }));
   }, []);
@@ -2485,6 +2581,7 @@ export function useMobileBridge() {
         connectionIssue: undefined,
         transportMetrics: undefined,
         pendingOutbound: 0,
+        pairingSync: undefined,
       } : {}),
     }));
   }, [sendRequest]);

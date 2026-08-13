@@ -8,6 +8,7 @@ import {
   safeStorageSecretProtector,
   type SecretProtector,
 } from "./config.js";
+import { DEFAULT_BRIDGE_ICE_SERVERS } from "@bridge/protocol";
 import { removeLegacyConnector } from "./connector.js";
 
 const directories: string[] = [];
@@ -262,7 +263,7 @@ describe("desktop configuration", () => {
       relayUrl: "ws://192.168.1.32:8788/ws",
       publicRelayUrl: "wss://relay.alioxis.com/ws",
       serviceOrigin: "https://relay.alioxis.com",
-      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
       desktopName: "Test PC",
     });
     const loaded = await publicBuild.load();
@@ -272,7 +273,7 @@ describe("desktop configuration", () => {
       hostSecret: created.hostSecret,
       relayUrl: "wss://relay.alioxis.com/ws",
       serviceOrigin: "https://relay.alioxis.com",
-      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      iceServers: DEFAULT_BRIDGE_ICE_SERVERS,
     });
     expect(loaded?.relayEndpoints).toEqual(expect.arrayContaining([
       {
@@ -297,6 +298,62 @@ describe("desktop configuration", () => {
         expect.objectContaining({ id: "legacy-public-0", url: "wss://relay.alioxis.uk/ws" }),
       ]),
     });
+  });
+
+  it("upgrades only the historical Cloudflare-only ICE default without rotating a pairing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const oldDefault = [{ urls: "stun:stun.cloudflare.com:3478" }];
+    const oldRepository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      iceServers: oldDefault,
+      desktopName: "Test PC",
+    });
+    const created = await oldRepository.loadOrCreate();
+    created.devices.push({
+      deviceId: "phone-1",
+      name: "Android",
+      platform: "android",
+      secret: "phone-secret",
+      createdAt: 1_000,
+      expiresAt: 2_000,
+    });
+    await oldRepository.save(created);
+
+    const upgradedRepository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
+      desktopName: "Test PC",
+    });
+    const upgraded = await upgradedRepository.load();
+
+    expect(upgraded).toMatchObject({
+      roomId: created.roomId,
+      hostSecret: created.hostSecret,
+      iceServers: DEFAULT_BRIDGE_ICE_SERVERS,
+      devices: [expect.objectContaining({ deviceId: "phone-1", secret: "phone-secret" })],
+    });
+  });
+
+  it("keeps an explicit ICE configuration when the packaged default changes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const customIce = [{ urls: "stun:stun.example.net:3478" }];
+    const original = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      iceServers: customIce,
+      desktopName: "Test PC",
+    });
+    await original.loadOrCreate();
+
+    const upgraded = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
+      desktopName: "Test PC",
+    });
+    expect((await upgraded.load())?.iceServers).toEqual(customIce);
   });
 
   it("disables the retired managed Desktop experiment during upgrade", async () => {

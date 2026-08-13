@@ -256,6 +256,77 @@ describe("mergeBridgeEvents", () => {
     });
   });
 
+  it("applies native runtime session updates as soon as they arrive", () => {
+    const snapshot: BridgeHostSnapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "0.8.0",
+        capabilities: [],
+      },
+      projects: [],
+      sessions: [{
+        sessionId: "codex-desktop:native-1",
+        runtimeId: "codex-desktop",
+        nativeSessionId: "native-1",
+        projectId: "codex-desktop:/tmp/project",
+        projectName: "project",
+        cwd: "/tmp/project",
+        title: "Before",
+        source: "desktop",
+        transport: "codex-app-server",
+        ownership: "BRIDGE_IDLE",
+        turnState: "idle",
+        lastActivityAt: 1,
+        pendingCount: 0,
+      }],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Idle",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: {
+          state: "not-managed",
+          detail: "未启用",
+          enabled: false,
+          canRestart: true,
+        },
+      },
+      permissions: [],
+      latestSeq: 1,
+    };
+    const update: BridgeEvent = {
+      eventId: "native-runtime-update",
+      seq: 2,
+      timestamp: 2,
+      origin: "codex-host",
+      type: "runtime.updated",
+      sessionId: "codex-desktop:native-1",
+      data: {
+        runtimeId: "codex-desktop",
+        session: {
+          ...snapshot.sessions[0],
+          title: "Updated in Codex Desktop",
+          turnState: "running",
+          ownership: "BRIDGE_RUNNING",
+          activeTurnId: "turn-live",
+          lastActivityAt: 2,
+        },
+      },
+    };
+
+    expect(applyEventToSnapshot(snapshot, update, [])?.sessions[0]).toMatchObject({
+      title: "Updated in Codex Desktop",
+      turnState: "running",
+      activeTurnId: "turn-live",
+    });
+  });
+
   it("removes a cancelled queued turn from the cached session count", () => {
     const snapshot: BridgeHostSnapshot = {
       host: {

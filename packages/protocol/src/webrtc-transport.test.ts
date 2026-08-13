@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   BridgeCrypto,
+  DEFAULT_BRIDGE_ICE_SERVERS,
   WebRtcTransport,
   bridgeIceServers,
   parseBridgeIceServers,
@@ -61,6 +62,7 @@ class FakeDataChannel extends EventTarget {
 
 class FakePeerConnection {
   static peers = new Map<string, FakePeerConnection>();
+  static configurations: RTCConfiguration[] = [];
   static sequence = 0;
   static connectChannels = true;
 
@@ -72,7 +74,8 @@ class FakePeerConnection {
   localChannel: FakeDataChannel | undefined;
   remoteCaller: FakePeerConnection | undefined;
 
-  constructor(_configuration?: RTCConfiguration) {
+  constructor(configuration?: RTCConfiguration) {
+    FakePeerConnection.configurations.push(configuration ?? {});
     FakePeerConnection.peers.set(this.id, this);
   }
 
@@ -332,7 +335,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
   }
 }
 
-async function transportPair(directTimeoutMs = 100) {
+async function transportPair(directTimeoutMs = 100, iceServers?: RTCIceServer[]) {
   const host = await BridgeCrypto.createHost("wss://relay.example/ws", "Mac");
   const paired = await BridgeCrypto.createDevicePairing({
     roomId: host.crypto.identity.roomId,
@@ -359,6 +362,7 @@ async function transportPair(directTimeoutMs = 100) {
     RTCPeerConnectionImpl: PeerConnection,
     directTimeoutMs,
     retryDelayMs: 50,
+    ...(iceServers ? { iceServers } : {}),
     resolveCrypto: () => desktopDeviceCrypto,
     resolvePeerCrypto: () => desktopDeviceCrypto,
   });
@@ -369,6 +373,7 @@ async function transportPair(directTimeoutMs = 100) {
     RTCPeerConnectionImpl: PeerConnection,
     directTimeoutMs,
     retryDelayMs: 50,
+    ...(iceServers ? { iceServers } : {}),
   });
   return { desktop, mobile, network };
 }
@@ -376,6 +381,7 @@ async function transportPair(directTimeoutMs = 100) {
 describe("WebRtcTransport", () => {
   beforeEach(() => {
     FakePeerConnection.peers.clear();
+    FakePeerConnection.configurations = [];
     FakePeerConnection.sequence = 0;
     FakePeerConnection.connectChannels = true;
     FakeDataChannel.instances = [];
@@ -492,5 +498,30 @@ describe("WebRtcTransport", () => {
       { urls: "stun:two.example:3478" },
     ]);
     expect(bridgeIceServers([])).toEqual([]);
+  });
+
+  it("passes the packaged self-hosted-first ICE defaults into each WebRTC peer", async () => {
+    const iceServers = bridgeIceServers(DEFAULT_BRIDGE_ICE_SERVERS);
+    const { desktop, mobile } = await transportPair(100, iceServers);
+
+    desktop.connect();
+    mobile.connect();
+    await waitFor(() => FakePeerConnection.configurations.length === 2);
+
+    expect(FakePeerConnection.configurations).toEqual([
+      { iceServers },
+      { iceServers },
+    ]);
+    expect(iceServers).toEqual([
+      { urls: "stun:stun.alioxis.com:3478" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+    ]);
+    expect(iceServers.some((server) => {
+      const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+      return urls.some((url) => /^turns?:/iu.test(url));
+    })).toBe(false);
+
+    desktop.close();
+    mobile.close();
   });
 });

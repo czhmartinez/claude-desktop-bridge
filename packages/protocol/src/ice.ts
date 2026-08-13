@@ -1,5 +1,14 @@
 import type { BridgeIceServer } from "./types.js";
 
+export const DEFAULT_BRIDGE_ICE_SERVERS = [
+  { urls: "stun:stun.alioxis.com:3478" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+] as const satisfies readonly BridgeIceServer[];
+
+export const DEFAULT_BRIDGE_ICE_SERVERS_JSON = JSON.stringify(DEFAULT_BRIDGE_ICE_SERVERS);
+
+const LEGACY_CLOUDFLARE_STUN_URL = "stun:stun.cloudflare.com:3478";
+
 function isIceUrl(value: unknown): value is string {
   return typeof value === "string" && /^(?:stun|stuns|turn|turns):\S+$/iu.test(value);
 }
@@ -49,6 +58,28 @@ export function parseBridgeIceServers(value: string | undefined): BridgeIceServe
   } catch {
     return normalizeBridgeIceServers(raw.split(",").map((url) => url.trim()).filter(Boolean));
   }
+}
+
+export function isLegacyCloudflareIceServers(value: unknown): boolean {
+  const servers = normalizeBridgeIceServers(value);
+  if (servers.length !== 1) return false;
+  const [server] = servers;
+  if (!server || server.username !== undefined || server.credential !== undefined) return false;
+  const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+  return urls.length === 1 && urls[0] === LEGACY_CLOUDFLARE_STUN_URL;
+}
+
+/**
+ * Keep explicit user-provided ICE servers intact while transparently replacing
+ * the historical single Cloudflare default with the current packaged default.
+ */
+export function preferredBridgeIceServers(
+  value: unknown,
+  fallback: readonly BridgeIceServer[] = DEFAULT_BRIDGE_ICE_SERVERS,
+): BridgeIceServer[] {
+  const configured = normalizeBridgeIceServers(value);
+  if (configured.length > 0 && !isLegacyCloudflareIceServers(configured)) return configured;
+  return normalizeBridgeIceServers(fallback);
 }
 
 export function bridgeIceServers(value: readonly BridgeIceServer[] | undefined): RTCIceServer[] {

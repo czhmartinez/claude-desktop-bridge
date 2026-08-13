@@ -1,3 +1,26 @@
+## 0.8.5
+
+- Prefer the self-hosted STUN server `stun:stun.alioxis.com:3478` and keep
+  Cloudflare's public STUN as a fallback across desktop, Android, iOS and web.
+  Historical Cloudflare-only pairings migrate in place without clearing
+  pairings, keys or messages; custom ICE servers stay untouched. The packaged
+  default still contains only STUN (no TURN URLs or long-term credentials).
+- Add an independent pairing-sync screen. After a successful QR scan the mobile
+  client now shows "扫码连接成功，正在同步" with a progress bar and explicit
+  connecting → verifying → syncing stages, instead of appearing unresponsive
+  until the full sync completes.
+- Stream session and rollout activity in real time between the desktop Bridge
+  and paired mobile clients. Desktop now polls the native Codex rollout files
+  and Claude transcripts on a sub-second cadence and broadcasts the first
+  snapshot plus every change, so switching conversations or tapping sync is no
+  longer required.
+- Restore assistant answer finalization for native Desktop runtimes that only
+  expose the final history record instead of an `assistant.completed` event, so
+  a prior streaming delta no longer sits beside the imported final answer.
+- Fix the broken in-app logo asset path and switch the mobile splash background
+  to the dark theme. Update the visible product label from "Bridge 0.7" to
+  "Bridge 0.8".
+
 ## 0.8.0
 
 - Redesign the entire frontend on the Sunstone 2030 (renew) visual baseline:

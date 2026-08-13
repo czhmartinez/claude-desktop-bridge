@@ -315,9 +315,18 @@ export function conversationItems(
       ...(turn.commandId ? { commandId: turn.commandId } : {}),
     });
   }
-  const completedTurns = new Set(
+  // Some native Desktop APIs only expose the final history record instead of
+  // an explicit assistant.completed event. Treat that record as the terminal
+  // stream state too, otherwise a prior assistant.delta remains beside the
+  // imported final answer.
+  const finalizedAssistantTurns = new Set(
     sessionEvents
-      .filter((event) => event.type === "assistant.completed" && event.turnId)
+      .filter((event) => (
+        event.turnId && (
+          event.type === "assistant.completed" ||
+          (event.type === "session.observed" && event.data.role === "assistant")
+        )
+      ))
       .map((event) => event.turnId!),
   );
   const deltaByStream = new Map<string, ConversationItem>();
@@ -360,7 +369,7 @@ export function conversationItems(
         ...(typeof event.data.requestId === "string" ? { requestId: event.data.requestId } : {}),
       });
     }
-    if (event.type === "assistant.delta" && !(event.turnId && completedTurns.has(event.turnId))) {
+    if (event.type === "assistant.delta" && !(event.turnId && finalizedAssistantTurns.has(event.turnId))) {
       // Provider stream events can use a new item id for every chunk. The turn is the stable stream identity.
       const id = event.turnId ? `assistant:${event.turnId}` : event.itemId ?? event.eventId;
       const existing = deltaByStream.get(id);
@@ -1906,7 +1915,7 @@ export function MobileWorkspace({
       <section className="host-detail">
         <div className="host-detail-heading">
           <div>
-            <span>Bridge 0.7</span>
+            <span>Bridge 0.8</span>
             <h1>项目与会话</h1>
           </div>
           <button

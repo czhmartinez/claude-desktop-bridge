@@ -296,8 +296,9 @@ deploy             Docker / Caddy / Nginx
 docs               架构、安全与发布说明
 ```
 
-Bridge 0.6.1 默认构建使用国内 Relay `wss://relay.alioxis.com/ws` 与 Cloudflare
-公共 STUN。升级后的桌面端和移动端会优先尝试该 Relay，同时保留已存端点作为回退，
+Bridge 0.8 默认构建使用国内 Relay `wss://relay.alioxis.com/ws`，并优先使用
+`stun:stun.alioxis.com:3478`，保留 Cloudflare 公共 STUN 作为备用。升级后的桌面端和
+移动端会保留已存自定义 ICE 与 Relay 端点；历史 Cloudflare 单项默认值会平滑升级，
 不需要清空既有配对。自托管部署必须提供自己的固定 HTTPS/WSS，并显式配置
 STUN/TURN。FCM/APNs 凭据、各平台签名和自动更新渠道仍属于正式发布条件。
 详见 [发布手册](docs/RELEASE.md)、[Relay 部署手册](docs/RELAY-REDEPLOY.md) 与 [安全模型](docs/SECURITY.md)。

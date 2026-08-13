@@ -3,12 +3,14 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
   BridgeCrypto,
+  DEFAULT_BRIDGE_ICE_SERVERS,
   PROTOCOL_VERSION,
   bridgeEndpoint,
   isBridgeIceServer,
   isBridgeEndpoint,
   normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
+  preferredBridgeIceServers,
   relayPathForUrl,
   selectBridgeEndpoint,
   type BridgeEndpoint,
@@ -425,8 +427,13 @@ export class DesktopConfigRepository {
           serviceOrigin: this.defaults.publicRelayUrl
             ? this.defaults.serviceOrigin || config.serviceOrigin || ""
             : config.serviceOrigin || this.defaults.serviceOrigin || "",
-          iceServers: normalizeBridgeIceServers(
-            this.defaults.iceServers?.length ? this.defaults.iceServers : config.iceServers,
+          // Preserve explicit ICE choices, but move the old packaged
+          // Cloudflare-only default to the current self-hosted-first list.
+          iceServers: preferredBridgeIceServers(
+            config.iceServers,
+            this.defaults.iceServers?.length
+              ? this.defaults.iceServers
+              : DEFAULT_BRIDGE_ICE_SERVERS,
           ),
           ...(config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
         };
@@ -488,7 +495,9 @@ export class DesktopConfigRepository {
       runtimePermissionModes: config.runtimePermissionModes ?? {},
       devices: config.devices.map((device) => loadDevice(device, this.protector)),
     };
-    if (!config.protectedEvidenceKey) await this.save(loaded);
+    const storedIceServers = normalizeBridgeIceServers(config.iceServers);
+    const iceServersMigrated = JSON.stringify(storedIceServers) !== JSON.stringify(transport.iceServers);
+    if (!config.protectedEvidenceKey || iceServersMigrated) await this.save(loaded);
     return loaded;
   }
 

@@ -1,11 +1,13 @@
 import {
   BridgeCrypto,
+  DEFAULT_BRIDGE_ICE_SERVERS_JSON,
   PROTOCOL_VERSION,
   bridgeEndpoint,
   cryptoWithRelayEndpoint,
   normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
   parseBridgeIceServers,
+  preferredBridgeIceServers,
   randomId,
   selectBridgeEndpoint,
   type BridgeEndpoint,
@@ -61,7 +63,7 @@ const PACKAGED_SERVICE_ORIGIN = String(
   import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "https://relay.alioxis.com",
 ).trim();
 const PACKAGED_ICE_SERVERS = parseBridgeIceServers(String(
-  import.meta.env.VITE_BRIDGE_ICE_SERVERS ?? '[{"urls":"stun:stun.cloudflare.com:3478"}]',
+  import.meta.env.VITE_BRIDGE_ICE_SERVERS ?? DEFAULT_BRIDGE_ICE_SERVERS_JSON,
 ));
 
 function refreshStoredRelayEndpoints(stored: StoredCrypto): BridgeEndpoint[] {
@@ -117,10 +119,15 @@ function transportForStored(stored: StoredCrypto): {
     relayEndpoints,
     activeEndpoint: active.id,
     relayUrl: active.url,
-    iceServers: normalizeBridgeIceServers(
-      stored.iceServers?.length ? stored.iceServers : PACKAGED_ICE_SERVERS,
-    ),
+    // Existing custom ICE settings stay untouched. The pre-0.8.4 packaged
+    // Cloudflare-only default is upgraded in place without touching pairing
+    // identities, encrypted messages, or Relay endpoints.
+    iceServers: preferredBridgeIceServers(stored.iceServers, PACKAGED_ICE_SERVERS),
   };
+}
+
+function iceServersChanged(stored: StoredCrypto, next: readonly BridgeIceServer[]): boolean {
+  return JSON.stringify(normalizeBridgeIceServers(stored.iceServers)) !== JSON.stringify(next);
 }
 
 function hostKey(hostId: string): string {
@@ -302,6 +309,14 @@ export class BridgeVault {
       const updatedAt = stored.updatedAt ?? 0;
       if (existing && existing.updatedAt > updatedAt) continue;
       const transport = transportForStored(normalizedStored);
+      if (iceServersChanged(normalizedStored, transport.iceServers)) {
+        // Persist this narrow default migration in place. It intentionally
+        // leaves the pairing identity, encrypted cache and Relay routes alone.
+        store.put({
+          ...normalizedStored,
+          iceServers: transport.iceServers,
+        } satisfies StoredCrypto);
+      }
       const crypto = cryptoWithRelayEndpoint(
         new BridgeCrypto({ identity: normalizedStored.identity, encryptionKey: normalizedStored.encryptionKey }),
         transport.relayUrl,

@@ -627,6 +627,7 @@ const hostSnapshot = {
 };
 
 let eventSeq = hostSnapshot.latestSeq;
+let snapshotRequests = 0;
 const desktopSocket = new BridgeSocket({
   crypto: desktopCrypto,
   role: "desktop",
@@ -678,6 +679,10 @@ desktopSocket.onMessage((message, encrypted) => {
     if (request.method === "events.resume") {
       result = { events: [], latestSeq: eventSeq };
     } else if (request.method === "snapshot.get") {
+      snapshotRequests += 1;
+      // Keep the post-pair refresh observable long enough to assert that the
+      // mobile client shows its dedicated success-and-sync transition.
+      if (snapshotRequests === 2) await new Promise((resolve) => setTimeout(resolve, 900));
       result = { snapshot: hostSnapshot };
     } else if (request.method === "session.open") {
       const session = sessions.find((candidate) => candidate.sessionId === request.params.sessionId) ?? sessions[0];
@@ -844,6 +849,13 @@ try {
   const mobile = await mobileContext.newPage();
   watch(mobile, "mobile");
   await mobile.goto(pairingUrl, { waitUntil: "networkidle" });
+  await mobile.getByRole("heading", { name: "扫码连接成功，正在同步" }).waitFor({ timeout: 10_000 });
+  const pairingProgress = mobile.getByRole("progressbar", { name: "同步进度" });
+  await pairingProgress.waitFor();
+  if (Number(await pairingProgress.getAttribute("aria-valuenow")) < 56) {
+    errors.push("mobile pairing sync: progress did not advance after QR identity validation");
+  }
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-pairing-sync-390x844.png"), fullPage: true });
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
   const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.6 Windows 安装目录选择" });
   await waitingSessionRow.waitFor();

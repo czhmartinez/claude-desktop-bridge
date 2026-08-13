@@ -72,7 +72,7 @@ class BridgeRequestError extends Error {
   }
 }
 
-const DISCOVERY_REFRESH_MIN_INTERVAL_MS = 10_000;
+const DISCOVERY_REFRESH_MIN_INTERVAL_MS = 2_000;
 
 function stringParam(params: Record<string, unknown>, key: string, required = true): string | undefined {
   const value = params[key];
@@ -1628,7 +1628,7 @@ export class DesktopController extends EventEmitter {
     const sessionKey = snapshot.sessions.map((session) => session.sessionId).sort().join("\n");
     const previousKey = this.lastPublishedSessionKey;
     this.lastPublishedSessionKey = sessionKey;
-    if (previousKey && previousKey !== sessionKey) {
+    if (previousKey !== sessionKey) {
       await this.broadcast({ kind: "snapshot", snapshot });
     }
     return snapshot;
