@@ -490,6 +490,7 @@ describe("RuntimeSessionBroker", () => {
 
     codex.requestPermission("native-1", "auto-1");
     await waitFor(() => codex.resolved.length === 1, "codex auto-approval");
+    await waitFor(() => broker.listPermissions().length === 0, "codex permission cleared");
     expect(codex.resolved).toEqual([{ requestId: "auto-1", decision: "allow-once" }]);
     expect(broker.listPermissions()).toHaveLength(0);
 

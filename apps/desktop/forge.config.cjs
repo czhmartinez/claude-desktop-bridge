@@ -159,12 +159,12 @@ module.exports = {
     {
       name: "@electron-forge/maker-deb",
       platforms: ["linux"],
-      config: { options: { name: "bridge", bin: "bridge", productName: "Bridge" } },
+      config: { options: { name: "bridge", bin: "bridge", productName: "Bridge", license: "MIT" } },
     },
     {
       name: "@electron-forge/maker-rpm",
       platforms: ["linux"],
-      config: { options: { name: "bridge", bin: "bridge", productName: "Bridge" } },
+      config: { options: { name: "bridge", bin: "bridge", productName: "Bridge", license: "MIT" } },
     },
   ],
 };

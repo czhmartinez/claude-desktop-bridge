@@ -459,6 +459,11 @@ describe("RuntimeHandoffService", () => {
 
     fixture.codex.completeTurn(targetNative, "计划：1. 梳理模块边界\n2. 提取纯函数\n3. 补充测试");
     await waitFor(() => fixture.service.get(committed.handoffId).state === "plan-ready", "plan-ready");
+    // The state lands before the event log emits; wait for the event itself.
+    await waitFor(
+      () => fixture.events.some((event) => event.type === "runtime.handoff.plan-ready"),
+      "plan-ready event",
+    );
     const ready = fixture.service.get(committed.handoffId);
     expect(ready.planText).toContain("提取纯函数");
     expect(fixture.events.some((event) => event.type === "runtime.handoff.plan-ready")).toBe(true);
