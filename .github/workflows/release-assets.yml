@@ -156,6 +156,19 @@ jobs:
           set -euo pipefail
           test -f "apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk" \
             || { echo "Missing debug APK"; exit 1; }
+      - name: Assert Android APK debug signature is stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 0.9.3 pinned the repo-shared debug key so every build (local and CI)
+          # over-installs cleanly; fail the release if the signature ever drifts.
+          EXPECTED="8b4e8a0ed8e506dde6ff65f92b9bd526d2fcaf10d35089d381a02d9ed23a18db"
+          APKSIGNER="$(ls -v "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)"
+          ACTUAL="$("$APKSIGNER" verify --print-certs \
+            apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk \
+            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)"
+          [ "$ACTUAL" = "$EXPECTED" ] \
+            || { echo "Debug APK signature drifted: $ACTUAL (expected $EXPECTED)"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: Bridge-Android-debug-ci

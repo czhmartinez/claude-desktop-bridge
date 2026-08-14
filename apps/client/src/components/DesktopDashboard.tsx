@@ -962,16 +962,14 @@ function DesktopSessions({
                   </span>
                 )}
                 {canStop && (
-                  <button
-                    type="button"
-                    className="secondary-button"
+                  <IconButton
+                    label={stopping ? "正在停止 Bridge 任务" : stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
+                    className="session-stop-button"
                     disabled={stopping}
-                    aria-label={stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
                     onClick={() => void stopCurrentTask()}
                   >
-                    {stopping ? <LoaderCircle className="is-spinning" size={16} /> : <CircleStop size={16} />}
-                    {stopping ? "停止中" : stoppingBlocker ? "停止阻塞任务" : "停止"}
-                  </button>
+                    {stopping ? <LoaderCircle className="is-spinning" size={17} /> : <CircleStop size={17} />}
+                  </IconButton>
                 )}
                 {visibilityAvailable && (
                   <>

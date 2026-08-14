@@ -1,3 +1,33 @@
+## 0.9.3
+
+- Retone the Apple theme family after first-run review:
+  - Destructive buttons and inline errors now follow the Apple action-sheet
+    idiom (neutral surface + red ink, no pink wash); evidence confidence
+    chips and state icons for inferred/partial bundles go neutral gray, so
+    amber stays reserved for genuine warning copy; the settings toggle uses
+    iOS system green in its on state.
+  - Liquid glass becomes visible outside transient layers: scroll-edge blur
+    masks (`blur(14px) saturate(180%)` + gradient mask) at the top of the
+    main scrollers on desktop and mobile, and the glass tokens gain
+    transparency/blur/specular strength (fill 0.64 alpha, blur 24px).
+  - Sunstone renders pixel-identical; every change is family-scoped.
+- The desktop conversation stop action is now an icon button matching the
+  archive/delete rhythm (the old secondary-button label wrapped at 14px in
+  the 10px chip toolbar); its accessible names are unchanged.
+- Fix Android over-install "signature conflict" failures permanently:
+  - Debug builds previously fell back to each machine's default debug
+    keystore, so CI APKs and locally built APKs never shared a signature
+    and every cross-source upgrade failed. A repo-shared debug keystore
+    (`apps/mobile/android/app/bridge-debug.keystore`, the existing local
+    debug identity) is now wired into `signingConfigs.debug`, so local and
+    CI artifacts install over each other. This is a debug certificate, not
+    a distribution credential; signed distribution stays a separate process.
+  - `ci.yml` and `release-assets.yml` both assert the APK's signer SHA-256
+    (`8b4e8a0e…3a18db`), so any signature drift fails the gate before
+    artifacts ship. One-time note: devices that currently carry a
+    CI-key-signed install (pre-0.9.3 releases) must uninstall once before
+    installing the stable-signed APK.
+
 ## 0.9.2
 
 - Add an independent Apple theme family alongside the Sunstone baseline,

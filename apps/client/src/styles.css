@@ -4998,6 +4998,11 @@ button:disabled {
   gap: 8px;
 }
 
+/* 停止是纯图标钮（与归档/删除同一节奏），危险语义只靠图标着色 */
+.session-stop-button {
+  color: var(--danger-ink);
+}
+
 .desktop-session-view-switch {
   min-height: 44px;
   grid-template-columns: repeat(2, minmax(120px, 180px));
@@ -5946,12 +5951,12 @@ button:disabled {
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 
   /* 材质 Regular：blur(20px) saturate(180%)，亮顶边采光 */
-  --glass-fill: rgba(252, 252, 253, 0.72);
+  --glass-fill: rgba(252, 252, 253, 0.64);
   --glass-border: rgba(60, 60, 67, 0.1);
   --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.65);
   --glass-shadow: 0 24px 70px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.05);
-  --glass-blur: blur(20px) saturate(180%);
-  --glass-spec: rgba(255, 255, 255, 0.5);
+  --glass-blur: blur(24px) saturate(180%);
+  --glass-spec: rgba(255, 255, 255, 0.6);
   --scrim: rgba(0, 0, 0, 0.36);
 
   /* 主钮取 apple.com 按键蓝：白字 4.7:1（iOS #007AFF 仅 4.0，难过 axe 门） */
@@ -6023,11 +6028,11 @@ button:disabled {
   --card-hi: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 
-  --glass-fill: rgba(29, 29, 31, 0.72);
+  --glass-fill: rgba(29, 29, 31, 0.64);
   --glass-border: rgba(255, 255, 255, 0.09);
   --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.07);
   --glass-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 2px 10px rgba(0, 0, 0, 0.4);
-  --glass-spec: rgba(255, 255, 255, 0.08);
+  --glass-spec: rgba(255, 255, 255, 0.12);
   --scrim: rgba(0, 0, 0, 0.5);
 
   /* 深色主钮同走 apple.com 深底蓝：白字 4.7:1（#0A84FF 白字只有 3.7） */
@@ -6091,4 +6096,108 @@ button:disabled {
 
 [data-theme-family="apple"] .danger-text {
   color: var(--danger-ink);
+}
+
+/* 破坏性按钮走 Apple action sheet 惯例：中性底 + 红字，不用粉色雾面填充 */
+[data-theme-family="apple"] .danger-button {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--danger-ink);
+}
+
+[data-theme-family="apple"] .danger-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--line));
+  background: var(--surface-2);
+}
+
+/* 内联错误/配置错误同样去粉底：中性面 + 红字 + 淡红描边 */
+[data-theme-family="apple"] .inline-error,
+[data-theme-family="apple"] .session-configuration-error {
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
+  background: var(--surface);
+  color: var(--danger-ink);
+}
+
+/* 证据置信度是元数据不是警告：事后恢复/部分 → 中性灰芯片（精确保持蓝色），
+   琥珀只留给真正的警告文案 */
+[data-theme-family="apple"] .evidence-confidence.inferred,
+[data-theme-family="apple"] .evidence-confidence.partial {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+[data-theme-family="apple"] .evidence-bundle.inferred .evidence-state-icon,
+[data-theme-family="apple"] .evidence-bundle.partial .evidence-state-icon {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+[data-theme-family="apple"] .evidence-inline-summary.partial,
+[data-theme-family="apple"] .evidence-inline-summary.inferred {
+  border-color: var(--card-border);
+  background: var(--card-fill);
+}
+
+[data-theme-family="apple"] .evidence-inline-summary.partial .evidence-inline-icon,
+[data-theme-family="apple"] .evidence-inline-summary.inferred .evidence-inline-icon {
+  color: var(--muted);
+}
+
+/* iOS 开关的 ON 态是系统绿，不是蓝 */
+[data-theme-family="apple"] .toggle-row input:checked + i {
+  background: var(--success);
+}
+
+/* 滚动边缘玻璃（skill §12：scroll edge effects, not hard dividers）——
+   内容滚过顶部时模糊渐隐，液态玻璃在列表里真正可见 */
+[data-theme-family="apple"] .desktop-conversation-stream,
+[data-theme-family="apple"] .desktop-project-list,
+[data-theme-family="apple"] .desktop-evidence-view,
+[data-theme-family="apple"] .desktop-page,
+[data-theme-family="apple"] .session-browser,
+[data-theme-family="apple"] .host-browser,
+[data-theme-family="apple"] .timeline,
+[data-theme-family="apple"] .host-detail {
+  padding-top: 0;
+}
+
+[data-theme-family="apple"] .desktop-conversation-stream::before,
+[data-theme-family="apple"] .desktop-project-list::before,
+[data-theme-family="apple"] .desktop-evidence-view::before,
+[data-theme-family="apple"] .desktop-page::before,
+[data-theme-family="apple"] .session-browser::before,
+[data-theme-family="apple"] .host-browser::before,
+[data-theme-family="apple"] .timeline::before,
+[data-theme-family="apple"] .host-detail::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: block;
+  height: 24px;
+  margin: 0 -16px;
+  pointer-events: none;
+  backdrop-filter: blur(14px) saturate(180%);
+  -webkit-backdrop-filter: blur(14px) saturate(180%);
+  mask-image: linear-gradient(to bottom, black 25%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, black 25%, transparent);
+}
+
+/* 各滚动容器按自身 padding 校准边缘出血（顶 padding 已归零，由遮罩带占位） */
+[data-theme-family="apple"] .desktop-conversation-stream::before { height: 20px; margin: 0 -20px; }
+[data-theme-family="apple"] .desktop-project-list::before { height: 18px; margin: 0 -10px; }
+[data-theme-family="apple"] .desktop-evidence-view::before { height: 20px; margin: 0 -20px; }
+[data-theme-family="apple"] .desktop-page::before { height: 28px; margin: 0 -34px; }
+[data-theme-family="apple"] .session-browser::before,
+[data-theme-family="apple"] .host-browser::before {
+  height: 24px;
+  margin: 0 calc(-1 * max(16px, env(safe-area-inset-right))) 0 calc(-1 * max(16px, env(safe-area-inset-left)));
+}
+[data-theme-family="apple"] .timeline::before {
+  height: 26px;
+  margin: 0 calc(-1 * max(16px, env(safe-area-inset-right))) 0 calc(-1 * max(16px, env(safe-area-inset-left)));
+}
+[data-theme-family="apple"] .host-detail::before {
+  height: 24px;
+  margin: 0 calc(-1 * max(18px, env(safe-area-inset-right))) 0 calc(-1 * max(18px, env(safe-area-inset-left)));
 }

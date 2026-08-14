@@ -7,8 +7,8 @@ android {
         applicationId "com.localbridge.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 62
-        versionName "0.9.2"
+        versionCode 63
+        versionName "0.9.3"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,7 +16,21 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        debug {
+            // 固定调试签名（0.9.3 起）：仓库内共享同一把调试钥匙，本机与 CI 产出的
+            // APK 签名一致，覆盖安装不再报"签名冲突"。这是调试证书（非发布凭证），
+            // 正式分发仍走独立签名流程。SHA-256 见 release-assets.yml 的签名校验。
+            storeFile file('bridge-debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
