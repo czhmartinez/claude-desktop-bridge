@@ -1,3 +1,25 @@
+## 0.9.1
+
+- Re-issue the 0.9.0 automation as 0.9.1: during the first live run the
+  legacy flow published an empty immutable v0.9.0 release, and GitHub
+  permanently retires a tag name once it was attached to an immutable
+  release, so the multi-platform assets could never land on v0.9.0.
+- Harden the release pipeline against everything the first live runs
+  exposed:
+  - `release.yml` creates the draft through the releases endpoint (the raw
+    git refs API answers HTTP 422 for GITHUB_TOKEN here) and dispatches
+    `release-assets.yml` on the branch ref (the dispatch API rejects commit
+    SHAs), passing the release tag as an explicit input.
+  - Windows gate is green end to end: sqlite test fixtures close before
+    temp-dir cleanup, permission/handoff assertions poll instead of racing
+    fixed sleeps, packaged QA expects all ten host capabilities, drops the
+    point-in-time connection equality, and waits for the sidebar empty
+    state by selector.
+  - Fonts are never inlined as data URIs; a sub-4KB Fontsource woff2 was
+    blocked by the strict `font-src 'self'` CSP in packaged builds.
+  - Linux deb/rpm makers declare the real executable name and the MIT
+    license, so `make:linux` produces ZIP/DEB/RPM.
+
 ## 0.9.0
 
 - Make Windows, Linux and iOS standing release platforms alongside macOS and
