@@ -1,3 +1,27 @@
+## 0.9.2
+
+- Add an independent Apple theme family alongside the Sunstone baseline,
+  switchable at runtime:
+  - Themes are now family × mode — Sunstone light/dark and Apple light/dark.
+    Each family redefines the full design-token set (color, material, radius,
+    motion, type) under `data-theme-family` without reading from the other,
+    so they stay independent and can evolve separately; Sunstone renders
+    pixel-identical to 0.9.1.
+  - The Apple family follows the apple-design skill (Apple HIG + *Designing
+    Fluid Interfaces*): system font stack with optical-size tracking
+    (negative on display headings, zero on body), iOS grouped-list surfaces
+    (#F2F2F7 / pure black with #1C1C1E cards), system blue accents
+    (#007AFF / #0A84FF) with ≥4.5:1 semantic ink variants, `blur(20px)
+    saturate(180%)` translucent chrome, larger continuous radii, critically
+    damped motion with 100ms-scale press feedback.
+  - The old light/dark icon button is now a theme menu (appearance +
+    family as iOS-style segmented controls) shared by the desktop rail,
+    mobile top bar and host browser; it closes on outside click and Escape.
+  - Existing users keep their stored light/dark choice (`bridge-theme`
+    migrates in place); the family defaults to Sunstone via the new
+    `bridge-theme-family` key. `visual-qa.mjs` accepts
+    `BRIDGE_QA_THEME_FAMILY` for family-specific screenshot runs.
+
 ## 0.9.1
 
 - Re-issue the 0.9.0 automation as 0.9.1: during the first live run the

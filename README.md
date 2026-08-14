@@ -2,7 +2,7 @@
 
 > English: [README_EN.md](README_EN.md) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
-Bridge 0.7 是一个独立的多 Desktop 协作产品：它给 Claude Desktop、Codex Desktop 和 Hermes Desktop
+Bridge 0.9 是一个独立的多 Desktop 协作产品：它给 Claude Desktop、Codex Desktop 和 Hermes Desktop
 提供一致的会话、发送、流式输出、审批、追问和中断体验，并支持把一段任务经用户确认后
 跨 Desktop 串行接力，但不会把三者的原生会话、账号、模型、权限或历史合并到一起。
 
@@ -26,7 +26,30 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前开发版：0.7.0
+## 当前版本：0.9.2
+
+Bridge 0.9.2 新增可切换的主题家族：在原有 Sunstone 暖极简基线（浅/深）之外，提供一套
+完全独立的 Apple 主题家族——iOS 分组式浅色（#F2F2F7 组底 + 纯白组卡 + 系统蓝）与纯黑
+深色（#1C1C1E 组卡阶梯），SF 系统字体栈、大标题负字距、液态玻璃 chrome 和临界阻尼
+动效。两套家族各自完整定义全部设计 token、互不引用、互不污染，通过顶栏「主题与外观」
+菜单（外观 + 风格两个分段控件）随时切换；已有用户的明暗选择原位保留，家族默认仍为
+Sunstone。主题对比度在四个组合下全部通过 axe/WCAG 4.5:1 门禁。
+
+逐版本摘要（完整记录见 [CHANGELOG.md](CHANGELOG.md)）：
+
+- **0.9.2**：Sunstone × Apple 双主题家族与「主题与外观」切换菜单。
+- **0.9.1**：加固多平台不可变 Release 流水线——草稿 Release 集齐 `-ci` 附件后才公开、
+  字体永不内联 data URI（严格 `font-src 'self'` CSP）、Windows 打包门禁端到端转绿。
+- **0.9.0**：Windows、Linux 和 iOS 成为常态化发布平台，每次发布同出五平台产物（详见
+  「发布下载」）；全仓版本号归一，结束 manifest 漂移。
+- **0.8.5**：自托管 STUN（`stun.alioxis.com`）优先、Cloudflare 兜底；独立配对同步进度屏；
+  桌面与手机之间的会话/rollout 实时活动流。
+- **0.8.0**：前端整体迁移到 Sunstone 2030 (renew) 视觉基线——深色成为旗舰默认
+  （纯黑基底 + 赤陶橙），DM Sans/Inter/JetBrains Mono 自托管字体，液态玻璃仅限瞬态层，
+  弹簧纪律动效。
+- **0.7.x**：跨 Desktop 串行接力（0.7.0，详述见下）、会话归档与删除（0.7.4）等。
+
+### 跨 Desktop 串行接力（0.7 引入，延续至今）
 
 Bridge 0.7 在 0.6 的统一操作体验上新增**跨 Desktop 串行接力**：任何会话顶栏的「接力」
 按钮可以把当前任务交给另一个 Desktop 运行时接手。接力不是会话迁移——Bridge 会安全中断
@@ -189,7 +212,7 @@ Release（tag 在公开时指向版本提交）。未签名附件一律以 `-ci`
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
 发布流程处理。本地不介入，也不检查 Release 是否发布成功。
 
-## 0.6.1 当前能力
+## 当前能力总览
 
 - `RuntimeAdapterRegistry` 和 `RuntimeSessionBroker` 将 Claude、Codex、Hermes 的会话统一呈现为
   同一套列表、对话、流、审批、追问、调整与中断操作，同时用 `(runtimeId, nativeSessionId)`

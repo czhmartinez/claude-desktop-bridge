@@ -12,7 +12,7 @@ import { PairingScreen } from "./components/PairingScreen.js";
 import { PairingSyncScreen } from "./components/PairingSyncScreen.js";
 
 export function App() {
-  const [theme, toggleTheme] = useTheme();
+  const themeControl = useTheme();
   const mobile = useMobileBridge();
   const [pairingOpen, setPairingOpen] = useState(false);
 
@@ -41,7 +41,7 @@ export function App() {
     pairingOpen,
   ]);
 
-  if (window.bridgeDesktop) return <DesktopDashboard theme={theme} onToggleTheme={toggleTheme} />;
+  if (window.bridgeDesktop) return <DesktopDashboard themeControl={themeControl} />;
   if (mobile.state.pairingSync) return <PairingSyncScreen sync={mobile.state.pairingSync} />;
   if (mobile.state.loading && mobile.state.hosts.length === 0 && !pairingOpen) {
     return <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>;
@@ -63,8 +63,7 @@ export function App() {
       <HostBrowser
         hosts={mobile.state.hosts}
         error={mobile.state.error}
-        theme={theme}
-        onToggleTheme={toggleTheme}
+        themeControl={themeControl}
         onSelect={mobile.selectHost}
         onRemove={mobile.forgetHost}
         onAdd={() => setPairingOpen(true)}
@@ -91,8 +90,7 @@ export function App() {
       connectionIssue={mobile.state.connectionIssue}
       transportMetrics={mobile.state.transportMetrics}
       pendingOutbound={mobile.state.pendingOutbound}
-      theme={theme}
-      onToggleTheme={toggleTheme}
+      themeControl={themeControl}
       onOpenSession={mobile.openSession}
       onLoadOlderHistory={mobile.loadOlderHistory}
       onLoadOlderEvidence={mobile.loadOlderEvidence}

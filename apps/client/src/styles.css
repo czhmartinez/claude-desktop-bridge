@@ -5789,3 +5789,306 @@ button:disabled {
     -webkit-backdrop-filter: none;
   }
 }
+
+/* ============================================================
+   V0.9.2 主题家族层：Sunstone（默认）× Apple（HIG 独立家族）。
+   两套家族只通过 data-theme-family 切换，token 全集各自重定义、互不引用；
+   Sunstone 的全部规则保持原样，Apple 块全部集中在本节，删除本节即回到旧版。
+   ============================================================ */
+
+/* ---- 主题切换菜单（token 驱动，在两个家族里各自落地为本地样式） ---- */
+.theme-menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.theme-menu-panel {
+  position: absolute;
+  z-index: 130;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  width: 224px;
+  gap: 7px;
+  padding: 13px 14px 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-panel);
+  background: radial-gradient(200px circle at var(--mx, 50%) var(--my, -20%), var(--glass-spec), transparent 65%), var(--glass-fill);
+  background-color: var(--glass-fill);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-hi), var(--glass-shadow);
+  transform-origin: top right;
+  animation: bridge-glass-pop var(--t-base) var(--ease-out) both;
+}
+
+/* 桌面导航轨：面板从触发器右侧长出，空间关系保持锚定 */
+.theme-menu-anchor--right .theme-menu-panel {
+  top: auto;
+  right: auto;
+  bottom: 0;
+  left: calc(100% + 10px);
+  transform-origin: bottom left;
+}
+
+.theme-menu-label {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.theme-menu-label + .segmented {
+  margin-bottom: 5px;
+}
+
+/* iOS 分段控件：滑块式 active 拇指， families 各自取 token */
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--card-border);
+  border-radius: calc(var(--r-btn) + 3px);
+  background: var(--surface-2);
+}
+
+.segmented button {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 30px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease, box-shadow var(--t-fast) ease;
+}
+
+.segmented button.active {
+  background: var(--card-fill);
+  color: var(--text);
+  box-shadow: var(--card-hi), var(--card-shadow);
+}
+
+.theme-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .theme-menu-panel {
+    border-color: var(--line-strong);
+    background: var(--bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* ---- Apple 家族 token（浅色 = 家族默认；HIG 分组列表体系） ----
+   设计依据：apple-design skill —— 系统字体优先、大标题负字距、
+   backdrop-filter blur(20px) saturate(180%) 材质、按压 100ms 即时反馈、
+   临界阻尼弹簧（无过冲），色板取 iOS/macOS 系统色。 */
+[data-theme-family="apple"] {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-num: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 浅色：iOS 分组底 #F2F2F7 + 纯白组卡 */
+  --bg: #f2f2f7;
+  --surface: #ffffff;
+  --surface-2: rgba(118, 118, 128, 0.12);
+  --surface-3: rgba(118, 118, 128, 0.2);
+  --text: #1d1d1f;
+  /* iOS secondaryLabel 原值 rgba(60,60,67,.6) 在白底只有 3.5:1；
+     灰阶按 axe/WCAG 4.5:1 门槛收紧（surface-2/暖雾面上也要过） */
+  --muted: #636366;
+  --faint: #6b6b70;
+  --line: rgba(60, 60, 67, 0.12);
+  --line-strong: rgba(60, 60, 67, 0.24);
+
+  /* Apple 系统蓝锁色 */
+  --clay: #007aff;
+  --clay-hover: #0066d6;
+  --clay-active: #0055b3;
+  --accent: var(--clay);
+  --accent-hover: var(--clay-hover);
+  --accent-soft: rgba(0, 122, 255, 0.1);
+  --accent-bright: #007aff;
+
+  --warm: #ff9500;
+  --warm-soft: rgba(255, 149, 0, 0.12);
+  --danger: #ff3b30;
+  --danger-soft: rgba(255, 59, 48, 0.1);
+  --success: #34c759;
+  --info: #5ac8fa;
+
+  /* 语义文字色（浅色底 ≥4.5:1） */
+  --accent-ink: #0066cc;
+  --warm-ink: #9a4a00;
+  --danger-ink: #d70015;
+  --success-ink: #1e7b34;
+
+  /* 卡片四件套（浅色 = 无投影组卡，发丝分隔） */
+  --card-fill: #ffffff;
+  --card-border: rgba(60, 60, 67, 0.08);
+  --card-hi: inset 0 1px 0 rgba(255, 255, 255, 0);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+
+  /* 材质 Regular：blur(20px) saturate(180%)，亮顶边采光 */
+  --glass-fill: rgba(252, 252, 253, 0.72);
+  --glass-border: rgba(60, 60, 67, 0.1);
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  --glass-shadow: 0 24px 70px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.05);
+  --glass-blur: blur(20px) saturate(180%);
+  --glass-spec: rgba(255, 255, 255, 0.5);
+  --scrim: rgba(0, 0, 0, 0.36);
+
+  /* 主钮取 apple.com 按键蓝：白字 4.7:1（iOS #007AFF 仅 4.0，难过 axe 门） */
+  --btn-primary-bg: #0071e3;
+  --btn-primary-hover: #0066d6;
+  --btn-primary-text: #ffffff;
+
+  --shadow: 0 12px 28px rgba(0, 0, 0, 0.08);
+
+  /* Apple 连续圆角：整体比 Sunstone 大一号 */
+  --radius: 10px;
+  --r-btn: 8px;
+  --r-card: 13px;
+  --r-input: 12px;
+  --r-panel: 18px;
+  --r-hero: 22px;
+  --r-pill: 999px;
+
+  /* 动效：临界阻尼弹簧（response 0.3–0.4s 档），按压 120ms 即时反馈 */
+  --transition: 120ms ease;
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-morph: 260ms;
+  --t-enter: 360ms;
+}
+
+/* ---- Apple 家族 token（深色 = iOS 纯黑分组） ---- */
+[data-theme-family="apple"][data-theme="dark"] {
+  color-scheme: dark;
+
+  /* 深色：纯黑底 + #1C1C1E 组卡阶梯 */
+  --bg: #000000;
+  --surface: #1c1c1e;
+  --surface-2: #2c2c2e;
+  --surface-3: #3a3a3c;
+  --text: #f5f5f7;
+  --muted: rgba(235, 235, 245, 0.6);
+  /* iOS tertiaryLabel .25/.30 在组卡上不足 4.5:1；提到 .55 过 axe 门 */
+  --faint: rgba(235, 235, 245, 0.55);
+  --line: rgba(84, 84, 88, 0.55);
+  --line-strong: rgba(120, 120, 128, 0.7);
+
+  --clay: #0a84ff;
+  --clay-hover: #2997ff;
+  --clay-active: #007aff;
+  --accent: var(--clay);
+  --accent-hover: var(--clay-hover);
+  --accent-soft: rgba(10, 132, 255, 0.16);
+  --accent-bright: #0a84ff;
+
+  --warm: #ff9f0a;
+  --warm-soft: rgba(255, 159, 10, 0.14);
+  --danger: #ff453a;
+  --danger-soft: rgba(255, 69, 58, 0.14);
+  --success: #30d158;
+  --info: #64d2ff;
+
+  /* 语义文字色（#1C1C1E 卡上 ≥4.5:1） */
+  --accent-ink: #409cff;
+  --warm-ink: #ff9f0a;
+  --danger-ink: #ff6961;
+  --success-ink: #30d158;
+
+  --card-fill: #1c1c1e;
+  --card-border: rgba(255, 255, 255, 0.07);
+  --card-hi: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+
+  --glass-fill: rgba(29, 29, 31, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --glass-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 2px 10px rgba(0, 0, 0, 0.4);
+  --glass-spec: rgba(255, 255, 255, 0.08);
+  --scrim: rgba(0, 0, 0, 0.5);
+
+  /* 深色主钮同走 apple.com 深底蓝：白字 4.7:1（#0A84FF 白字只有 3.7） */
+  --btn-primary-bg: #0071e3;
+  --btn-primary-hover: #0066d6;
+  --btn-primary-text: #ffffff;
+
+  --shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- Apple 家族组件级收尾 ---- */
+
+/* 发送钮：Sunstone 深色用深字压赤陶，Apple 蓝底回白字 */
+[data-theme-family="apple"][data-theme="dark"] .send-button {
+  color: #fff;
+}
+
+/* 扫码屏是常驻深色 UI：家族内换成 Apple 蓝 */
+[data-theme-family="apple"] .qr-scanner-kicker {
+  color: #409cff;
+}
+
+[data-theme-family="apple"] .qr-scanner-guide {
+  border-color: #0a84ff;
+}
+
+/* 配对屏：Apple 家族走平面分组底，去掉方格纸纹理 */
+[data-theme-family="apple"] .pairing-shell {
+  background: var(--bg);
+}
+
+/* 大标题负字距（SF 光学尺寸纪律：大字号收紧，正文保持 0） */
+[data-theme-family="apple"] .brand-name,
+[data-theme-family="apple"] .pairing-panel h1,
+[data-theme-family="apple"] .desktop-sidebar-heading h1,
+[data-theme-family="apple"] .desktop-page-heading h1 {
+  letter-spacing: -0.02em;
+}
+
+/* 按压反馈：100ms 档即时、幅度收敛到 0.97（skill §1 的 web 映射） */
+[data-theme-family="apple"] .icon-button:active,
+[data-theme-family="apple"] .rail-button:active,
+[data-theme-family="apple"] .paste-button:active,
+[data-theme-family="apple"] .desktop-nav-v2 nav button:active {
+  transform: scale(0.97);
+}
+
+/* 语义文字走 ink 档：原始语义色（#FF9500/#FF3B30）做填充可以，
+   直接当文字不足 4.5:1；ink 变体在两个模式下都合规 */
+[data-theme-family="apple"] .session-action-strip .session-provider-trigger.is-stop {
+  color: var(--danger-ink);
+}
+
+[data-theme-family="apple"] .host-row-state.warning {
+  color: var(--warm-ink);
+}
+
+[data-theme-family="apple"] .evidence-tool.failed .evidence-tool-status {
+  color: var(--danger-ink);
+}
+
+[data-theme-family="apple"] .danger-text {
+  color: var(--danger-ink);
+}

@@ -38,7 +38,6 @@ import {
   Goal,
   ImagePlus,
   LoaderCircle,
-  Moon,
   MoreHorizontal,
   Play,
   Plus,
@@ -48,7 +47,6 @@ import {
   Send,
   Settings2,
   ShieldCheck,
-  Sun,
   Terminal,
   Trash2,
   Wrench,
@@ -61,7 +59,7 @@ import type {
   SessionEvidenceState,
   SessionHistoryState,
 } from "../hooks/useMobileBridge.js";
-import type { Theme } from "../hooks/useTheme.js";
+import type { ThemeControl } from "../hooks/useTheme.js";
 import {
   collapseProjects,
   expandAllProjects,
@@ -75,6 +73,7 @@ import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
 import { IconButton } from "./IconButton.js";
+import { ThemeMenu } from "./ThemeMenu.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -896,8 +895,7 @@ export function MobileWorkspace({
   connectionIssue,
   transportMetrics,
   pendingOutbound,
-  theme,
-  onToggleTheme,
+  themeControl,
   onOpenSession,
   onLoadOlderHistory,
   onLoadOlderEvidence,
@@ -946,8 +944,7 @@ export function MobileWorkspace({
   connectionIssue?: MobileConnectionIssue | undefined;
   transportMetrics?: BridgeTransportMetrics | undefined;
   pendingOutbound: number;
-  theme: Theme;
-  onToggleTheme(): void;
+  themeControl: ThemeControl;
   onOpenSession(sessionId: string): Promise<void>;
   onLoadOlderHistory(sessionId: string): Promise<void>;
   onLoadOlderEvidence(sessionId: string): Promise<void>;
@@ -1896,9 +1893,7 @@ export function MobileWorkspace({
         >
           {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
         </IconButton>
-        <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
-          {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
-        </IconButton>
+        <ThemeMenu control={themeControl} iconSize={19} />
       </header>
 
       <section className={`mobile-transport-band ${connection === "connected" && desktopOnline ? "online" : ""}`}>

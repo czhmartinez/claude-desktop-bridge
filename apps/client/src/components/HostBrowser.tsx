@@ -1,10 +1,11 @@
-import { ChevronRight, Laptop, Moon, ScanLine, Sun, Trash2 } from "lucide-react";
+import { ChevronRight, Laptop, ScanLine, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { PairedHost } from "../hooks/useMobileBridge.js";
-import type { Theme } from "../hooks/useTheme.js";
+import type { ThemeControl } from "../hooks/useTheme.js";
 import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
+import { ThemeMenu } from "./ThemeMenu.js";
 
 function statusLabel(host: PairedHost): string {
   if (host.needsRepair) return "需要重新配对";
@@ -33,8 +34,7 @@ function lastSeenLabel(host: PairedHost): string {
 export function HostBrowser({
   hosts,
   error,
-  theme,
-  onToggleTheme,
+  themeControl,
   onSelect,
   onRemove,
   onAdd,
@@ -42,8 +42,7 @@ export function HostBrowser({
 }: {
   hosts: PairedHost[];
   error?: string | undefined;
-  theme: Theme;
-  onToggleTheme(): void;
+  themeControl: ThemeControl;
   onSelect(roomId: string, focusSessionId?: string): Promise<void>;
   onRemove(roomId: string): Promise<void>;
   onAdd(): void;
@@ -87,9 +86,7 @@ export function HostBrowser({
           <strong>我的电脑</strong>
           <span>{hosts.length} 台主机已配对</span>
         </div>
-        <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
-          {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-        </IconButton>
+        <ThemeMenu control={themeControl} iconSize={18} />
       </header>
 
       <section className="host-browser" aria-label="已配对的电脑">

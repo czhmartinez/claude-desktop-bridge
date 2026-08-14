@@ -35,7 +35,6 @@ import {
   Laptop,
   LoaderCircle,
   MessageSquare,
-  Moon,
   Play,
   Plus,
   Power,
@@ -44,13 +43,12 @@ import {
   Send,
   Settings2,
   Smartphone,
-  Sun,
   Trash2,
   X,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Theme } from "../hooks/useTheme.js";
+import type { ThemeControl } from "../hooks/useTheme.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact } from "../lib/artifact-download.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
@@ -66,6 +64,7 @@ import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
 import { IconButton } from "./IconButton.js";
+import { ThemeMenu } from "./ThemeMenu.js";
 import {
   aggregateFileChanges,
   conversationItems,
@@ -1584,7 +1583,7 @@ function DesktopStatus({
   );
 }
 
-export function DesktopDashboard({ theme, onToggleTheme }: { theme: Theme; onToggleTheme(): void }) {
+export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl }) {
   const api = window.bridgeDesktop;
   const [snapshot, setSnapshot] = useState<DesktopControlSnapshot>();
   const [events, setEvents] = useState<BridgeEvent[]>([]);
@@ -1632,9 +1631,7 @@ export function DesktopDashboard({ theme, onToggleTheme }: { theme: Theme; onTog
           <Laptop size={17} />
           <span><strong>{snapshot.host.name}</strong><small>{connectionLabel(snapshot)}</small></span>
         </div>
-        <IconButton label={theme === "dark" ? "切换浅色" : "切换深色"} onClick={onToggleTheme}>
-          {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-        </IconButton>
+        <ThemeMenu control={themeControl} side="right" iconSize={18} />
       </aside>
       <section className="desktop-content-v2">
         {tab === "sessions" && (

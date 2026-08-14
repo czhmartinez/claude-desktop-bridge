@@ -30,7 +30,9 @@ function defaultChromePath() {
 }
 const chrome = process.env.CHROME_PATH ?? defaultChromePath();
 const qaTheme = process.env.BRIDGE_QA_THEME;
-const artifactDir = resolve("artifacts", qaTheme ? `visual-qa-${qaTheme}` : "visual-qa");
+const qaThemeFamily = process.env.BRIDGE_QA_THEME_FAMILY;
+const qaVariant = [qaThemeFamily, qaTheme].filter(Boolean).join("-");
+const artifactDir = resolve("artifacts", qaVariant ? `visual-qa-${qaVariant}` : "visual-qa");
 const axePath = resolve("node_modules", "axe-core", "axe.min.js");
 const errors = [];
 const now = Date.now();
@@ -825,6 +827,7 @@ const browser = await chromium.launch({ executablePath: chrome, headless: true }
 try {
   const applyTheme = async (context) => {
     if (qaTheme) await context.addInitScript((theme) => localStorage.setItem("bridge-theme", theme), qaTheme);
+    if (qaThemeFamily) await context.addInitScript((family) => localStorage.setItem("bridge-theme-family", family), qaThemeFamily);
   };
   const pairingContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -982,6 +985,14 @@ try {
   await mobile.getByRole("heading", { name: "主机" }).waitFor();
   await checkPage(mobile, "mobile hosts");
   await mobile.screenshot({ path: resolve(artifactDir, "mobile-hosts-390x844.png"), fullPage: true });
+  await mobile.getByRole("button", { name: "主题与外观" }).click();
+  await mobile.locator(".theme-menu-panel").waitFor();
+  await mobile.waitForTimeout(300);
+  await mobile.screenshot({ path: resolve(artifactDir, "mobile-theme-menu-390x844.png"), fullPage: true });
+  await mobile.keyboard.press("Escape");
+  if (await mobile.locator(".theme-menu-panel").count() !== 0) {
+    errors.push("theme menu: Escape did not close the mobile panel");
+  }
   await mobileContext.close();
 
   const desktopSnapshot = {
@@ -1273,6 +1284,14 @@ try {
   await desktop.locator(".desktop-session-row").first().waitFor();
   await checkPage(desktop, "desktop sessions");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-sessions-1200x800.png"), fullPage: true });
+  await desktop.getByRole("button", { name: "主题与外观" }).click();
+  await desktop.locator(".theme-menu-panel").waitFor();
+  await desktop.waitForTimeout(300);
+  await desktop.screenshot({ path: resolve(artifactDir, "desktop-theme-menu-1200x800.png"), fullPage: true });
+  await desktop.keyboard.press("Escape");
+  if (await desktop.locator(".theme-menu-panel").count() !== 0) {
+    errors.push("theme menu: Escape did not close the desktop panel");
+  }
   await desktop.getByRole("button", { name: "切换执行提供方" }).click();
   const desktopProviderDialog = desktop.getByRole("dialog", { name: "切换提供方" });
   await desktopProviderDialog.locator(".provider-option").filter({ hasText: "Anthropic API" }).click();
