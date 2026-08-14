@@ -15,5 +15,11 @@ export default defineConfig({
   },
   server: { port: 5188, strictPort: true },
   preview: { port: 4188, strictPort: true },
-  build: { target: "es2022", sourcemap: true },
+  build: {
+    target: "es2022",
+    sourcemap: true,
+    // Keep fonts as real files: inlined data: fonts violate the strict
+    // font-src 'self' CSP in index.html and get blocked in packaged builds.
+    assetsInlineLimit: (filePath) => (/\.woff2?$/i.test(filePath) ? false : undefined),
+  },
 });
