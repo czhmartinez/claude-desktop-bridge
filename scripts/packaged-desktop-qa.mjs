@@ -183,7 +183,7 @@ try {
     await page.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
     await page.locator(".evidence-panel, .evidence-empty").waitFor();
   } else {
-    await page.getByText("等待发现 Claude Desktop 会话", { exact: true }).waitFor();
+    await page.locator(".desktop-sidebar-empty").waitFor();
   }
   assert.deepEqual(errors, []);
   await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });
