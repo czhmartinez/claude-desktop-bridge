@@ -135,8 +135,8 @@ const I18N = {
   },
   "download.desktop.title": { en: "Desktop", zh: "桌面端" },
   "download.desktop.text": {
-    en: "macOS and Windows installers",
-    zh: "macOS 和 Windows 安装包"
+    en: "macOS, Windows and Linux installers",
+    zh: "macOS、Windows 和 Linux 安装包"
   },
   "download.android.title": { en: "Android", zh: "Android" },
   "download.android.text": {

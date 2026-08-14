@@ -1915,7 +1915,7 @@ export function MobileWorkspace({
       <section className="host-detail">
         <div className="host-detail-heading">
           <div>
-            <span>Bridge 0.8</span>
+            <span>Bridge 0.9</span>
             <h1>项目与会话</h1>
           </div>
           <button

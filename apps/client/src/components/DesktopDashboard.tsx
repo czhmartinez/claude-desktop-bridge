@@ -777,7 +777,7 @@ function DesktopSessions({
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
         <div className="desktop-sidebar-heading">
-          <div><span>Bridge 0.8</span><h1>会话</h1></div>
+          <div><span>Bridge 0.9</span><h1>会话</h1></div>
           <div className="desktop-sidebar-actions">
             <IconButton
               label="全部折叠"

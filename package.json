@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "0.8.5",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -12,6 +12,9 @@
     "build:android:debug": "npm run apk:debug -w @bridge/mobile",
     "make:local:desktop-android": "npm run make:local-signed -w @bridge/desktop && npm run build:android:debug",
     "make:windows": "npm run make:windows -w @bridge/desktop",
+    "make:linux": "npm run make:linux -w @bridge/desktop",
+    "build:ios:simulator": "npm run build:ios:simulator -w @bridge/mobile",
+    "build:ios:device": "npm run build:ios:device -w @bridge/mobile",
     "dev": "concurrently -n relay,web -c green,cyan \"npm run dev -w @bridge/relay\" \"npm run dev -w @bridge/client\"",
     "dev:desktop": "concurrently -k -n relay,web,desktop -c green,cyan,magenta \"npm run dev -w @bridge/relay\" \"npm run dev -w @bridge/client\" \"wait-on tcp:5188 tcp:8788 && npm run dev -w @bridge/desktop\"",
     "lint": "npm run lint -ws --if-present",

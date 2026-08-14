@@ -6,6 +6,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   make:
     strategy:
@@ -20,6 +23,10 @@ jobs:
             name: Windows
             make_command: npm run make:windows -w @bridge/desktop
             artifact_suffix: installer
+          - os: ubuntu-latest
+            name: Linux
+            make_command: npm run make:linux -w @bridge/desktop
+            artifact_suffix: installers
     runs-on: ${{ matrix.os }}
     env:
       BRIDGE_RELAY_URL: ${{ vars.BRIDGE_RELAY_URL }}
@@ -35,6 +42,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build -w @bridge/protocol
+      - name: Install RPM/DEB toolchain for electron-forge makers
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y rpm fakeroot dpkg
       - name: Prepare Windows Authenticode certificate
         if: matrix.os == 'windows-2022' && env.BRIDGE_WIN_CERTIFICATE_BASE64 != ''
         shell: pwsh
@@ -78,9 +88,47 @@ jobs:
             signer = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
           }
           $evidence | ConvertTo-Json | Set-Content -Encoding utf8 "apps/desktop/out/make/windows-release-evidence.json"
+      - name: Assert Linux installer outputs
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make_dir="apps/desktop/out/make"
+          find "$make_dir" -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
+          find "$make_dir" -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
+          find "$make_dir" -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
+      - name: Record Linux hashes
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/desktop/out/make
+          find . -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.zip" \) -print0 \
+            | sort -z | xargs -0 shasum -a 256 > linux-release-evidence.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: Bridge-${{ matrix.name }}-${{ matrix.artifact_suffix }}-ci
           path: |
             apps/desktop/out/make/**
             artifacts/packaged-desktop/**
+      - name: Attach installers to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PLATFORM_NAME: ${{ matrix.name }}
+          ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Release $env:TAG not found; keeping workflow artifacts only."
+            return
+          }
+          $version = (Get-Content "apps/desktop/package.json" | ConvertFrom-Json).version
+          $slug = $env:PLATFORM_NAME.ToLowerInvariant()
+          $asset = Join-Path $env:RUNNER_TEMP "Bridge-$version-$slug-$($env:ARTIFACT_SUFFIX)-ci.zip"
+          Compress-Archive -Path "apps/desktop/out/make/*" -DestinationPath $asset -Force
+          gh release upload $env:TAG $asset --repo $env:GITHUB_REPOSITORY --clobber

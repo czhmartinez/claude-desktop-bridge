@@ -53,6 +53,41 @@ jobs:
             apps/desktop/out/make/**
             artifacts/packaged-desktop/**
 
+  desktop-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build -w @bridge/protocol
+      - name: Install RPM/DEB toolchain for electron-forge makers
+        run: sudo apt-get update && sudo apt-get install -y rpm fakeroot dpkg
+      - name: Build Linux installers with empty optional release variables
+        run: npm run make:linux -w @bridge/desktop
+        env:
+          BRIDGE_RELAY_URL: ""
+          BRIDGE_PUBLIC_RELAY_URL: ""
+          BRIDGE_PAIRING_BASE_URL: ""
+          BRIDGE_SERVICE_ORIGIN: ""
+          BRIDGE_ICE_SERVERS: ""
+      - name: Assert Linux installer outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          make_dir="apps/desktop/out/make"
+          find "$make_dir" -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
+          find "$make_dir" -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
+          find "$make_dir" -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-Linux-installers-ci
+          path: apps/desktop/out/make/**
+
   android-debug:
     runs-on: ubuntu-latest
     steps:
@@ -75,7 +110,7 @@ jobs:
           name: Bridge-Android-debug
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
-  ios-simulator:
+  ios:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -85,18 +120,23 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build -w @bridge/protocol
-      - run: npm run sync -w @bridge/mobile
       - name: Build unsigned simulator app
-        run: >-
-          xcodebuild
-          -project apps/mobile/ios/App/App.xcodeproj
-          -scheme App
-          -sdk iphonesimulator
-          -configuration Debug
-          -derivedDataPath apps/mobile/ios/DerivedData
-          CODE_SIGNING_ALLOWED=NO
-          build
+        run: npm run build:ios:simulator -w @bridge/mobile
+      - name: Build unsigned device app
+        run: npm run build:ios:device -w @bridge/mobile
+      - name: Assert iOS build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app" \
+            || { echo "Missing simulator App.app"; exit 1; }
+          test -d "apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app" \
+            || { echo "Missing unsigned device App.app"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
-          name: Bridge-iOS-simulator
+          name: Bridge-iOS-simulator-ci
           path: apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-iOS-device-unsigned-ci
+          path: apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app

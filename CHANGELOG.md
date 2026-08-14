@@ -1,3 +1,29 @@
+## 0.9.0
+
+- Make Windows, Linux and iOS standing release platforms alongside macOS and
+  Android; every future release ships all of them:
+  - Cutting a release now automatically dispatches the desktop installer
+    matrix (macOS `adhoc-ci`, Windows `installer-ci`, Linux `installers-ci`)
+    and the mobile builds (Android debug APK, iOS simulator and unsigned
+    device apps) on the release tag, and attaches the `-ci` artifacts to the
+    GitHub Release. Tags created by `release.yml` use GITHUB_TOKEN, which
+    never fires `push: tags` triggers, so the dispatch is explicit.
+  - Linux desktop graduates from "builds locally only" to a gated platform:
+    a new `make:linux` script produces ZIP/DEB/RPM via electron-forge, a
+    `desktop-linux` CI job proves the build on every push and pull request,
+    and the release matrix publishes the installers with SHA-256 evidence.
+  - iOS gains reproducible build entry points (`build:ios:simulator`,
+    `build:ios:device`) shared by local development, CI and the release
+    workflow. CI now builds both the simulator app and an unsigned device app
+    on every push; signed distribution still requires Apple Developer
+    credentials through the separate signing process.
+- Fix the release version gate drift: workspace manifests, the lockfile and
+  the `@bridge/protocol` pins were stuck at 0.7.9 while packages read 0.8.5,
+  which would have failed the next release validation. Every manifest,
+  lockfile entry, Android `versionCode`/`versionName` and iOS
+  `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` now move together at 0.9.0.
+- Update the visible product label from "Bridge 0.8" to "Bridge 0.9".
+
 ## 0.8.5
 
 - Prefer the self-hosted STUN server `stun:stun.alioxis.com:3478` and keep

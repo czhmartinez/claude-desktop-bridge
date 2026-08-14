@@ -1,6 +1,6 @@
 {
   "name": "@bridge/mobile",
-  "version": "0.8.5",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,6 +14,8 @@
     "open:ios": "cap open ios",
     "sync": "npm run prepare:web && cap sync",
     "apk:debug": "npm run sync && cd android && ./gradlew --no-daemon assembleDebug",
+    "build:ios:simulator": "npm run sync && xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath ios/DerivedData CODE_SIGNING_ALLOWED=NO build",
+    "build:ios:device": "npm run sync && xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphoneos -configuration Debug -derivedDataPath ios/DerivedData-device CODE_SIGNING_ALLOWED=NO build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

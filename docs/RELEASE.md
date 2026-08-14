@@ -236,6 +236,21 @@ npm run test:desktop:packaged:windows
 设备撤销。它不能代替 Windows 真机上的 Claude/Claude-3p 运行时、DPAPI 跨重启、
 托盘常驻、手机断线后任务继续及恢复去重验收。
 
+## 4.3 Linux 桌面包
+
+Linux 构建必须在 Linux（本机或 `ubuntu-latest` runner）执行：
+
+```bash
+sudo apt-get install -y rpm fakeroot dpkg
+npm run make:linux -w @bridge/desktop
+```
+
+electron-forge 在 `apps/desktop/out/make/` 产出 ZIP/DEB/RPM。CI 的
+`desktop-linux` 门禁在每次 push/PR 执行完整 typecheck/test 后构建并断言三种
+产物；发布矩阵会追加 SHA-256 证据（`linux-release-evidence.sha256`）。没有仓库
+签名时产物只能标记为“构建通过”，不能宣称可正式分发；Linux 打包态 UI、托盘与
+开机启动仍须在真机或虚拟机上单独验收。
+
 ## 5. 构建移动端
 
 ```bash
@@ -256,8 +271,17 @@ WebView 调试端口执行 `npm run test:android:installed`。该测试会重新
 空闲会话、主动发送唯一指令，并验证用户消息与 Claude 回复各出现一次。
 
 iOS 需要 Xcode 中配置 Team、Bundle ID、Push Notifications、Background
-Notifications 和 provisioning profile。没有 Apple Developer 条件时只能验证
-模拟器构建。
+Notifications 和 provisioning profile。没有 Apple Developer 条件时使用常态化
+未签名构建（本地、CI 与发布工作流同一入口）：
+
+```bash
+npm run build:ios:simulator   # Debug-iphonesimulator/App.app
+npm run build:ios:device      # Debug-iphoneos/App.app（未签名，仅构建验证）
+```
+
+CI 的 `ios` 门禁每次 push 同时构建模拟器与未签名设备包并断言产物；发布工作流
+把两者以 `-ci` 附件随每个 Release 发布。签名分发仍需 Apple Developer 凭据，
+走独立签名流程，不得把未签名包当作正式附件。
 
 ## 6. 验收矩阵
 

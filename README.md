@@ -158,10 +158,13 @@ Claude Desktop 正在回复、调用工具或等待工具结果时统一显示�
 
 最新桌面安装包与 Android APK 见
 [GitHub Releases](https://github.com/czhmartinez/claude-desktop-bridge/releases/latest)。
-当前桌面发布工作流构建 macOS（`macos-15`）与 Windows（`windows-2022`）；Linux
-桌面安装包仍不随 CI 发布。Windows 附件标记为 `installer-ci`，默认可能未签名，
-正式分发必须追加 Authenticode 签名。macOS `adhoc-ci` 也只用于构建验证；Release
-附件使用本机稳定签名，用于保留 macOS Files & Folders 授权。
+自 0.9.0 起，Windows、Linux 和 iOS 与 macOS、Android 同为常态化发布平台：
+创建 Release 后会自动在 release tag 上派发桌面（macOS `adhoc-ci`、Windows
+`installer-ci`、Linux `installers-ci`）与移动端（Android 调试 APK、iOS 模拟器
+与未签名设备包）构建，产物以 `-ci` 命名的附件随每个 GitHub Release 发布。
+Windows 附件默认可能未签名，正式分发必须追加 Authenticode 签名；macOS
+`adhoc-ci` 与 iOS 未签名包只用于构建验证，正式 macOS/iOS 分发仍由独立签名
+流程处理，Release 正式附件使用本机稳定签名以保留 macOS Files & Folders 授权。
 
 Windows 版与 macOS 版共享 Bridge Host、Claude Code/Claude-3p Host、Anthropic API、
 Relay、证据、普通 Claude Desktop 启动/退出控制，以及官方 Deep Link、首条消息关联和
@@ -176,8 +179,9 @@ Claude Desktop 会话清单登记。Windows 使用 `%APPDATA%\Claude\claude-code
 
 版本号文件推送到 `main` 后，`release.yml` 会先校验根包、全部 workspace、
 `package-lock.json`、Android `versionName` 和 iOS `MARKETING_VERSION` 完全一致，
-再执行完整验证、生成提交日志并创建 tag 和 GitHub Release。该流程不会把 ad-hoc
-macOS 构建冒充正式安装包，也不会自动上传未签名附件。
+再执行完整验证、生成提交日志并创建 tag 和 GitHub Release，随后自动派发全平台
+构建并把产物附加到该 Release。未签名附件一律以 `-ci` 命名标注，不会把 ad-hoc
+macOS 构建或未签名 iOS 包冒充正式安装包。
 
 **固定发布规则：**本地开发只负责更新代码与 README、提交并推送。新版本号升级由
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立
@@ -273,6 +277,21 @@ npm run test:desktop:packaged:windows
 Windows CI 或本机注入 `BRIDGE_WIN_CERTIFICATE_FILE` 与
 `BRIDGE_WIN_CERTIFICATE_PASSWORD`，也可使用 electron-builder 标准的 `WIN_CSC_LINK` 与
 `WIN_CSC_KEY_PASSWORD` 完成 Authenticode 签名；仓库不会保存证书或密码。
+
+Linux 安装包必须在 Linux（本机或 `ubuntu-latest` runner）上构建：
+
+```bash
+sudo apt-get install -y rpm fakeroot dpkg
+npm run make:linux
+```
+
+产物位于 `apps/desktop/out/make/`（ZIP/DEB/RPM），未签名包仅适合本机/CI 验收。
+iOS 常态化构建与 CI、发布工作流共用同一入口：
+
+```bash
+npm run build:ios:simulator   # 模拟器 App（未签名）
+npm run build:ios:device      # 设备 App（未签名，仅构建验证）
+```
 
 M0 真实闸门使用一次性项目和可丢弃会话验证同一 transcript 的多轮持久输入、
 流式回复、真实工具审批、中断和断线恢复，并检查活动应用与剪贴板前后不变。

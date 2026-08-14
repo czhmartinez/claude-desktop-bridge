@@ -146,6 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
+      actions: write
       contents: write
     steps:
       - uses: actions/checkout@v4
@@ -213,3 +214,19 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "Release $TAG" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Dispatch platform asset builds on the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="v${VERSION}"
+          # Tags created with GITHUB_TOKEN never fire push:tags triggers, so the
+          # standing platform builds (macOS/Windows/Linux installers, Android
+          # APK, iOS simulator and unsigned device apps) are dispatched
+          # explicitly on the new tag instead.
+          gh workflow run desktop-release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          gh workflow run mobile-release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
