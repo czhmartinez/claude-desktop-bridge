@@ -2,12 +2,14 @@
 
 - Make Windows, Linux and iOS standing release platforms alongside macOS and
   Android; every future release ships all of them:
-  - Cutting a release now automatically dispatches the desktop installer
-    matrix (macOS `adhoc-ci`, Windows `installer-ci`, Linux `installers-ci`)
-    and the mobile builds (Android debug APK, iOS simulator and unsigned
-    device apps) on the release tag, and attaches the `-ci` artifacts to the
-    GitHub Release. Tags created by `release.yml` use GITHUB_TOKEN, which
-    never fires `push: tags` triggers, so the dispatch is explicit.
+  - Cutting a release now tags the version commit and dispatches the
+    aggregate `release-assets.yml` workflow on that tag: desktop installers
+    (macOS `adhoc-ci`, Windows `installer-ci`, Linux `installers-ci`),
+    Android debug APK, and iOS simulator/unsigned device apps. A fan-in
+    publish job attaches every `-ci` asset to a draft GitHub Release and
+    only then publishes it, keeping the flow compatible with immutable
+    releases. Tags created via the API use GITHUB_TOKEN, which never fires
+    `push: tags` triggers, so the dispatch is explicit.
   - Linux desktop graduates from "builds locally only" to a gated platform:
     a new `make:linux` script produces ZIP/DEB/RPM via electron-forge, a
     `desktop-linux` CI job proves the build on every push and pull request,
@@ -22,6 +24,11 @@
   which would have failed the next release validation. Every manifest,
   lockfile entry, Android `versionCode`/`versionName` and iOS
   `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` now move together at 0.9.0.
+- Unbreak the long-red Windows CI gate: darwin app path candidates are built
+  with posix semantics so they stay correct on Windows hosts, sqlite test
+  fixtures now close their stores before temp-dir cleanup (unlink EBUSY on
+  Windows), and the auto-approve permission test polls for the effect
+  instead of racing a fixed 10ms sleep.
 - Update the visible product label from "Bridge 0.8" to "Bridge 0.9".
 
 ## 0.8.5

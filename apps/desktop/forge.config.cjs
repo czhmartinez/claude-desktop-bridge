@@ -153,7 +153,18 @@ module.exports = {
   makers: [
     { name: "@electron-forge/maker-zip", platforms: ["darwin", "linux"] },
     { name: "@electron-forge/maker-dmg", platforms: ["darwin"], config: { name: "Bridge" } },
-    { name: "@electron-forge/maker-deb", platforms: ["linux"], config: {} },
-    { name: "@electron-forge/maker-rpm", platforms: ["linux"], config: {} },
+    // electron-installer derives the binary path from the package.json name by
+    // default, which breaks on the scoped "@bridge/desktop"; point it at the
+    // real executableName instead.
+    {
+      name: "@electron-forge/maker-deb",
+      platforms: ["linux"],
+      config: { options: { name: "bridge", bin: "bridge", productName: "Bridge" } },
+    },
+    {
+      name: "@electron-forge/maker-rpm",
+      platforms: ["linux"],
+      config: { options: { name: "bridge", bin: "bridge", productName: "Bridge" } },
+    },
   ],
 };

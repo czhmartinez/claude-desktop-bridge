@@ -12,7 +12,7 @@ const directories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => (
-    rm(directory, { recursive: true, force: true })
+    rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   )));
 });
 
@@ -332,6 +332,7 @@ describe("ConversationStateStore", () => {
     fixture.store.setSessionVisibility("codex-desktop:native-1", "deleted");
     fixture.store.setSessionVisibility("junk", "nonsense" as never);
 
+    fixture.store.close();
     const reopened = new ConversationStateStore({
       databasePath: fixture.databasePath,
       sessionsPath: fixture.sessionsPath,

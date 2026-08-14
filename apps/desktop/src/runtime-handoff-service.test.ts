@@ -30,10 +30,14 @@ import type { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 
 const directories: string[] = [];
+const cleanups: Array<() => void | Promise<void>> = [];
 
 afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) {
+    await Promise.resolve(cleanup()).catch(() => {});
+  }
   await Promise.all(directories.splice(0).map((directory) => (
-    rm(directory, { recursive: true, force: true })
+    rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   )));
 });
 
@@ -350,6 +354,12 @@ async function createFixture(options: {
   const events: Fixture["events"] = [];
   eventLog.on("event", (event) => {
     events.push({ type: event.type, ...(event.sessionId ? { sessionId: event.sessionId } : {}), data: event.data });
+  });
+  cleanups.push(async () => {
+    await service.close();
+    await runtimeSessions.close();
+    state.close();
+    await eventLog.close();
   });
   return { state, eventLog, broker, codex, hermes, registry, runtimeSessions, service, cwd, events };
 }

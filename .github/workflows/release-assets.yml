@@ -1,0 +1,273 @@
+name: Release assets
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: macOS
+            make_command: npm run make:adhoc -w @bridge/desktop
+            artifact_suffix: adhoc
+          - os: windows-2022
+            name: Windows
+            make_command: npm run make:windows -w @bridge/desktop
+            artifact_suffix: installer
+          - os: ubuntu-latest
+            name: Linux
+            make_command: npm run make:linux -w @bridge/desktop
+            artifact_suffix: installers
+    runs-on: ${{ matrix.os }}
+    env:
+      BRIDGE_RELAY_URL: ${{ vars.BRIDGE_RELAY_URL }}
+      BRIDGE_PAIRING_BASE_URL: ${{ vars.BRIDGE_PAIRING_BASE_URL }}
+      BRIDGE_WIN_CERTIFICATE_BASE64: ${{ secrets.BRIDGE_WIN_CERTIFICATE_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build -w @bridge/protocol
+      - name: Install RPM/DEB toolchain for electron-forge makers
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y rpm fakeroot dpkg
+      - name: Prepare Windows Authenticode certificate
+        if: matrix.os == 'windows-2022' && env.BRIDGE_WIN_CERTIFICATE_BASE64 != ''
+        shell: pwsh
+        env:
+          BRIDGE_WIN_CERTIFICATE_BASE64: ${{ secrets.BRIDGE_WIN_CERTIFICATE_BASE64 }}
+          BRIDGE_WIN_CERTIFICATE_PASSWORD: ${{ secrets.BRIDGE_WIN_CERTIFICATE_PASSWORD }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "bridge-signing.p12"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:BRIDGE_WIN_CERTIFICATE_BASE64))
+          "BRIDGE_WIN_CERTIFICATE_FILE=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BRIDGE_WIN_CERTIFICATE_PASSWORD=$env:BRIDGE_WIN_CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - run: ${{ matrix.make_command }}
+      - name: Build Relay for packaged Windows QA
+        if: matrix.os == 'windows-2022'
+        run: npm run build -w @bridge/relay
+      - name: Run packaged Windows QA and pairing
+        if: matrix.os == 'windows-2022'
+        run: npm run test:desktop:packaged:windows
+      - name: Assert Windows installer output
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
+          if ($null -eq $setup) { throw "Assisted NSIS Setup.exe was not produced" }
+      - name: Record Windows hashes and Authenticode status
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
+          $signature = Get-AuthenticodeSignature -FilePath $setup.FullName
+          if ($env:BRIDGE_WIN_CERTIFICATE_BASE64 -ne '' -and $signature.Status -ne 'Valid') {
+            throw "Signed Windows installer failed Authenticode validation: $($signature.Status)"
+          }
+          $evidence = [ordered]@{
+            version = (Get-Content "apps/desktop/package.json" | ConvertFrom-Json).version
+            installerType = "nsis-assisted"
+            directorySelection = $true
+            setup = $setup.FullName
+            setupSha256 = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLowerInvariant()
+            authenticode = $signature.Status.ToString()
+            signer = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+          }
+          $evidence | ConvertTo-Json | Set-Content -Encoding utf8 "apps/desktop/out/make/windows-release-evidence.json"
+      - name: Assert Linux installer outputs
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make_dir="apps/desktop/out/make"
+          find "$make_dir" -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
+          find "$make_dir" -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
+          find "$make_dir" -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
+      - name: Record Linux hashes
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/desktop/out/make
+          find . -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.zip" \) -print0 \
+            | sort -z | xargs -0 shasum -a 256 > linux-release-evidence.sha256
+      - name: Stage flat installer payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payload = "apps/desktop/out/release-payload"
+          New-Item -ItemType Directory -Force $payload | Out-Null
+          $keep = '.dmg', '.zip', '.exe', '.deb', '.rpm', '.json', '.sha256'
+          Get-ChildItem "apps/desktop/out/make" -Recurse -File |
+            Where-Object { $keep -contains $_.Extension.ToLowerInvariant() } |
+            Copy-Item -Destination $payload
+          if ((Get-ChildItem $payload).Count -eq 0) { throw "Installer payload is empty" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-${{ matrix.name }}-${{ matrix.artifact_suffix }}-ci
+          path: apps/desktop/out/release-payload/**
+      - name: Upload packaged Windows QA evidence
+        if: matrix.os == 'windows-2022'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-Windows-qa-ci
+          path: artifacts/packaged-desktop/**
+          if-no-files-found: warn
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm run build -w @bridge/protocol
+      - run: npm run sync -w @bridge/mobile
+      - run: ./gradlew assembleDebug
+        working-directory: apps/mobile/android
+      - name: Assert Android APK output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk" \
+            || { echo "Missing debug APK"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-Android-debug-ci
+          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @bridge/protocol
+      - name: Build unsigned simulator app
+        run: npm run build:ios:simulator -w @bridge/mobile
+      - name: Build unsigned device app
+        run: npm run build:ios:device -w @bridge/mobile
+      - name: Assert iOS build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app" \
+            || { echo "Missing simulator App.app"; exit 1; }
+          test -d "apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app" \
+            || { echo "Missing unsigned device App.app"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-iOS-simulator-ci
+          path: apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-iOS-device-unsigned-ci
+          path: apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app
+
+  publish:
+    needs: [desktop, android, ios]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Bridge-*
+          path: packed
+      - name: Stage platform assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -er '.version' package.json)"
+          mkdir -p assets
+          (cd "packed/Bridge-macOS-adhoc-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-macos-adhoc-ci.zip" .)
+          (cd "packed/Bridge-Windows-installer-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-windows-installer-ci.zip" .)
+          (cd "packed/Bridge-Linux-installers-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-linux-installers-ci.zip" .)
+          cp "packed/Bridge-Android-debug-ci/app-debug.apk" "assets/Bridge-${version}-android-debug-ci.apk"
+          (cd "packed/Bridge-iOS-simulator-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-ios-simulator-ci.zip" .)
+          (cd "packed/Bridge-iOS-device-unsigned-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-ios-device-unsigned-ci.zip" .)
+          ls -l assets
+      - name: Generate release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          LAST_TAG="$(
+            git tag --merged "$GITHUB_SHA" --sort=-version:refname |
+              grep -E '^v[0-9]+\.' |
+              grep -vxF "$TAG" |
+              head -1 || true
+          )"
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "## Changes"
+            echo
+            if [[ -n "$LAST_TAG" ]]; then
+              git log "${LAST_TAG}..${GITHUB_SHA}" --pretty=format:'- `%h` %s (%an)'
+            else
+              git log "$GITHUB_SHA" -n 20 --pretty=format:'- `%h` %s (%an)'
+            fi
+            echo
+            echo
+            if [[ -n "$LAST_TAG" ]]; then
+              echo "**Full Changelog**: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${LAST_TAG}...${TAG}"
+            fi
+          } > "$NOTES_FILE"
+      - name: Publish GitHub Release with platform assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(assets/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No staged assets; refusing to publish an empty release."
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+            if [ "$is_draft" = "true" ]; then
+              gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false \
+                --notes-file "$RUNNER_TEMP/release-notes.md"
+            else
+              echo "Release $TAG is already published (immutable); platform assets remain"
+              echo "available as workflow artifacts on this run."
+            fi
+          else
+            # Draft-first creation keeps asset uploads compatible with immutable
+            # releases; the release is published only after every asset landed.
+            gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" \
+              --title "Release $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" \
+              "${files[@]}"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          fi

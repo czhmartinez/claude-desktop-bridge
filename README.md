@@ -159,9 +159,10 @@ Claude Desktop 正在回复、调用工具或等待工具结果时统一显示�
 最新桌面安装包与 Android APK 见
 [GitHub Releases](https://github.com/czhmartinez/claude-desktop-bridge/releases/latest)。
 自 0.9.0 起，Windows、Linux 和 iOS 与 macOS、Android 同为常态化发布平台：
-创建 Release 后会自动在 release tag 上派发桌面（macOS `adhoc-ci`、Windows
-`installer-ci`、Linux `installers-ci`）与移动端（Android 调试 APK、iOS 模拟器
-与未签名设备包）构建，产物以 `-ci` 命名的附件随每个 GitHub Release 发布。
+版本推送到 `main` 后会自动打 release tag 并在 tag 上构建桌面
+（macOS `adhoc-ci`、Windows `installer-ci`、Linux `installers-ci`）与移动端
+（Android 调试 APK、iOS 模拟器与未签名设备包）产物，草稿 Release 集齐 `-ci`
+附件后才公开（兼容 immutable releases）。
 Windows 附件默认可能未签名，正式分发必须追加 Authenticode 签名；macOS
 `adhoc-ci` 与 iOS 未签名包只用于构建验证，正式 macOS/iOS 分发仍由独立签名
 流程处理，Release 正式附件使用本机稳定签名以保留 macOS Files & Folders 授权。
@@ -179,9 +180,10 @@ Claude Desktop 会话清单登记。Windows 使用 `%APPDATA%\Claude\claude-code
 
 版本号文件推送到 `main` 后，`release.yml` 会先校验根包、全部 workspace、
 `package-lock.json`、Android `versionName` 和 iOS `MARKETING_VERSION` 完全一致，
-再执行完整验证、生成提交日志并创建 tag 和 GitHub Release，随后自动派发全平台
-构建并把产物附加到该 Release。未签名附件一律以 `-ci` 命名标注，不会把 ad-hoc
-macOS 构建或未签名 iOS 包冒充正式安装包。
+再执行完整验证并创建 release tag；`release-assets.yml` 随后构建桌面与移动端
+全部产物、生成提交日志，并在草稿中集齐 `-ci` 附件后公开 GitHub Release。
+未签名附件一律以 `-ci` 命名标注，不会把 ad-hoc macOS 构建或未签名 iOS 包
+冒充正式安装包。
 
 **固定发布规则：**本地开发只负责更新代码与 README、提交并推送。新版本号升级由
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立

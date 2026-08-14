@@ -20,8 +20,18 @@ import { RuntimeSessionBroker, runtimeSessionId } from "./runtime-session-broker
 const directories: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all(directories.splice(0).map((directory) => (
+    rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  )));
 });
+
+async function waitFor(check: () => boolean, label = "condition"): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
   readonly turnInputs: RuntimeAdapterTurnInput[] = [];
@@ -479,13 +489,13 @@ describe("RuntimeSessionBroker", () => {
     expect(configured.resolvedPending).toBe(0);
 
     codex.requestPermission("native-1", "auto-1");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(() => codex.resolved.length === 1, "codex auto-approval");
     expect(codex.resolved).toEqual([{ requestId: "auto-1", decision: "allow-once" }]);
     expect(broker.listPermissions()).toHaveLength(0);
 
     // Hermes stays on the standard flow: the approval waits for a human.
     hermes.requestPermission("native-1", "manual-1");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(() => broker.listPermissions().length === 1, "hermes pending permission");
     expect(broker.listPermissions().map((permission) => permission.sessionId)).toEqual([hermesSessionId]);
     expect(hermes.resolved).toHaveLength(0);
 

@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, win32 as windowsPath } from "node:path";
+import { posix, win32 as windowsPath } from "node:path";
 import type { BridgeDesktopRuntimeId } from "@bridge/protocol";
 
 export interface DesktopAppDefinition {
@@ -73,8 +73,8 @@ export const HERMES_DESKTOP_APP: DesktopAppDefinition = {
   displayName: "Hermes",
   darwinBundle: "/Applications/Hermes.app",
   darwinPathCandidates: (home) => [
-    join(home, ".hermes", "hermes-agent", "apps", "desktop", "release", "mac-arm64", "Hermes.app"),
-    join(home, ".hermes", "hermes-agent", "apps", "desktop", "release", "mac-x64", "Hermes.app"),
+    posix.join(home, ".hermes", "hermes-agent", "apps", "desktop", "release", "mac-arm64", "Hermes.app"),
+    posix.join(home, ".hermes", "hermes-agent", "apps", "desktop", "release", "mac-x64", "Hermes.app"),
   ],
   win32ExecutableName: "Hermes.exe",
   envPathOverride: "BRIDGE_HERMES_DESKTOP_PATH",
@@ -110,5 +110,6 @@ export function desktopAppPathCandidates(
     definition.darwinBundle,
     ...(definition.darwinBundleCandidates ?? []),
     ...(definition.darwinPathCandidates?.(home) ?? []),
-  ].map((bundle) => join(bundle)));
+  // Darwin bundles are POSIX paths regardless of the host platform.
+  ].map((bundle) => posix.normalize(bundle)));
 }
