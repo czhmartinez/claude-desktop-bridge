@@ -2,14 +2,14 @@
 
 - Make Windows, Linux and iOS standing release platforms alongside macOS and
   Android; every future release ships all of them:
-  - Cutting a release now tags the version commit and dispatches the
-    aggregate `release-assets.yml` workflow on that tag: desktop installers
-    (macOS `adhoc-ci`, Windows `installer-ci`, Linux `installers-ci`),
-    Android debug APK, and iOS simulator/unsigned device apps. A fan-in
-    publish job attaches every `-ci` asset to a draft GitHub Release and
+  - Cutting a release now creates a draft GitHub Release (and its tag) and
+    dispatches the aggregate `release-assets.yml` workflow on that tag:
+    desktop installers (macOS `adhoc-ci`, Windows `installer-ci`, Linux
+    `installers-ci`), Android debug APK, and iOS simulator/unsigned device
+    apps. A fan-in publish job attaches every `-ci` asset to the draft and
     only then publishes it, keeping the flow compatible with immutable
-    releases. Tags created via the API use GITHUB_TOKEN, which never fires
-    `push: tags` triggers, so the dispatch is explicit.
+    releases. Tags created with GITHUB_TOKEN never fire `push: tags`
+    triggers, so the dispatch is explicit.
   - Linux desktop graduates from "builds locally only" to a gated platform:
     a new `make:linux` script produces ZIP/DEB/RPM via electron-forge, a
     `desktop-linux` CI job proves the build on every push and pull request,

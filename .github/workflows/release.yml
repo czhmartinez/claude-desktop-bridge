@@ -165,7 +165,7 @@ jobs:
       - name: Verify build
         run: npm run verify
 
-      - name: Create release tag
+      - name: Create draft GitHub Release and tag
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check-version.outputs.version }}
@@ -174,16 +174,17 @@ jobs:
           set -euo pipefail
 
           TAG="v${VERSION}"
-          # The Release itself is published by release-assets.yml once every
-          # platform artifact is built, so assets are attached before the
-          # release becomes immutable.
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists; reusing it."
-          else
-            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" >/dev/null
-            echo "Created tag $TAG at $GITHUB_SHA."
-          fi
+          # Draft-first: release-assets.yml attaches every platform artifact to
+          # this draft and only then publishes, which keeps the flow compatible
+          # with immutable releases. gh release create also creates the tag;
+          # the releases endpoint accepts GITHUB_TOKEN where the raw git refs
+          # API answers HTTP 422.
+          gh release create "$TAG" \
+            --draft \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Release $TAG" \
+            --notes "Platform builds in progress; published automatically once all assets land."
 
       - name: Dispatch platform asset builds on the release tag
         env:
