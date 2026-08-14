@@ -180,10 +180,10 @@ Claude Desktop 会话清单登记。Windows 使用 `%APPDATA%\Claude\claude-code
 
 版本号文件推送到 `main` 后，`release.yml` 会先校验根包、全部 workspace、
 `package-lock.json`、Android `versionName` 和 iOS `MARKETING_VERSION` 完全一致，
-再执行完整验证、创建草稿 GitHub Release（同时打 tag）；`release-assets.yml`
-随后构建桌面与移动端全部产物、生成提交日志，并在草稿中集齐 `-ci` 附件后
-公开 Release。未签名附件一律以 `-ci` 命名标注，不会把 ad-hoc macOS 构建或
-未签名 iOS 包冒充正式安装包。
+再执行完整验证并创建草稿 GitHub Release；`release-assets.yml` 随后在版本提交
+上构建桌面与移动端全部产物、生成提交日志，在草稿中集齐 `-ci` 附件后公开
+Release（tag 在公开时指向版本提交）。未签名附件一律以 `-ci` 命名标注，不会
+把 ad-hoc macOS 构建或未签名 iOS 包冒充正式安装包。
 
 **固定发布规则：**本地开发只负责更新代码与 README、提交并推送。新版本号升级由
 GitHub Copilot 发起，tag 和 GitHub Release 交给自动工作流；正式签名附件仍由独立

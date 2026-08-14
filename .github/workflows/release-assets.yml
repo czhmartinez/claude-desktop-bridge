@@ -2,6 +2,11 @@ name: Release assets
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (for example v0.9.0); leave empty for a build-only run
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -189,9 +194,11 @@ jobs:
 
   publish:
     needs: [desktop, android, ios]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: ${{ inputs.tag != '' || startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -215,13 +222,13 @@ jobs:
           ls -l assets
       - name: Generate release notes
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         shell: bash
         run: |
           set -euo pipefail
           LAST_TAG="$(
             git tag --merged "$GITHUB_SHA" --sort=-version:refname |
-              grep -E '^v[0-9]+\.' |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
               grep -vxF "$TAG" |
               head -1 || true
           )"
@@ -243,7 +250,7 @@ jobs:
       - name: Publish GitHub Release with platform assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         shell: bash
         run: |
           set -euo pipefail
@@ -264,10 +271,11 @@ jobs:
               echo "available as workflow artifacts on this run."
             fi
           else
-            # Draft-first creation keeps asset uploads compatible with immutable
-            # releases; the release is published only after every asset landed.
+            # Draft-first keeps asset uploads compatible with immutable
+            # releases; the tag materializes when the draft is published.
             gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" \
-              --title "Release $TAG" --notes-file "$RUNNER_TEMP/release-notes.md" \
-              "${files[@]}"
+              --target "$GITHUB_SHA" \
+              --title "Release $TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
           fi

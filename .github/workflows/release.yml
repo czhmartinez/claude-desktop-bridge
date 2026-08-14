@@ -176,9 +176,8 @@ jobs:
           TAG="v${VERSION}"
           # Draft-first: release-assets.yml attaches every platform artifact to
           # this draft and only then publishes, which keeps the flow compatible
-          # with immutable releases. gh release create also creates the tag;
-          # the releases endpoint accepts GITHUB_TOKEN where the raw git refs
-          # API answers HTTP 422.
+          # with immutable releases. The git tag only materializes when the
+          # draft is published; drafts never create tags.
           gh release create "$TAG" \
             --draft \
             --repo "$GITHUB_REPOSITORY" \
@@ -186,7 +185,7 @@ jobs:
             --title "Release $TAG" \
             --notes "Platform builds in progress; published automatically once all assets land."
 
-      - name: Dispatch platform asset builds on the release tag
+      - name: Dispatch platform asset builds for the release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check-version.outputs.version }}
@@ -195,8 +194,9 @@ jobs:
           set -euo pipefail
 
           TAG="v${VERSION}"
-          # Tags created with GITHUB_TOKEN never fire push:tags triggers, so the
-          # standing platform build (macOS/Windows/Linux installers, Android
-          # APK, iOS simulator and unsigned device apps, then the GitHub
-          # Release with all -ci assets) is dispatched explicitly on the tag.
-          gh workflow run release-assets.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          # Drafts have no git tag yet, so the aggregate build is dispatched on
+          # the exact version commit and told which release to publish.
+          # GITHUB_TOKEN dispatches never cascade push:tags triggers either
+          # way, which is why this explicit dispatch exists.
+          gh workflow run release-assets.yml --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_SHA" -f "tag=$TAG"
