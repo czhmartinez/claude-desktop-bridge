@@ -189,6 +189,9 @@ Claude Desktop 正在回复、调用工具或等待工具结果时统一显示�
 （macOS `adhoc-ci`、Windows `installer-ci`、Linux `installers-ci`）与移动端
 （Android 调试 APK、iOS 模拟器与未签名设备包）产物，草稿 Release 集齐 `-ci`
 附件后才公开（兼容 immutable releases）。
+自 0.9.3 起，Android 调试 APK 使用仓库内固定调试钥匙签名（本机与 CI 产物签名一致，
+互相覆盖安装；CI 与发布门禁均校验签名指纹）。0.9.2 及更早的 CI 签名包与本机包
+签名不同，已装旧包的手机需先卸载一次，此后升级均可直接覆盖。
 Windows 附件默认可能未签名，正式分发必须追加 Authenticode 签名；macOS
 `adhoc-ci` 与 iOS 未签名包只用于构建验证，正式 macOS/iOS 分发仍由独立签名
 流程处理，Release 正式附件使用本机稳定签名以保留 macOS Files & Folders 授权。

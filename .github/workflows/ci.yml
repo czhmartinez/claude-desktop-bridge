@@ -111,12 +111,17 @@ jobs:
           set -euo pipefail
           # 0.9.3 pinned the repo-shared debug key; catch signature drift at PR time.
           EXPECTED="8b4e8a0ed8e506dde6ff65f92b9bd526d2fcaf10d35089d381a02d9ed23a18db"
-          APKSIGNER="$(ls -v "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)"
-          ACTUAL="$("$APKSIGNER" verify --print-certs \
-            apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk \
-            | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)"
-          [ "$ACTUAL" = "$EXPECTED" ] \
-            || { echo "Debug APK signature drifted: $ACTUAL (expected $EXPECTED)"; exit 1; }
+          APK="apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk"
+          APKSIGNER="$(ls -v "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)"
+          [ -n "${APKSIGNER:-}" ] || { echo "apksigner not found under ${ANDROID_HOME:-$ANDROID_SDK_ROOT}"; exit 1; }
+          OUTPUT="$("$APKSIGNER" verify --print-certs "$APK" 2>&1 || true)"
+          ACTUAL="$(printf '%s\n' "$OUTPUT" | sed -n 's/.*certificate SHA-256 digest: *//p' | head -1)"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            printf '%s\n' "$OUTPUT"
+            echo "Debug APK signature drifted: [$ACTUAL] (expected $EXPECTED)"
+            exit 1
+          fi
+          echo "Android APK debug signature OK: $ACTUAL"
       - uses: actions/upload-artifact@v4
         with:
           name: Bridge-Android-debug
