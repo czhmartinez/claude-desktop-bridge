@@ -194,9 +194,9 @@ export function desktopRuntimeId(session: BridgeSessionInfo): BridgeDesktopRunti
 }
 
 export function desktopRuntimeName(runtimeId: BridgeDesktopRuntimeId | undefined): string {
-  if (runtimeId === "codex-desktop") return "Codex Desktop";
-  if (runtimeId === "hermes-desktop") return "Hermes Desktop";
-  return "Claude Desktop";
+  if (runtimeId === "codex-desktop") return "Codex";
+  if (runtimeId === "hermes-desktop") return "Hermes";
+  return "Claude";
 }
 
 export function runtimeProviderLabel(runtimeId: BridgeDesktopRuntimeId | undefined): string {

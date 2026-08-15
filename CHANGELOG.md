@@ -1,3 +1,28 @@
+## 0.9.6
+
+- Runtime labels drop the redundant "Desktop" suffix: the filter chips and
+  session metadata on phone and desktop now read "Claude / Codex / Hermes".
+  Texts that refer to the actual macOS app (sync, registration, quit
+  confirmations) keep the full "Claude Desktop" name.
+- Motion pass against the Apple fluid-interface bar (review-animations audit):
+  - Reduced motion is a gentler equivalent, not a kill switch: the global
+    1ms suppression is gone; entrances degrade to a 200ms fade, looped
+    movement freezes statically, and loading spinners become a slow opacity
+    pulse instead of a frozen ring that read as "stuck".
+  - Live-stream and overlay entrances drop from 320/360ms to 220/240ms,
+    back under the 300ms UI budget for a surface seen constantly during
+    active sessions.
+  - Progress bars animate `transform: scaleX()` on the GPU instead of
+    laying out `width` every frame.
+  - Card hover-lift is gated behind `(hover: hover) and (pointer: fine)` so
+    touch taps no longer fire a false hover jump; button press feedback
+    settles at `scale(0.97)` in every theme family.
+  - `prefers-contrast: more` now strengthens borders and dividers in both
+    light and dark, completing the reduced-motion / reduced-transparency /
+    contrast trio.
+  - Dead motion tokens (`--ease-spring`, `--t-morph`) and the duplicate
+    `bridge-spin` keyframes are removed.
+
 ## 0.9.5
 
 - Heal the "must re-pair after every update" loop at its actual roots (the

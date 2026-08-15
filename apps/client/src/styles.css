@@ -78,15 +78,13 @@
   --r-hero: 20px;
   --r-pill: 999px;
 
-  /* 动效 token（物理弹簧体系：交互 ≤200ms，入场/浮层 ≤320ms，禁 ease-in） */
+  /* 动效 token（物理弹簧体系：交互 ≤200ms，入场/浮层 ≤240ms，禁 ease-in） */
   --transition: 150ms ease;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
   --t-fast: 140ms;
   --t-base: 200ms;
-  --t-morph: 240ms;
-  --t-enter: 320ms;
+  --t-enter: 220ms;
 }
 
 [data-theme="dark"] {
@@ -268,7 +266,7 @@ button:disabled {
 .icon-button:active,
 .rail-button:active,
 .paste-button:active {
-  transform: scale(0.94);
+  transform: scale(0.97);
 }
 
 .icon-button:hover,
@@ -684,11 +682,13 @@ button:disabled {
 
 .pairing-sync-progress-fill {
   display: block;
+  width: 100%;
   height: 100%;
-  min-width: 7px;
   border-radius: inherit;
   background: var(--accent);
-  transition: width var(--t-enter) var(--ease-out);
+  transform: scaleX(var(--p, 0));
+  transform-origin: left;
+  transition: transform var(--t-enter) var(--ease-out);
 }
 
 .pairing-sync-stages {
@@ -1457,10 +1457,13 @@ button:disabled {
 
 .progress-track span {
   display: block;
+  width: 100%;
   height: 100%;
   border-radius: inherit;
   background: var(--accent);
-  transition: width 240ms ease;
+  transform: scaleX(var(--p, 0));
+  transform-origin: left;
+  transition: transform 240ms var(--ease-out);
 }
 
 .completion-check {
@@ -1970,24 +1973,98 @@ button:disabled {
   }
 }
 
+/* 减动效（Apple §14）：温和等价而非零反馈——移除位移/循环运动，
+   保留 opacity/color 过渡与淡入，loading 改慢速透明度脉冲。
+   !important 保证压过文件后方定义的入场规则。 */
+@keyframes bridge-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes bridge-fade-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;
-    animation-duration: 1ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 1ms !important;
+  }
+
+  /* 循环运动全部静止：跑点/扩散环/活动点不再位移，静态呈现 */
+  .connection-line span,
+  .pairing-sync-link i,
+  .quiet-pulse span,
+  .session-activity-dots i {
+    animation: none !important;
+  }
+
+  /* loading 不冻结成"假死"圆环：改慢速透明度脉冲（无位移，允许） */
+  .spinner,
+  .is-spinning {
+    animation: bridge-fade-pulse 1.6s ease-in-out infinite !important;
+  }
+
+  /* 入场/浮层/错落：位移托起统一降级为 200ms 纯淡入 */
+  .conversation-item.is-entering,
+  .evidence-inline-summary.is-entering,
+  .permission-prompt,
+  .desktop-channel-banner,
+  .session-channel-warning,
+  .relay-chain-bar,
+  .session-activity,
+  .host-rows > *,
+  .session-rows > *,
+  .project-groups > *,
+  .desktop-device-list > *,
+  .desktop-project-sessions > *,
+  .timeline > *,
+  .pairing-visual .device,
+  .confirm-dialog,
+  .create-session-dialog,
+  .provider-switch-dialog,
+  .session-configuration-dialog,
+  .permission-sheet,
+  .artifact-preview-dialog,
+  .pairing-panel,
+  .theme-menu-panel {
+    animation: bridge-fade-in 200ms ease-out both !important;
+  }
+
+  /* 按压/悬浮的位移反馈移除，颜色反馈照常 */
+  .icon-button:active,
+  .rail-button:active,
+  .paste-button:active,
+  .primary-button:active,
+  .secondary-button:active,
+  .danger-button:active,
+  .send-button:active,
+  .desktop-nav-v2 nav button:active,
+  .desktop-app-control:hover,
+  .managed-status-card:hover,
+  .file-changes-card:hover {
+    transform: none !important;
+  }
+}
+
+/* 高对比（Apple §14 第三信号）：描边/分隔线提到清晰档 */
+@media (prefers-contrast: more) {
+  :root {
+    --line: rgba(62, 47, 33, 0.32);
+    --line-strong: rgba(62, 47, 33, 0.5);
+    --card-border: rgba(62, 47, 33, 0.28);
+    --glass-border: rgba(62, 47, 33, 0.3);
+  }
+
+  [data-theme="dark"] {
+    --line: rgba(255, 255, 255, 0.28);
+    --line-strong: rgba(255, 255, 255, 0.45);
+    --card-border: rgba(255, 255, 255, 0.26);
+    --glass-border: rgba(255, 255, 255, 0.3);
   }
 }
 
 /* Bridge 0.2 session host */
-
-.is-spinning {
-  animation: bridge-spin 850ms linear infinite;
-}
-
-@keyframes bridge-spin {
-  to { transform: rotate(360deg); }
-}
 
 .danger-text {
   color: var(--danger);
@@ -5607,11 +5684,14 @@ button:disabled {
   transition: transform var(--t-fast) var(--ease-out), border-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
 }
 
-.desktop-app-control:hover,
-.managed-status-card:hover,
-.file-changes-card:hover {
-  border-color: var(--line-strong);
-  transform: translateY(-2px);
+/* hover 上浮只给精确指针：触屏 tap 会触发假 hover，卡片会跳一下又弹回 */
+@media (hover: hover) and (pointer: fine) {
+  .desktop-app-control:hover,
+  .managed-status-card:hover,
+  .file-changes-card:hover {
+    border-color: var(--line-strong);
+    transform: translateY(-2px);
+  }
 }
 
 /* 桌面导航轨 active 态：暖橙雾面填充 */
@@ -5979,11 +6059,9 @@ button:disabled {
   --transition: 120ms ease;
   --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
   --t-fast: 120ms;
   --t-base: 200ms;
-  --t-morph: 260ms;
-  --t-enter: 360ms;
+  --t-enter: 240ms;
 }
 
 /* ---- Apple 家族 token（深色 = iOS 纯黑分组） ---- */

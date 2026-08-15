@@ -1,4 +1,5 @@
 import { Check, Laptop, LoaderCircle, ShieldCheck, Smartphone } from "lucide-react";
+import type { CSSProperties } from "react";
 import type { PairingSyncStage, PairingSyncState } from "../hooks/useMobileBridge.js";
 import { BrandMark } from "./BrandMark.js";
 
@@ -72,7 +73,11 @@ export function PairingSyncScreen({ sync }: { sync: PairingSyncState }) {
             aria-valuemax={100}
             aria-valuenow={sync.progress}
           >
-            <span className="pairing-sync-progress-fill" style={{ width: `${sync.progress}%` }} />
+            {/* GPU 进度：scaleX 走合成层，避免 width 布局动画；2% 下限保留最小可见段 */}
+            <span
+              className="pairing-sync-progress-fill"
+              style={{ "--p": String(Math.max(sync.progress, 2) / 100) } as CSSProperties}
+            />
           </div>
         </div>
         <ol className="pairing-sync-stages" aria-label="同步阶段">
