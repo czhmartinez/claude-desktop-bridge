@@ -129,6 +129,29 @@ export class TransportRouter implements BridgeTransport {
     this.emitState("closed");
   }
 
+  /**
+   * Abandon the current candidate and move to the next one immediately,
+   * keeping the router alive. Used by client-side watchdogs that can prove
+   * the current path is dead or useless (half-dead uplink, wrong relay
+   * namespace): close() would park the router until an outside reconnect.
+   */
+  cycle(): void {
+    if (this.stopped) return;
+    const active = this.active;
+    if (!active) {
+      this.activate(0);
+      return;
+    }
+    // Closing the active transport makes its state listener advance the
+    // router; clear the candidate timer so it cannot double-advance.
+    this.clearCandidateTimer();
+    active.close();
+    if (this.active === active && active.state === "closed") {
+      // Defensive: advance even if a transport swallowed its closed state.
+      this.advance();
+    }
+  }
+
   send(payload: BridgePayload, to: MessageTarget, options?: SendOptions): Promise<string> {
     return this.active?.send(payload, to, options) ?? unavailable();
   }

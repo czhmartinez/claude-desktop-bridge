@@ -2614,11 +2614,28 @@ button:disabled {
 .file-change-row code {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: baseline;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   color: inherit;
   font-size: 11px;
+}
+
+.file-change-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-change-parent {
+  flex: none;
+}
+
+.file-change-base {
+  flex: none;
+  font-weight: 600;
 }
 
 .file-change-kind {
@@ -4324,6 +4341,24 @@ button:disabled {
 
 .delivery-state.failed {
   color: var(--danger);
+}
+
+.delivery-error-detail {
+  margin-top: 4px;
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: right;
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
+
+.conversation-error-detail {
+  max-width: 300px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .delivery-state.uncertain {

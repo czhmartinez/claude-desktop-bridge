@@ -91,6 +91,7 @@ interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
   requestId?: string;
   commandId?: string;
+  error?: string;
   live?: boolean;
 }
 
@@ -311,6 +312,7 @@ export function conversationItems(
       attachments: turn.attachments,
       delivery: turn.delivery,
       requestId: turn.requestId,
+      ...(turn.error ? { error: turn.error } : {}),
       ...(turn.commandId ? { commandId: turn.commandId } : {}),
     });
   }
@@ -1647,6 +1649,7 @@ export function MobileWorkspace({
           {selectedHistory?.status === "error" && selectedHistory.items.length === 0 && (
             <div className="conversation-empty">
               <strong>会话暂时无法读取</strong>
+              {selectedHistory.error && <span className="conversation-error-detail">{selectedHistory.error}</span>}
               <button type="button" className="secondary-button" onClick={() => void onOpenSession(selectedSession.sessionId)}>重试</button>
             </div>
           )}
@@ -1684,6 +1687,9 @@ export function MobileWorkspace({
                 </div>
               ) : null}
               {entry.item.delivery && <div className={`delivery-state ${entry.item.delivery}`}>{deliveryLabel(entry.item.delivery)}</div>}
+              {entry.item.delivery === "failed" && entry.item.error && (
+                <div className="delivery-error-detail">{entry.item.error}</div>
+              )}
               {entry.item.delivery === "uncertain" && entry.item.commandId && (
                 <div className="uncertain-delivery-actions">
                   <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(entry.item.commandId!, "confirm")}>确认已发送</button>

@@ -63,6 +63,34 @@ beforeAll(() => {
 });
 
 describe("BridgeVault pairing migration", () => {
+  it("remembers the desktop's home relay per host", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    const pairing = await BridgeCrypto.createDevicePairing({
+      hostId: "home-relay-host",
+      pairingEpoch: 1,
+      roomId: "home-relay-room",
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Studio Mac",
+      relayEndpoints: [
+        { id: "public", kind: "public-relay", url: "wss://relay.example/ws", priority: 10 },
+        { id: "legacy", kind: "public-relay", url: "wss://relay-legacy.example/ws", priority: 30 },
+      ],
+      activeEndpoint: "public",
+    });
+    await vault.importPairing(pairing.pairing);
+
+    expect((await vault.getHost("home-relay-room"))?.desktopRelayUrl).toBeUndefined();
+    await vault.setDesktopRelay("home-relay-room", "wss://relay.example/ws");
+    expect((await vault.getHost("home-relay-room"))?.desktopRelayUrl).toBe("wss://relay.example/ws");
+    await vault.setDesktopRelay("home-relay-room", "wss://relay-legacy.example/ws");
+    expect((await vault.getHost("home-relay-room"))?.desktopRelayUrl).toBe("wss://relay-legacy.example/ws");
+    // Non-relay values are refused.
+    await vault.setDesktopRelay("home-relay-room", "webrtc://peer");
+    expect((await vault.getHost("home-relay-room"))?.desktopRelayUrl).toBe("wss://relay-legacy.example/ws");
+    await vault.clear();
+  });
+
   it("heals a stale LAN relay in place when the desktop advertises a fresh one", async () => {
     const vault = new BridgeVault();
     await vault.clear();

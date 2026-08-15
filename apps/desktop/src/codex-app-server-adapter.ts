@@ -247,6 +247,21 @@ function isUnsupportedCodexMethod(error: unknown): boolean {
   return /(method\s+(?:not found|unknown|unsupported)|unknown\s+method|not implemented)/iu.test(message);
 }
 
+/**
+ * The app-server guards every thread with a cross-process writer lock
+ * (~/.codex/thread-writer-locks): a thread that is mid-turn in ANY codex
+ * process (Codex Desktop included) rejects thread/resume,
+ * thread/settings/update and turn/start with this error. It is a busy
+ * signal, not a failure — callers should defer, not crash their flows.
+ */
+export function isCodexWriterBusy(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already has an? (?:active|live local) writer|thread writer (?:coordination )?lock/iu.test(message);
+}
+
+const CODEX_WRITER_BUSY_MESSAGE =
+  "这个 Codex 会话正在电脑上执行任务（会话被占用）。等它完成，或先在电脑上停止后再操作。";
+
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
@@ -717,10 +732,17 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
   async configuration(nativeSessionId: string): Promise<RuntimeAdapterConfiguration> {
     const session = this.sessionMap.get(nativeSessionId);
     if (!session) throw new Error("Codex thread not found");
-    const running = this.activeTurns.has(nativeSessionId);
+    let running = this.activeTurns.has(nativeSessionId);
     if (!this.unmaterialized.has(nativeSessionId)) {
-      const resumed = await this.resumeThread(nativeSessionId);
-      this.applyThreadConfiguration(nativeSessionId, resumed, running);
+      try {
+        const resumed = await this.resumeThread(nativeSessionId);
+        this.applyThreadConfiguration(nativeSessionId, resumed, running);
+      } catch (error) {
+        // A busy writer (turn running in any codex process) must not blank the
+        // configuration dialog: fall back to the last known settings and mark
+        // the change as applying after the turn.
+        if (isCodexWriterBusy(error)) running = true;
+      }
     }
     const current = this.sessionMap.get(nativeSessionId) ?? session;
     const catalog = await this.loadModelCatalog();
@@ -781,29 +803,40 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
 
     let settingsUnsupported = false;
     if (change.provider !== undefined && materialized) {
-      await this.resumeThread(nativeSessionId, {
-        ...(nextModel ? { model: nextModel } : {}),
-        provider: nextProvider ?? null,
-        ...(change.fast !== undefined
-          ? { serviceTier: change.fast === null ? null : change.fast ? "priority" : "default" }
-          : {}),
-      });
+      try {
+        await this.resumeThread(nativeSessionId, {
+          ...(nextModel ? { model: nextModel } : {}),
+          provider: nextProvider ?? null,
+          ...(change.fast !== undefined
+            ? { serviceTier: change.fast === null ? null : change.fast ? "priority" : "default" }
+            : {}),
+        });
+      } catch (error) {
+        // Busy writer: defer — the session map update below is picked up by
+        // the next turn's startTurn pre-flight, which re-applies provider,
+        // model and tier once the current turn releases the thread.
+        if (!isCodexWriterBusy(error)) throw error;
+      }
     }
     if (Object.keys(settings).length > 1 && materialized) {
       try {
         await client.request("thread/settings/update", settings);
       } catch (error) {
-        if (!isUnsupportedCodexMethod(error)) throw error;
-        settingsUnsupported = true;
+        if (isUnsupportedCodexMethod(error)) settingsUnsupported = true;
+        else if (!isCodexWriterBusy(error)) throw error;
       }
     }
     if (settingsUnsupported && (change.model !== undefined || change.fast !== undefined) && change.provider === undefined && materialized) {
-      await this.resumeThread(nativeSessionId, {
-        ...(nextModel ? { model: nextModel } : {}),
-        ...(change.fast !== undefined
-          ? { serviceTier: change.fast === null ? null : change.fast ? "priority" : "default" }
-          : {}),
-      });
+      try {
+        await this.resumeThread(nativeSessionId, {
+          ...(nextModel ? { model: nextModel } : {}),
+          ...(change.fast !== undefined
+            ? { serviceTier: change.fast === null ? null : change.fast ? "priority" : "default" }
+            : {}),
+        });
+      } catch (error) {
+        if (!isCodexWriterBusy(error)) throw error;
+      }
     }
 
     const updatedSession = this.sessionMap.get(nativeSessionId) ?? session;
@@ -830,39 +863,58 @@ export class CodexAppServerAdapter extends DesktopRuntimeAdapter {
     const client = this.requireClient();
     const configuredSession = this.sessionMap.get(input.nativeSessionId);
     const wasUnmaterialized = this.unmaterialized.has(input.nativeSessionId);
-    if (!wasUnmaterialized) {
-      const resumed = await this.resumeThread(input.nativeSessionId, {
-        ...(configuredSession?.model ? { model: configuredSession.model } : {}),
-        ...(configuredSession?.provider ? { provider: configuredSession.provider } : {}),
-        ...(configuredSession?.fast !== undefined
-          ? { serviceTier: configuredSession.fast ? "priority" : "default" }
-          : {}),
+    let result: Record<string, unknown>;
+    try {
+      if (!wasUnmaterialized) {
+        const resumed = await this.resumeThread(input.nativeSessionId, {
+          ...(configuredSession?.model ? { model: configuredSession.model } : {}),
+          ...(configuredSession?.provider ? { provider: configuredSession.provider } : {}),
+          ...(configuredSession?.fast !== undefined
+            ? { serviceTier: configuredSession.fast ? "priority" : "default" }
+            : {}),
+        });
+        this.applyThreadConfiguration(input.nativeSessionId, resumed, true);
+      }
+      const activeSession = this.sessionMap.get(input.nativeSessionId);
+      const settings: Record<string, unknown> = {
+        threadId: input.nativeSessionId,
+        ...(activeSession?.model ? { model: activeSession.model } : {}),
+        ...(activeSession?.reasoningEffort ? { effort: activeSession.reasoningEffort } : {}),
+        ...(activeSession?.fast !== undefined ? { serviceTier: activeSession.fast ? "priority" : "default" } : {}),
+      };
+      // thread/settings/update and thread/resume both reject threads that have
+      // no rollout yet; turn/start carries the same model/effort/tier fields
+      // directly, so an unmaterialized thread can skip them safely.
+      if (Object.keys(settings).length > 1 && !wasUnmaterialized) {
+        await client.request<Record<string, unknown>>("thread/settings/update", settings).catch((error) => {
+          if (isCodexWriterBusy(error)) throw error;
+          if (!isUnsupportedCodexMethod(error)) throw error;
+        });
+      }
+      result = await client.request<Record<string, unknown>>("turn/start", {
+        threadId: input.nativeSessionId,
+        clientUserMessageId: input.requestId,
+        input: turnInputItems(input),
+        ...(activeSession?.model ? { model: activeSession.model } : {}),
+        ...(activeSession?.reasoningEffort ? { effort: activeSession.reasoningEffort } : {}),
+        ...(activeSession?.fast !== undefined ? { serviceTier: activeSession.fast ? "priority" : "default" } : {}),
       });
-      this.applyThreadConfiguration(input.nativeSessionId, resumed, true);
+    } catch (error) {
+      // The writer lock is cross-process: a turn running in Codex Desktop (or
+      // a leaked one) rejects resume/settings/turn-start alike. Surface a
+      // busy signal the phone can act on instead of the raw lock error.
+      if (isCodexWriterBusy(error)) {
+        const session = this.sessionMap.get(input.nativeSessionId);
+        if (session && session.turnState !== "running") {
+          session.turnState = "running";
+          session.lastActivityAt = Date.now();
+          this.sessionMap.set(input.nativeSessionId, { ...session });
+          this.emitRuntimeEvent({ type: "session.updated", session: { ...session } });
+        }
+        throw new Error(CODEX_WRITER_BUSY_MESSAGE);
+      }
+      throw error;
     }
-    const activeSession = this.sessionMap.get(input.nativeSessionId);
-    const settings: Record<string, unknown> = {
-      threadId: input.nativeSessionId,
-      ...(activeSession?.model ? { model: activeSession.model } : {}),
-      ...(activeSession?.reasoningEffort ? { effort: activeSession.reasoningEffort } : {}),
-      ...(activeSession?.fast !== undefined ? { serviceTier: activeSession.fast ? "priority" : "default" } : {}),
-    };
-    // thread/settings/update and thread/resume both reject threads that have
-    // no rollout yet; turn/start carries the same model/effort/tier fields
-    // directly, so an unmaterialized thread can skip them safely.
-    if (Object.keys(settings).length > 1 && !wasUnmaterialized) {
-      await client.request<Record<string, unknown>>("thread/settings/update", settings).catch((error) => {
-        if (!isUnsupportedCodexMethod(error)) throw error;
-      });
-    }
-    const result = await client.request<Record<string, unknown>>("turn/start", {
-      threadId: input.nativeSessionId,
-      clientUserMessageId: input.requestId,
-      input: turnInputItems(input),
-      ...(activeSession?.model ? { model: activeSession.model } : {}),
-      ...(activeSession?.reasoningEffort ? { effort: activeSession.reasoningEffort } : {}),
-      ...(activeSession?.fast !== undefined ? { serviceTier: activeSession.fast ? "priority" : "default" } : {}),
-    });
     const turnId = text(record(result.turn).id) || undefined;
     if (turnId) this.activeTurns.set(input.nativeSessionId, turnId);
     // turn/start persists the first user message, so the rollout now exists.

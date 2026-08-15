@@ -137,6 +137,32 @@ describe("BridgeTransport", () => {
     router.close();
   });
 
+  it("cycle() abandons the current candidate without parking the router", () => {
+    const first = new FakeTransport("public-relay", "wss://bridge.example/ws");
+    const second = new FakeTransport("lan-relay", "ws://192.168.1.2:8788/ws");
+    const router = new TransportRouter([
+      { id: "public", path: first.path, endpoint: first.endpoint, priority: 10, create: () => first },
+      { id: "lan", path: second.path, endpoint: second.endpoint, priority: 20, create: () => second },
+    ]);
+
+    router.connect();
+    first.setState("connected");
+    router.cycle();
+
+    expect(first.state).toBe("closed");
+    expect(router.path).toBe("lan-relay");
+    expect(second.state).toBe("connecting");
+
+    // Cycling past the last candidate wraps back to the first instead of
+    // closing the router.
+    router.cycle();
+    expect(router.state).not.toBe("closed");
+    const states: string[] = [];
+    router.onState((state) => states.push(state));
+    router.close();
+    expect(states).toContain("closed");
+  });
+
   it("fails over on endpoint-level pairing errors", () => {
     const first = new FakeTransport("public-relay", "wss://new-relay.example/ws");
     const second = new FakeTransport("lan-relay", "ws://192.168.1.2:8788/ws");

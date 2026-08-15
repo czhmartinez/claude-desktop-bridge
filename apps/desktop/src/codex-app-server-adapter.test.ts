@@ -27,8 +27,13 @@ class FakeCodexClient extends EventEmitter implements CodexRpcClient {
     createdAt: 1,
     updatedAt: 2,
     status: { type: "idle" },
+    model: "gpt-5.6-terra",
+    modelProvider: "custom",
+    reasoningEffort: "medium",
+    serviceTier: "default",
   }];
   readonly noRollout = new Set<string>();
+  readonly writerBusyThreads = new Set<string>();
   historyFixture?: unknown;
   private nextThreadId = 0;
   private settings = {
@@ -76,6 +81,9 @@ class FakeCodexClient extends EventEmitter implements CodexRpcClient {
     if (method === "thread/resume") {
       const options = (params ?? {}) as Record<string, unknown>;
       const threadId = typeof options.threadId === "string" ? options.threadId : "thread-1";
+      if (this.writerBusyThreads.has(threadId)) {
+        throw new Error(`thread ${threadId} already has an active writer`);
+      }
       if (this.noRollout.has(threadId)) {
         throw new Error(`no rollout found for thread id ${threadId}`);
       }
@@ -92,6 +100,9 @@ class FakeCodexClient extends EventEmitter implements CodexRpcClient {
     }
     if (method === "thread/settings/update") {
       const options = (params ?? {}) as Record<string, unknown>;
+      if (this.writerBusyThreads.has(typeof options.threadId === "string" ? options.threadId : "")) {
+        throw new Error(`thread ${options.threadId} already has an active writer`);
+      }
       if (typeof options.model === "string") this.settings.model = options.model;
       if ("effort" in options) this.settings.effort = typeof options.effort === "string" ? options.effort : "medium";
       if ("serviceTier" in options) this.settings.serviceTier = typeof options.serviceTier === "string" ? options.serviceTier : "default";
@@ -100,6 +111,9 @@ class FakeCodexClient extends EventEmitter implements CodexRpcClient {
     if (method === "turn/start") {
       const options = (params ?? {}) as Record<string, unknown>;
       const threadId = typeof options.threadId === "string" ? options.threadId : "thread-1";
+      if (this.writerBusyThreads.has(threadId)) {
+        throw new Error(`thread ${threadId} already has an active writer`);
+      }
       // The first turn persists the rollout, after which the thread lists.
       this.noRollout.delete(threadId);
       if (!this.listedThreads.some((thread) => thread.id === threadId)) {
@@ -632,5 +646,85 @@ describe("CodexAppServerAdapter", () => {
     ]);
     expect(fileChangeSummaries({ type: "commandExecution" })).toBeUndefined();
     expect(fileChangeSummaries({ type: "fileChange", changes: [] })).toBeUndefined();
+  });
+
+  it("degrades configuration reads to last-known settings while the writer is busy", async () => {
+    const client = new FakeCodexClient();
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+    });
+    try {
+      await adapter.initialize();
+      client.writerBusyThreads.add("thread-1");
+      // The dialog must still open with the model catalog and the last known
+      // configuration instead of dying on the raw lock error.
+      await expect(adapter.configuration("thread-1")).resolves.toMatchObject({
+        model: "gpt-5.6-terra",
+        provider: "custom",
+        appliesAfterTurn: true,
+      });
+      const config = await adapter.configuration("thread-1");
+      expect(config.availableModels.length).toBeGreaterThan(0);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("defers configuration saves while the writer is busy and applies them on the next turn", async () => {
+    const client = new FakeCodexClient();
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+    });
+    try {
+      await adapter.initialize();
+      client.writerBusyThreads.add("thread-1");
+      await expect(adapter.configureSession("thread-1", {
+        model: "gpt-5.6-terra",
+        reasoningEffort: "high",
+      })).resolves.toMatchObject({
+        model: "gpt-5.6-terra",
+        reasoningEffort: "high",
+        appliesAfterTurn: true,
+      });
+
+      client.writerBusyThreads.clear();
+      client.requests.length = 0;
+      await adapter.startTurn({
+        nativeSessionId: "thread-1",
+        text: "继续",
+        commandId: "command-busy",
+        requestId: "request-busy",
+      });
+      expect(client.requests.find((entry) => entry.method === "thread/settings/update"))
+        .toMatchObject({ params: { threadId: "thread-1", model: "gpt-5.6-terra", effort: "high" } });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("translates a busy writer into an actionable error instead of leaking the lock text", async () => {
+    const client = new FakeCodexClient();
+    const adapter = new CodexAppServerAdapter({
+      findExecutable: async () => "/test/codex",
+      clientFactory: async () => client,
+    });
+    try {
+      await adapter.initialize();
+      client.writerBusyThreads.add("thread-1");
+      await expect(adapter.startTurn({
+        nativeSessionId: "thread-1",
+        text: "hello",
+        commandId: "command-2",
+        requestId: "request-2",
+      })).rejects.toThrow("会话被占用");
+      // The phone should stop offering a plain composer for a busy thread.
+      expect(adapter.sessions()).toEqual([
+        expect.objectContaining({ nativeSessionId: "thread-1", turnState: "running" }),
+      ]);
+    } finally {
+      await adapter.close();
+    }
   });
 });

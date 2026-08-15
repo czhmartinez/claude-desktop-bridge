@@ -30,6 +30,11 @@ interface StoredCrypto {
   serviceOrigin?: string;
   relayEndpoints?: BridgeEndpoint[];
   activeEndpoint?: string;
+  /** Relay URL where the desktop was last seen, learned from authentic
+   * desktop traffic. Sending is pinned to this relay: public relays keep
+   * independent room queues, so an envelope stored anywhere else would
+   * never reach the desktop. */
+  desktopRelayUrl?: string;
   iceServers?: BridgeIceServer[];
   migratedAt?: number;
   updatedAt?: number;
@@ -49,6 +54,7 @@ export interface StoredBridgeHost {
   serviceOrigin: string;
   relayEndpoints: BridgeEndpoint[];
   activeEndpoint: string;
+  desktopRelayUrl?: string;
   iceServers: BridgeIceServer[];
   migratedAt?: number;
   updatedAt: number;
@@ -330,6 +336,9 @@ export class BridgeVault {
         serviceOrigin: transport.serviceOrigin,
         relayEndpoints: transport.relayEndpoints,
         activeEndpoint: transport.activeEndpoint,
+        ...(normalizedStored.desktopRelayUrl !== undefined
+          ? { desktopRelayUrl: normalizedStored.desktopRelayUrl }
+          : {}),
         iceServers: transport.iceServers,
         ...(normalizedStored.migratedAt !== undefined ? { migratedAt: normalizedStored.migratedAt } : {}),
         updatedAt,
@@ -407,6 +416,34 @@ export class BridgeVault {
     } satisfies StoredCrypto);
     await transactionDone(transaction);
     return this.getHost(roomId);
+  }
+
+  /**
+   * Remember the relay where the desktop was last seen. The phone learns this
+   * from authentic desktop traffic (or desktop presence) on a connection;
+   * no-op when the value is unchanged so callers can fire it liberally.
+   */
+  async setDesktopRelay(roomId: string, url: string): Promise<void> {
+    if (!url.startsWith("ws://") && !url.startsWith("wss://")) return;
+    const database = await this.open();
+    const transaction = database.transaction("identity", "readwrite");
+    const store = transaction.objectStore("identity");
+    const records = await requestResult(store.getAll()) as unknown[];
+    const record = records
+      .filter(isStoredCrypto)
+      .find((candidate) => candidate.identity.roomId === roomId);
+    if (!record) {
+      await transactionDone(transaction);
+      return;
+    }
+    if (record.desktopRelayUrl !== url) {
+      store.put({
+        ...record,
+        key: hostKey(record.identity.hostId ?? record.identity.roomId),
+        desktopRelayUrl: url,
+      } satisfies StoredCrypto);
+    }
+    await transactionDone(transaction);
   }
 
   /**

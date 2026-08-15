@@ -66,15 +66,45 @@ export interface PairedHost {
 }
 
 export interface MobileConnectionIssue {
-  code: "unreachable" | "pairing-invalid" | "revoked";
+  code: "unreachable" | "pairing-invalid" | "revoked" | "waiting-link";
   message: string;
 }
+
+/**
+ * Send gate for the dual-relay topology. Public relays keep independent room
+ * queues, so an envelope is only safe to hand to the current connection when:
+ * - a direct WebRTC peer to the desktop is open (the desktop is right there);
+ * - the desktop was observed on THIS connection (presence or fresh traffic);
+ * - no desktop home relay is known yet (first contact, legacy behavior); or
+ * - the current connection IS the desktop's home relay — storing there is
+ *   safe even with the desktop offline, because it drains that queue on
+ *   return.
+ * Anything else would store the envelope on a relay the desktop may never
+ * visit again: the old behavior showed "Relay 已接收" while the message
+ * silently rotted (proxy apps pull the phone onto the overseas relay).
+ */
+export function relayLinkAllowsSend(link: {
+  homeRelayUrl?: string | undefined;
+  currentRelayUrl: string;
+  desktopHere: boolean;
+  directPeer: boolean;
+}): boolean {
+  if (link.directPeer) return true;
+  if (link.desktopHere) return true;
+  if (!link.homeRelayUrl) return true;
+  return link.currentRelayUrl === link.homeRelayUrl;
+}
+
+/** A queued envelope this fresh can still prove where the desktop lives;
+ *  older ones may come from a relay the desktop has long since left. */
+const HOME_LEARN_FRESHNESS_MS = 3 * 60_000;
 
 export interface SessionHistoryState {
   status: "idle" | "loading" | "ready" | "error";
   items: BridgeHistoryPage["items"];
   nextCursor?: string;
   hasMore: boolean;
+  error?: string;
 }
 
 export interface SessionEvidenceState {
@@ -973,6 +1003,9 @@ export function useMobileBridge() {
   const pairingSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingResponsesRef = useRef(new Map<string, PendingResponse>());
   const envelopeRequestsRef = useRef(new Map<string, string>());
+  const desktopHomeRef = useRef<string | undefined>(undefined);
+  const linkGateRef = useRef<() => boolean>(() => true);
+  const sendAttemptedAtRef = useRef<number | undefined>(undefined);
 
   const updateHostCache = useCallback((
     roomId: string,
@@ -1141,6 +1174,23 @@ export function useMobileBridge() {
     if (!socket || socket.state !== "connected") {
       return undefined;
     }
+    if (!linkGateRef.current()) {
+      // The current connection landed on a relay the desktop isn't using
+      // (e.g. a proxy app pulled the phone onto the overseas relay). Keep the
+      // envelope in the outbox instead of letting it rot in the wrong
+      // namespace, and say so instead of faking progress.
+      setState((current) => ({
+        ...current,
+        connectionIssue: {
+          code: "waiting-link",
+          message: "当前网络未连到电脑所在的中继（可能被代理带偏），消息已保存在手机，链路恢复后自动重发。",
+        },
+      }));
+      if (options.wait) {
+        throw new Error("当前网络未连到电脑所在的中继（可能被代理带偏），请检查代理或 VPN 设置后重试。");
+      }
+      return undefined;
+    }
     const responsePromise = options.wait ? new Promise<BridgeResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingResponsesRef.current.delete(request.requestId);
@@ -1149,6 +1199,7 @@ export function useMobileBridge() {
       pendingResponsesRef.current.set(request.requestId, { resolve, reject, timer });
     }) : undefined;
     try {
+      sendAttemptedAtRef.current = Date.now();
       await socket.sendEnvelope(envelope);
     } catch (error) {
       const pending = pendingResponsesRef.current.get(request.requestId);
@@ -1295,6 +1346,9 @@ export function useMobileBridge() {
     socketRef.current?.close();
     socketRef.current = undefined;
     cryptoRef.current = crypto;
+    linkGateRef.current = () => true;
+    desktopHomeRef.current = undefined;
+    sendAttemptedAtRef.current = undefined;
     const roomId = crypto.identity.roomId;
     if (!provisionalPairing) writeLastActiveHost(roomId);
     const storedHost = await bridgeVault.getHost(roomId);
@@ -1417,12 +1471,61 @@ export function useMobileBridge() {
     let authenticationTimer: ReturnType<typeof setTimeout> | undefined;
     const isCurrent = () => socketRef.current === socket;
     const isProvisionalPairing = () => pairingPhase?.provisional ?? Boolean(provisionalPairing);
+    // Desktop home relay for this room: the relay where the desktop was last
+    // seen. Learned from presence frames and fresh authentic traffic, restored
+    // from the vault across restarts. See relayLinkAllowsSend for why sends
+    // are pinned to it.
+    desktopHomeRef.current = provisionalPairing ? undefined : storedHost?.desktopRelayUrl;
+    sendAttemptedAtRef.current = undefined;
+    let linkHasDesktop = false;
+    const learnHome = (url: string) => {
+      if (!url.startsWith("ws://") && !url.startsWith("wss://")) return;
+      if (desktopHomeRef.current === url) return;
+      desktopHomeRef.current = url;
+      if (!isProvisionalPairing()) {
+        void bridgeVault.setDesktopRelay(roomId, url).catch(() => undefined);
+      }
+    };
+    const linkAllowsSend = () => relayLinkAllowsSend({
+      homeRelayUrl: desktopHomeRef.current,
+      currentRelayUrl: relay.endpoint,
+      desktopHere: linkHasDesktop,
+      directPeer: socket.path === "direct",
+    });
+    linkGateRef.current = linkAllowsSend;
+    let outboxFlush: Promise<void> | undefined;
+    const flushOutbox = (): Promise<void> => {
+      if (outboxFlush) return outboxFlush;
+      outboxFlush = (async () => {
+        const queued = await bridgeVault.listOutbox(roomId).catch(() => []);
+        for (const envelope of queued) {
+          if (!isCurrent() || socket.state !== "connected" || !linkAllowsSend()) break;
+          if (!isReplayableMobileEnvelope(envelope, { roomId, deviceId: crypto.identity.deviceId })) {
+            continue;
+          }
+          try {
+            const decrypted = await crypto.decrypt(envelope);
+            if (decrypted.payload.kind === "request") {
+              envelopeRequestsRef.current.set(envelope.id, decrypted.payload.requestId);
+            }
+            sendAttemptedAtRef.current = Date.now();
+            await socket.sendEnvelope(envelope);
+          } catch {
+            break;
+          }
+        }
+      })().finally(() => {
+        outboxFlush = undefined;
+      });
+      return outboxFlush;
+    };
     // 0.9.5 uplink watchdog: a socket can be half-dead — presence and snapshots
     // flow in, but pings/envelopes never get out (broken middlebox, dead proxy).
     // Heartbeat only sees pong loss after 45s and retries the same path; here we
     // watch the app-level delivery confirmations ("stored"/"acknowledged") and
     // force the router onto the next endpoint when the uplink is provably dead.
     let lastDeliveryConfirmAt = Date.now();
+    let lastHuntAt = 0;
     const uplinkWatchdog = setInterval(() => {
       if (!isCurrent()) {
         clearInterval(uplinkWatchdog);
@@ -1430,11 +1533,37 @@ export function useMobileBridge() {
       }
       void bridgeVault.listOutbox(roomId).then((outbox) => {
         if (!isCurrent() || outbox.length === 0) return;
-        if (Date.now() - lastDeliveryConfirmAt > 25_000) socket.close();
+        const now = Date.now();
+        const attemptedAt = sendAttemptedAtRef.current;
+        // Half-dead uplink: envelopes were actually written to this link and
+        // nothing was confirmed for 25s. Gated sends never attempt, so they
+        // cannot trip this.
+        if (
+          attemptedAt !== undefined &&
+          now - lastDeliveryConfirmAt > 25_000 &&
+          now - attemptedAt > 25_000
+        ) {
+          relay.cycle();
+          return;
+        }
+        // Home hunting: the outbox has mail but this connection is camping on
+        // a relay the desktop isn't using. Cycle the router so it re-probes
+        // the desktop's home relay instead of waiting for a lifecycle event.
+        const home = desktopHomeRef.current;
+        if (
+          home &&
+          relay.endpoint !== home &&
+          !linkHasDesktop &&
+          now - lastHuntAt > 45_000
+        ) {
+          lastHuntAt = now;
+          relay.cycle();
+        }
       }).catch(() => undefined);
     }, 10_000);
     socket.onState((connection) => {
       if (!isCurrent()) return;
+      if (connection !== "connected") linkHasDesktop = false;
       setState((current) => ({
         ...current,
         connection,
@@ -1448,6 +1577,20 @@ export function useMobileBridge() {
         }
         authenticationTimer = setTimeout(() => {
           if (!isCurrent() || authenticatedDesktop) return;
+          const home = desktopHomeRef.current;
+          if (!isProvisionalPairing() && home && relay.endpoint !== home) {
+            // Known desktop, wrong relay namespace: say we're hunting instead
+            // of claiming the pairing broke.
+            setState((current) => ({
+              ...current,
+              desktopOnline: false,
+              connectionIssue: {
+                code: "waiting-link",
+                message: "当前网络未连到电脑所在的中继（可能被代理带偏），正在自动重连；消息会保存在手机。",
+              },
+            }));
+            return;
+          }
           setState((current) => ({
             ...current,
             desktopOnline: false,
@@ -1486,17 +1629,7 @@ export function useMobileBridge() {
           if (sessionListSynced && rejectedOutbox.length > 0 && isCurrent()) {
             setState((current) => ({ ...current, connectionIssue: undefined }));
           }
-          for (const envelope of replayableOutbox) {
-            try {
-              const decrypted = await crypto.decrypt(envelope);
-              if (decrypted.payload.kind === "request") {
-                envelopeRequestsRef.current.set(envelope.id, decrypted.payload.requestId);
-              }
-              await socket.sendEnvelope(envelope);
-            } catch {
-              break;
-            }
-          }
+          void flushOutbox();
           const push = await nativePushRegistration();
           if (push && isCurrent() && socket.state === "connected") {
             socket.registerPushToken(push.platform, push.token);
@@ -1520,11 +1653,22 @@ export function useMobileBridge() {
     socket.onFrame((frame) => {
       if (!isCurrent()) return;
       if (frame.type === "ready") {
-        if (!frame.onlineDevices.some((device) => device.role === "desktop")) {
+        const desktopHere = frame.onlineDevices.some((device) => device.role === "desktop");
+        linkHasDesktop = desktopHere;
+        if (desktopHere) {
+          learnHome(relay.endpoint);
+          void flushOutbox();
+        }
+        if (!desktopHere) {
           setState((current) => ({ ...current, desktopOnline: false }));
         }
       }
       if (frame.type === "presence" && frame.role === "desktop") {
+        linkHasDesktop = frame.online;
+        if (frame.online) {
+          learnHome(relay.endpoint);
+          void flushOutbox();
+        }
         if (!frame.online) setState((current) => ({ ...current, desktopOnline: false }));
       }
       if (frame.type === "stored" || frame.type === "acknowledged") {
@@ -1543,6 +1687,9 @@ export function useMobileBridge() {
         for (const id of frame.ids) envelopeRequestsRef.current.delete(id);
         setState((current) => ({
           ...current,
+          connectionIssue: current.connectionIssue?.code === "waiting-link"
+            ? undefined
+            : current.connectionIssue,
           localTurns: current.localTurns.map((turn) => (
             requestIds.includes(turn.requestId) &&
             (turn.delivery === "local-saved" || turn.delivery === "relay-received")
@@ -1645,6 +1792,13 @@ export function useMobileBridge() {
       if (authenticationTimer) {
         clearTimeout(authenticationTimer);
         authenticationTimer = undefined;
+      }
+      // Authentic desktop traffic on this link proves where the desktop lives
+      // right now. Queued replays can be old, so only fresh envelopes teach
+      // the home relay; presence frames handle the silent-but-online case.
+      linkHasDesktop = true;
+      if (Date.now() - message.header.sentAt < HOME_LEARN_FRESHNESS_MS) {
+        learnHome(relay.endpoint);
       }
       setState((current) => ({ ...current, desktopOnline: true, connectionIssue: undefined }));
       void (async () => {
@@ -2042,6 +2196,7 @@ export function useMobileBridge() {
             status: "error",
             items: current.histories[sessionId]?.items ?? [],
             hasMore: current.histories[sessionId]?.hasMore ?? false,
+            error: error instanceof Error ? error.message : "会话打开失败",
           },
         },
         evidence: {

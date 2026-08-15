@@ -8,8 +8,58 @@ import {
   confirmedPairingSnapshot,
   mergeBridgeEvents,
   rebaseSnapshot,
+  relayLinkAllowsSend,
   type LocalTurn,
 } from "./useMobileBridge.js";
+
+describe("relayLinkAllowsSend", () => {
+  const home = "wss://relay.example/ws";
+  const foreign = "wss://relay-legacy.example/ws";
+
+  it("allows anything until the desktop's home relay is learned", () => {
+    expect(relayLinkAllowsSend({
+      currentRelayUrl: foreign,
+      desktopHere: false,
+      directPeer: false,
+    })).toBe(true);
+  });
+
+  it("allows the home relay even with the desktop offline (queue-on-behalf)", () => {
+    expect(relayLinkAllowsSend({
+      homeRelayUrl: home,
+      currentRelayUrl: home,
+      desktopHere: false,
+      directPeer: false,
+    })).toBe(true);
+  });
+
+  it("blocks a foreign relay the desktop is not on (proxy drift)", () => {
+    expect(relayLinkAllowsSend({
+      homeRelayUrl: home,
+      currentRelayUrl: foreign,
+      desktopHere: false,
+      directPeer: false,
+    })).toBe(false);
+  });
+
+  it("allows a foreign relay while the desktop is present on it (failover)", () => {
+    expect(relayLinkAllowsSend({
+      homeRelayUrl: home,
+      currentRelayUrl: foreign,
+      desktopHere: true,
+      directPeer: false,
+    })).toBe(true);
+  });
+
+  it("always allows an open direct WebRTC peer", () => {
+    expect(relayLinkAllowsSend({
+      homeRelayUrl: home,
+      currentRelayUrl: foreign,
+      desktopHere: false,
+      directPeer: true,
+    })).toBe(true);
+  });
+});
 
 describe("confirmedPairingSnapshot", () => {
   const pairing = { hostId: "desktop-1", pairingEpoch: 4 } as PairingBundle;

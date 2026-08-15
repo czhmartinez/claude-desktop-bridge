@@ -1,3 +1,44 @@
+## 0.9.7
+
+- Pin sends to the desktop's home relay; proxy apps can no longer strand
+  messages in the wrong relay namespace:
+  - Root cause: the two public relays keep independent room queues. With a
+    proxy/VPN app on, the phone's transport router drifted onto the overseas
+    relay, where "stored" ACKs made the phone show "Relay 已接收" and drop the
+    envelope from its outbox — while the desktop listens on the domestic relay
+    and never receives anything. The phone now learns the desktop's home relay
+    from presence frames and fresh authentic traffic (persisted per host), and
+    refuses to hand envelopes to any other connection: with no home in sight,
+    messages stay in the phone's outbox as "已保存到手机" with a waiting-link
+    banner instead of faking relay progress.
+  - The outbox now also flushes when desktop presence arrives on the current
+    link, not only on reconnect.
+  - The 0.9.5 uplink watchdog no longer parks the connection until the next
+    lifecycle event: it drives the new `TransportRouter.cycle()`, which moves
+    to the next candidate immediately, and it only arms after envelopes were
+    actually written unconfirmed for 25s. A separate 45s home-hunt keeps
+    re-probing the desktop's relay while mail waits on a foreign one.
+  - Misleading copy fixed: on a foreign relay the phone no longer claims the
+    pairing broke after 25s without a desktop handshake; it says it is hunting
+    the desktop's relay.
+- Codex "already has an active writer" is now a first-class busy state
+  instead of a raw red error:
+  - The session configuration dialog loads even while the thread is busy: the
+    adapter falls back to the last known settings plus the model catalog and
+    marks the change as applying after the turn, so the model dropdown is
+    never blank again.
+  - Saving configuration on a busy thread defers cleanly: the choice is kept
+    and re-applied by the next turn's pre-flight (provider, model, effort,
+    tier), matching the dialog's "应用到下一轮" affordance.
+  - Starting a turn on a busy thread fails with an actionable Chinese message
+    and marks the session running, instead of leaking the lock text.
+- Failed deliveries explain themselves: the reason (busy thread, link gated,
+  validation) now renders under "发送失败" in the conversation stream, and the
+  "会话暂时无法读取" empty state shows the underlying error above 重试.
+- 成果 file-change rows keep the file name and parent directory visible:
+  paths split into an eliding head plus pinned `parent/name`, so rows stop
+  cutting absolute paths off mid-string.
+
 ## 0.9.6
 
 - Runtime labels drop the redundant "Desktop" suffix: the filter chips and

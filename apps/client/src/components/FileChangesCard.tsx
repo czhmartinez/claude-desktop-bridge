@@ -11,6 +11,22 @@ const KIND_LABEL = {
 } as const;
 
 /**
+ * Split an absolute path into elidable head, always-visible parent directory
+ * and basename. Rows are narrow on the phone; the old single ellipsis hid the
+ * file name entirely ("/Users/martinez/Documents/Claude Bridge/ap…").
+ */
+export function splitFilePath(path: string): { head: string; parent: string; base: string } {
+  const trimmed = path.replace(/[\\/]+$/u, "");
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (index < 0) return { head: "", parent: "", base: trimmed };
+  const dir = trimmed.slice(0, index);
+  const base = trimmed.slice(index + 1);
+  const parentIndex = Math.max(dir.lastIndexOf("/"), dir.lastIndexOf("\\"));
+  if (parentIndex < 0) return { head: "", parent: dir, base };
+  return { head: dir.slice(0, parentIndex), parent: dir.slice(parentIndex + 1), base };
+}
+
+/**
  * Codex-style aggregated edit card: one collection per session instead of
  * inline per-edit cards, rendered in the 成果 column.
  */
@@ -39,10 +55,15 @@ export function FileChangesCard({
       </header>
       <div className="file-changes-rows">
         {shown.map((file) => {
+          const parts = splitFilePath(file.path);
           const row = (
             <>
               <span className={`file-change-kind ${file.kind}`}>{KIND_LABEL[file.kind]}</span>
-              <code>{file.path}</code>
+              <code>
+                {parts.head && <span className="file-change-head">{parts.head}/</span>}
+                {parts.parent && <span className="file-change-parent">{parts.parent}/</span>}
+                <strong className="file-change-base">{parts.base}</strong>
+              </code>
               <span className="file-change-counts">
                 <b className="add">+{file.additions}</b>
                 <b className="del">−{file.deletions}</b>
