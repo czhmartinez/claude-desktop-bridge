@@ -41,3 +41,31 @@ networks:
   default:
     name: ${BRIDGE_RELAY_NETWORK}
     external: true
+
+# ---------------------------------------------------------------------------
+# 可选：Cloudflare Tunnel（海外 relay 形态，relay.alioxis.uk 的现网配置）。
+# 场景：relay 部署在海外 VPS（如 DMIT LA），只通过 Cloudflare 隧道入站，
+# 主机不暴露任何 relay 端口。
+#
+#   tunnel:
+#     image: cloudflare/cloudflared:latest
+#     container_name: bridge-tunnel-uk
+#     restart: unless-stopped
+#     volumes:
+#       - /etc/cloudflared-uk:/etc/cloudflared:ro
+#     command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+#
+# /etc/cloudflared-uk/ 需要两个文件（CLI 本地管理隧道，凭证从
+# `cloudflared tunnel create` 的机器上复制）：
+#   config.yml:
+#     tunnel: <tunnel-uuid>
+#     credentials-file: /etc/cloudflared/<tunnel-uuid>.json
+#     no-autoupdate: true
+#     ingress:
+#       - hostname: relay.alioxis.uk
+#         service: http://bridge-relay:8788
+#       - service: http_status:404
+#   <tunnel-uuid>.json（chmod 644，容器内非 root 用户要可读）
+# 隧道容器必须与 relay 容器在同一 docker network，且该 network 里有
+# `bridge-relay` 别名（compose 默认 network 自带）。
+# ---------------------------------------------------------------------------
