@@ -66,9 +66,12 @@ try {
       relayMessages: [],
       messages: [],
     };
+    // Windows CI runners sit an ocean away from the public relay: handshake,
+    // room registration and the pairing claim can legitimately take >20s on a
+    // congested evening. 60s keeps the gate about correctness, not geography.
     const timeout = setTimeout(() => reject(new Error(
       `Pairing E2E timed out: ${JSON.stringify(diagnostics)}`,
-    )), 20_000);
+    )), 60_000);
     let fallbackTimer;
     let sent = false;
     const sendRequest = () => {
