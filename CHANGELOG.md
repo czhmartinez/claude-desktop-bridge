@@ -1,3 +1,11 @@
+## 0.9.4
+
+- Remove the Apple-family scroll-edge blur masks: text bleeding through the
+  translucent band read as ghosting in real use. Content scrollers return to
+  their plain top padding on phone and desktop; the actual glass panels
+  (dialogs, sheets, top chrome, composer, theme menu) keep the strengthened
+  material from 0.9.3.
+
 ## 0.9.3
 
 - Retone the Apple theme family after first-run review:
