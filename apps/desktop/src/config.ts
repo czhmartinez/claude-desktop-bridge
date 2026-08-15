@@ -18,6 +18,7 @@ import {
   type BridgeDesktopRuntimeId,
   type BridgePermissionMode,
 } from "@bridge/protocol";
+import { refreshPrivateRelayUrl } from "./platform.js";
 
 const CONFIG_VERSION = 4 as const;
 
@@ -363,9 +364,15 @@ function refreshV3Endpoints(
   defaults: DesktopConfigDefaults,
 ): BridgeEndpoint[] {
   const refreshed = config.relayEndpoints.map((endpoint, index) => {
-    const updated = endpoint.kind === "lan-relay" && shouldRefreshLocalRelay(endpoint.url, defaults.relayUrl)
-      ? { ...endpoint, url: defaults.relayUrl }
+    // 0.9.5: heal fossil LAN endpoints. Pairing-era builds baked the LAN IP of
+    // that day into the config; DHCP moves make it a dead candidate forever.
+    // Rewrite any private-IPv4 LAN entry to the current primary address.
+    const lanRefreshed = endpoint.kind === "lan-relay"
+      ? { ...endpoint, url: refreshPrivateRelayUrl(endpoint.url) }
       : endpoint;
+    const updated = lanRefreshed.kind === "lan-relay" && shouldRefreshLocalRelay(lanRefreshed.url, defaults.relayUrl)
+      ? { ...lanRefreshed, url: defaults.relayUrl }
+      : lanRefreshed;
     if (
       defaults.publicRelayUrl &&
       updated.kind === "public-relay" &&
@@ -497,7 +504,9 @@ export class DesktopConfigRepository {
     };
     const storedIceServers = normalizeBridgeIceServers(config.iceServers);
     const iceServersMigrated = JSON.stringify(storedIceServers) !== JSON.stringify(transport.iceServers);
-    if (!config.protectedEvidenceKey || iceServersMigrated) await this.save(loaded);
+    // Persist fossil-LAN rewrites (0.9.5) so refreshed addresses survive restarts.
+    const endpointsMigrated = JSON.stringify(config.relayEndpoints) !== JSON.stringify(transport.relayEndpoints);
+    if (!config.protectedEvidenceKey || iceServersMigrated || endpointsMigrated) await this.save(loaded);
     return loaded;
   }
 

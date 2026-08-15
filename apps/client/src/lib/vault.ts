@@ -409,6 +409,57 @@ export class BridgeVault {
     return this.getHost(roomId);
   }
 
+  /**
+   * 0.9.5: heal the stored LAN relay URL in place when the desktop advertises
+   * a fresh one in its snapshot. Pairing-era LAN IPs go stale with DHCP; the
+   * desktop refreshes its own config at launch and tells us via
+   * snapshot.host.lanRelayUrl, so the phone never needs a re-pair for this.
+   * Rewrites the lan-relay endpoint and, when the pairing-era identity URL is
+   * a private IPv4, that fossil too. Returns true when anything changed.
+   */
+  async updateLanRelay(roomId: string, url: string): Promise<boolean> {
+    const nextUrl = url.trim();
+    if (!nextUrl.startsWith("ws://") && !nextUrl.startsWith("wss://")) return false;
+    const database = await this.open();
+    const transaction = database.transaction("identity", "readwrite");
+    const store = transaction.objectStore("identity");
+    const records = await requestResult(store.getAll()) as unknown[];
+    const record = records
+      .filter(isStoredCrypto)
+      .find((candidate) => candidate.identity.roomId === roomId);
+    if (!record) {
+      await transactionDone(transaction);
+      return false;
+    }
+    const isPrivateV4 = (host: string) => /^10\./.test(host)
+      || /^192\.168\./.test(host)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    const hostnameOf = (value: string) => {
+      try { return new URL(value).hostname; } catch { return ""; }
+    };
+    const endpoints = (record.relayEndpoints ?? []).map((endpoint) => (
+      endpoint.kind === "lan-relay" && endpoint.url !== nextUrl
+        ? { ...endpoint, url: nextUrl }
+        : endpoint
+    ));
+    const identityIsFossilLan = isPrivateV4(hostnameOf(record.identity.relayUrl));
+    const identity = identityIsFossilLan && record.identity.relayUrl !== nextUrl
+      ? { ...record.identity, relayUrl: nextUrl }
+      : record.identity;
+    const changed = JSON.stringify(endpoints) !== JSON.stringify(record.relayEndpoints ?? [])
+      || identity !== record.identity;
+    if (changed) {
+      store.put({
+        ...record,
+        identity,
+        relayEndpoints: endpoints,
+        updatedAt: Date.now(),
+      } satisfies StoredCrypto);
+    }
+    await transactionDone(transaction);
+    return changed;
+  }
+
   async saveMessage(envelope: EncryptedEnvelope): Promise<void> {
     const database = await this.open();
     const transaction = database.transaction("messages", "readwrite");

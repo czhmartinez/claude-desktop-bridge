@@ -63,6 +63,36 @@ beforeAll(() => {
 });
 
 describe("BridgeVault pairing migration", () => {
+  it("heals a stale LAN relay in place when the desktop advertises a fresh one", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    const pairing = await BridgeCrypto.createDevicePairing({
+      hostId: "lan-heal-host",
+      pairingEpoch: 1,
+      roomId: "lan-heal-room",
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      desktopName: "Studio Mac",
+      relayEndpoints: [
+        { id: "public", kind: "public-relay", url: "wss://relay.example/ws", priority: 10 },
+        { id: "lan", kind: "lan-relay", url: "ws://192.168.1.32:8788/ws", priority: 20 },
+      ],
+      // Pairing-era state: the LAN relay was the active one back then, so both
+      // the endpoint list and the identity URL carry the now-stale LAN IP.
+      activeEndpoint: "lan",
+    });
+    await vault.importPairing(pairing.pairing);
+
+    const changed = await vault.updateLanRelay("lan-heal-room", "ws://192.168.0.101:8788/ws");
+    expect(changed).toBe(true);
+    const healed = (await vault.listHosts())[0];
+    expect(healed?.relayEndpoints.find((endpoint) => endpoint.kind === "lan-relay")?.url)
+      .toBe("ws://192.168.0.101:8788/ws");
+
+    // Re-applying the same advertisement is a no-op.
+    expect(await vault.updateLanRelay("lan-heal-room", "ws://192.168.0.101:8788/ws")).toBe(false);
+    await vault.clear();
+  });
+
   it("upgrades the historical Cloudflare-only ICE default without removing the paired host", async () => {
     const vault = new BridgeVault();
     await vault.clear();

@@ -230,6 +230,11 @@ export function acceptsRelayDevice(
   return hasCrypto && devices.some((device) => device.deviceId === deviceId && !device.revokedAt);
 }
 
+function lanRelayUrlFrom(config: LoadedDesktopConfig): { lanRelayUrl?: string } {
+  const endpoint = config.relayEndpoints.find((candidate) => candidate.kind === "lan-relay");
+  return endpoint ? { lanRelayUrl: endpoint.url } : {};
+}
+
 export class DesktopController extends EventEmitter {
   private config: LoadedDesktopConfig | undefined;
   private hostCrypto: BridgeCrypto | undefined;
@@ -338,6 +343,9 @@ export class DesktopController extends EventEmitter {
         pairingEpoch: this.config.pairingEpoch,
         name: this.config.desktopName,
         relayUrl: this.config.relayUrl,
+        // 0.9.5: advertise the current LAN relay so paired phones can heal
+        // their stored LAN endpoint in place (see vault.updateLanRelay).
+        ...lanRelayUrlFrom(this.config),
         online: this.connection === "connected",
         lastSeenAt: this.lastSeenAt,
         version: this.app.getVersion(),

@@ -987,6 +987,15 @@ export function useMobileBridge() {
     }));
   }, []);
 
+  // 0.9.5: the desktop advertises its current LAN relay in every snapshot;
+  // heal the stored (possibly stale) LAN endpoint in place, no re-pairing.
+  const applyLanRelayAdvertisement = useCallback((roomId: string, snapshot: BridgeHostSnapshot) => {
+    const url = snapshot.host.lanRelayUrl;
+    if (!url) return;
+    // The healed endpoint is read from the vault on the next (re)connect.
+    void bridgeVault.updateLanRelay(roomId, url).catch(() => undefined);
+  }, []);
+
   const handlePayload = useCallback((
     payload: BridgePayload,
     encrypted: EncryptedEnvelope,
@@ -1004,6 +1013,7 @@ export function useMobileBridge() {
         latestSeq: rebased.latestSeq,
       }));
       updateHostCache(crypto.identity.roomId, snapshot, permissions);
+      applyLanRelayAdvertisement(crypto.identity.roomId, snapshot);
       return;
     }
     if (payload.kind === "event") {
@@ -1255,6 +1265,7 @@ export function useMobileBridge() {
       crypto.identity.deviceId,
     );
     await bridgeVault.saveMessage(cachedEnvelope);
+    applyLanRelayAdvertisement(roomId, result.snapshot);
     setState((current) => {
       const rebased = rebaseSnapshot(result.snapshot!, current.events);
       return {
@@ -1406,6 +1417,22 @@ export function useMobileBridge() {
     let authenticationTimer: ReturnType<typeof setTimeout> | undefined;
     const isCurrent = () => socketRef.current === socket;
     const isProvisionalPairing = () => pairingPhase?.provisional ?? Boolean(provisionalPairing);
+    // 0.9.5 uplink watchdog: a socket can be half-dead — presence and snapshots
+    // flow in, but pings/envelopes never get out (broken middlebox, dead proxy).
+    // Heartbeat only sees pong loss after 45s and retries the same path; here we
+    // watch the app-level delivery confirmations ("stored"/"acknowledged") and
+    // force the router onto the next endpoint when the uplink is provably dead.
+    let lastDeliveryConfirmAt = Date.now();
+    const uplinkWatchdog = setInterval(() => {
+      if (!isCurrent()) {
+        clearInterval(uplinkWatchdog);
+        return;
+      }
+      void bridgeVault.listOutbox(roomId).then((outbox) => {
+        if (!isCurrent() || outbox.length === 0) return;
+        if (Date.now() - lastDeliveryConfirmAt > 25_000) socket.close();
+      }).catch(() => undefined);
+    }, 10_000);
     socket.onState((connection) => {
       if (!isCurrent()) return;
       setState((current) => ({
@@ -1502,6 +1529,7 @@ export function useMobileBridge() {
       }
       if (frame.type === "stored" || frame.type === "acknowledged") {
         const delivery: BridgeDeliveryState = frame.type === "stored" ? "relay-received" : "host-received";
+        lastDeliveryConfirmAt = Date.now();
         void bridgeVault.removeOutbox(frame.ids)
           .then(() => bridgeVault.listOutbox(roomId))
           .then((outbox) => {

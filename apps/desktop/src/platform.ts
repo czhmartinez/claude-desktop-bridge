@@ -23,6 +23,25 @@ export function localNetworkAddress(): string {
   return "127.0.0.1";
 }
 
+/** Rewrite a private-IPv4 ws:// relay URL to this machine's current primary
+ *  address (port/path preserved). Anything else passes through unchanged. */
+export function refreshPrivateRelayUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    const host = url.hostname;
+    const isPrivateV4 = /^10\./.test(host)
+      || /^192\.168\./.test(host)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    if (!isPrivateV4) return value;
+    const current = localNetworkAddress();
+    if (host === current) return value;
+    url.hostname = current;
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
 export function firstNonEmpty(values: readonly (string | undefined)[]): string | undefined {
   for (const value of values) {
     const configured = value?.trim();

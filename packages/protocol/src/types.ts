@@ -729,6 +729,9 @@ export interface BridgeHostSnapshot {
     pairingEpoch: number;
     name: string;
     relayUrl: string;
+    /** 0.9.5: the host's current LAN relay URL, refreshed at launch so phones
+     *  can heal stale LAN endpoints in place instead of re-pairing. */
+    lanRelayUrl?: string;
     online: boolean;
     lastSeenAt: number;
     version: string;

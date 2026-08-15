@@ -10,6 +10,7 @@ import {
 } from "./config.js";
 import { DEFAULT_BRIDGE_ICE_SERVERS } from "@bridge/protocol";
 import { removeLegacyConnector } from "./connector.js";
+import { localNetworkAddress } from "./platform.js";
 
 const directories: string[] = [];
 const protector: SecretProtector = {
@@ -23,6 +24,35 @@ afterEach(async () => {
 });
 
 describe("desktop configuration", () => {
+  it("heals fossil private-IPv4 LAN relay endpoints to the current address on load", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(
+      path,
+      fileSecretProtector(),
+      { relayUrl: "wss://relay.example/ws", desktopName: "Test PC" },
+    );
+    await repository.loadOrCreate();
+    const stored = JSON.parse(await readFile(path, "utf8")) as {
+      relayEndpoints: Array<{ id: string; kind: string; url: string; priority: number }>;
+    };
+    stored.relayEndpoints.push({
+      id: "lan",
+      kind: "lan-relay",
+      url: "ws://192.168.99.99:8788/ws",
+      priority: 20,
+    });
+    await writeFile(path, JSON.stringify(stored));
+
+    const loaded = await repository.load();
+    const lan = loaded?.relayEndpoints.find((endpoint) => endpoint.kind === "lan-relay");
+    expect(lan?.url).toBe(`ws://${localNetworkAddress()}:8788/ws`);
+    const persisted = JSON.parse(await readFile(path, "utf8")) as typeof stored;
+    expect(persisted.relayEndpoints.find((endpoint) => endpoint.kind === "lan-relay")?.url)
+      .toBe(`ws://${localNetworkAddress()}:8788/ws`);
+  });
+
   it("uses a protected mode-0600 file fallback without plaintext secrets", () => {
     const fileProtector = fileSecretProtector();
     const protectedValue = fileProtector.protect("host-secret");

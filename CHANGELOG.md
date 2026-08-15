@@ -1,3 +1,25 @@
+## 0.9.5
+
+- Heal the "must re-pair after every update" loop at its actual roots (the
+  pairing identity always survived; the rendezvous did not):
+  - Fossil LAN relay endpoints self-heal. Pairing-era configs baked that
+    day's LAN IP into both the desktop config and the phone vault, and DHCP
+    moves turned it into a dead candidate. The desktop now rewrites any
+    private-IPv4 LAN endpoint to its current primary address at launch, and
+    advertises it in every snapshot (`host.lanRelayUrl`); the phone updates
+    its stored LAN endpoint in place — no re-pairing ever needed for an IP
+    change.
+  - New uplink watchdog on the phone: a socket can be half-dead — presence
+    and snapshots flow in while pings and envelopes never get out (broken
+    middlebox/proxy). The client now tracks app-level delivery confirmations
+    ("stored"/"acknowledged") and forces the transport router onto the next
+    endpoint when the uplink is provably dead for 25s, instead of sitting on
+    a fake online state while the outbox grows and "等待链路" never resolves.
+- Field evidence behind the fixes: the phone was receiving catalogs while
+  its RTT stayed blank and eight envelopes sat un-"stored"; a protocol-level
+  probe replayed the full pairing/handshake/request/ack flow against the
+  live desktop in 13ms, isolating the failure to the phone's uplink path.
+
 ## 0.9.4
 
 - Remove the Apple-family scroll-edge blur masks: text bleeding through the
