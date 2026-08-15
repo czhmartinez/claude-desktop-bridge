@@ -14,7 +14,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@bridge/protocol": "0.9.6",
+    "@bridge/protocol": "0.9.7",
     "ws": "^8.18.3"
   },
   "devDependencies": {
