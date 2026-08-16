@@ -28,6 +28,25 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 ## 当前版本：1.0.0
 
+1.0 新增第四位运行时：**DSH Desktop（DeepSeek Harness）**。Bridge 不再启动任何 DSH
+旁路进程，而是直接附着正在运行的 DSH 宿主——按进程发现回环端口、探测 `host.describe`
+握手，然后完全按 DSH 自带浏览器客户端的契约通信：`/api/<method>` 一元 RPC 承载会话
+列表、创建、历史、模型目录与 queue/steer 指令，`events.mux` 与 `events.host` 两条
+下行 WebSocket 承载全部实时事件；审批与 AskUserQuestion 经 `/api/respond` 用宿主铸造的
+帧 rpcId 应答。DSH 的 Host 头信任栅栏决定了这条链路只能回本机回环，Bridge 不读取
+DSH 的凭据文件。已安装未运行时 Bridge 会先拉起应用再等宿主上线；连接中断会把在跑
+轮次如实标记为中断并按 15 秒节奏重发现。逐 token 的流式增量在出站前聚合，reasoning
+与 tool-call 增量永不出站。模型与推理档位读取 DSH 实时目录并经 `session.selectModel`
+应用；图片附件按 DSH 公布的限额内联。`npm run probe:dsh` 可对活宿主做契约探测
+（`--exercise` 会跑一个一次性的真实轮次）。
+
+成果栏同步升级为「轨迹级」：钉在列表上方的总览时间轴把每一轮的真实开始时间与耗时
+按时间轴投影（轮内带工具刻度，滚轮缩放、拖选聚焦、右键清除、省略号补页更早）；轮次
+编号、真实耗时与聚合 token 用量（DSH 按 step 上报、按轮累加）直接上卡；每条工具记录
+可展开行内检查器——真实开始时刻、耗时、退出码、脱敏输入快照与输出摘要；进行中的
+记录只显示开始标记，绝不虚构耗时。1.0 起 Codex/Hermes/DSH 的原生轮次也与 Claude 走
+同一条证据管线：工作区归因文件变化、快照预览与下载、敏感路径拦截全部保留。
+
 Bridge 0.9.2 新增可切换的主题家族：在原有 Sunstone 暖极简基线（浅/深）之外，提供一套
 完全独立的 Apple 主题家族——iOS 分组式浅色（#F2F2F7 组底 + 纯白组卡 + 系统蓝）与纯黑
 深色（#1C1C1E 组卡阶梯），SF 系统字体栈、大标题负字距、液态玻璃 chrome 和临界阻尼
@@ -290,6 +309,7 @@ npm run dev:desktop
 npm run audit:runtime
 npm run verify
 npm run probe:relay
+npm run probe:dsh
 npm run test:html-preview
 BRIDGE_M0_REAL=1 npm test -w @bridge/desktop -- \
   --run src/claude-session-host.real.test.ts
