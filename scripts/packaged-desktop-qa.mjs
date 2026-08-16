@@ -81,7 +81,11 @@ try {
   let configurationProof;
   let evidenceProof;
   let routeProof;
-  const selectedSession = snapshot.sessions[0];
+  // The route/configuration/evidence proofs below are Claude-domain checks;
+  // with the DSH runtime attached, sessions[0] can be a native runtime row.
+  const selectedSession = snapshot.sessions.find((session) => (
+    !session.runtimeId || session.runtimeId === "claude-desktop"
+  ));
   if (selectedSession) {
     const routeResponse = await page.evaluate(async (sessionId) => (
       window.bridgeDesktop.request({
