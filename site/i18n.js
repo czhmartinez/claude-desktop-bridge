@@ -12,8 +12,8 @@ const I18N = {
     zh: "开源 \u00B7 MIT \u00B7 端到端加密"
   },
   "hero.lede": {
-    en: "One encrypted remote for Claude, Codex, and Hermes Desktop.",
-    zh: "一个加密遥控，接管 Claude、Codex 和 Hermes Desktop。"
+    en: "One encrypted remote for Claude, Codex, Hermes, and DSH Desktop.",
+    zh: "一个加密遥控，接管 Claude、Codex、Hermes 和 DSH Desktop。"
   },
   "hero.text": {
     en: "Control desktop AI agents from your phone, keep every native session, account, model, and permission separate, and hand work between desktops only when you explicitly approve it.",
@@ -22,8 +22,8 @@ const I18N = {
   "hero.download": { en: "Download", zh: "下载" },
   "hero.github": { en: "View on GitHub", zh: "查看 GitHub" },
   "hero.alt": {
-    en: "Bridge remote control for Claude, Codex, and Hermes Desktop",
-    zh: "Bridge：Claude、Codex 和 Hermes Desktop 的加密遥控"
+    en: "Bridge remote control for Claude, Codex, Hermes, and DSH Desktop",
+    zh: "Bridge：Claude、Codex、Hermes 和 DSH Desktop 的加密遥控"
   },
   "features.eyebrow": { en: "What it does", zh: "它能做什么" },
   "features.title": {
@@ -36,8 +36,8 @@ const I18N = {
   },
   "features.one.title": { en: "One session surface", zh: "统一的会话界面" },
   "features.one.text": {
-    en: "Send, stream, approve, ask, steer, and stop Claude, Codex, and Hermes sessions from desktop or mobile.",
-    zh: "在桌面或手机发送、流式输出、审批、追问、调整和停止 Claude、Codex、Hermes 会话。"
+    en: "Send, stream, approve, ask, steer, and stop Claude, Codex, Hermes, and DSH sessions from desktop or mobile.",
+    zh: "在桌面或手机发送、流式输出、审批、追问、调整和停止 Claude、Codex、Hermes、DSH 会话。"
   },
   "features.two.title": { en: "End-to-end encryption", zh: "端到端加密" },
   "features.two.text": {
@@ -51,8 +51,8 @@ const I18N = {
   },
   "features.four.title": { en: "Local-first adapters", zh: "本地优先适配器" },
   "features.four.text": {
-    en: "Claude Agent SDK, official Codex app-server over stdio, and a loopback-only Hermes Gateway with process-scoped tokens.",
-    zh: "Claude 使用 Agent SDK，Codex 使用官方 app-server stdio 接口，Hermes 使用仅环回、带进程级令牌的 Gateway。"
+    en: "Claude Agent SDK, official Codex app-server over stdio, a loopback-only Hermes Gateway with process-scoped tokens, and DSH's own loopback /api contract.",
+    zh: "Claude 使用 Agent SDK，Codex 使用官方 app-server stdio 接口，Hermes 使用仅环回、带进程级令牌的 Gateway，DSH 使用自带的回环 /api 契约。"
   },
   "features.five.title": { en: "Real evidence", zh: "真实成果" },
   "features.five.text": {
@@ -74,8 +74,8 @@ const I18N = {
     zh: "设备优先建立 WebRTC 直连；无法直连时，流量回退到可自托管的中继，中继只保存密文和路由元数据。"
   },
   "architecture.diagram.aria": {
-    en: "Architecture diagram showing mobile clients connecting to Bridge Desktop through WebRTC or an encrypted relay, with adapters for Claude, Codex, and Hermes",
-    zh: "架构图：移动端通过 WebRTC 或加密中继连接 Bridge Desktop，并接入 Claude、Codex、Hermes 适配器"
+    en: "Architecture diagram showing mobile clients connecting to Bridge Desktop through WebRTC or an encrypted relay, with adapters for Claude, Codex, Hermes, and DSH",
+    zh: "架构图：移动端通过 WebRTC 或加密中继连接 Bridge Desktop，并接入 Claude、Codex、Hermes、DSH 适配器"
   },
   "architecture.note": {
     en: 'Read the full <a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/docs/ARCHITECTURE.md">architecture document</a> for adapter contracts, ownership states, and the relay state machine.',

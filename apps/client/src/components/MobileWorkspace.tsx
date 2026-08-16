@@ -67,6 +67,7 @@ import {
   toggleCollapsedProject,
 } from "../lib/project-groups.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
+import { desktopRuntimeId, desktopRuntimeName, isNativeRuntimeId, runtimeProviderLabel } from "../lib/runtime-labels.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
 import { sessionActivity } from "../lib/session-activity.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
@@ -160,7 +161,7 @@ export function sessionProfile(session: BridgeSessionInfo): string {
     ?.replace(/^claude-/iu, "")
     .replace(/\[1m\]/giu, " 1M")
     .replaceAll("-", " ");
-  const native = session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop";
+  const native = isNativeRuntimeId(session.runtimeId);
   return [
     native && session.provider ? session.provider : undefined,
     model || "默认模型",
@@ -190,21 +191,14 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
   return "待机";
 }
 
-export function desktopRuntimeId(session: BridgeSessionInfo): BridgeDesktopRuntimeId {
-  return session.runtimeId ?? "claude-desktop";
-}
-
-export function desktopRuntimeName(runtimeId: BridgeDesktopRuntimeId | undefined): string {
-  if (runtimeId === "codex-desktop") return "Codex";
-  if (runtimeId === "hermes-desktop") return "Hermes";
-  return "Claude";
-}
-
-export function runtimeProviderLabel(runtimeId: BridgeDesktopRuntimeId | undefined): string {
-  if (runtimeId === "codex-desktop") return "Codex（ChatGPT）";
-  if (runtimeId === "hermes-desktop") return "Hermes";
-  return "Claude";
-}
+// Runtime label helpers live in lib/runtime-labels.ts (shared with the
+// evidence panel); re-exported here so existing component imports stay put.
+export {
+  desktopRuntimeId,
+  desktopRuntimeName,
+  isNativeRuntimeId,
+  runtimeProviderLabel,
+} from "../lib/runtime-labels.js";
 
 function runtimeSupports(
   snapshot: BridgeHostSnapshot | undefined,
@@ -1916,7 +1910,7 @@ export function MobileWorkspace({
       <section className="host-detail">
         <div className="host-detail-heading">
           <div>
-            <span>Bridge 0.9</span>
+            <span>Bridge 1.0</span>
             <h1>项目与会话</h1>
           </div>
           <button

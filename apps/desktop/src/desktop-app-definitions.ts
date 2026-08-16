@@ -89,10 +89,32 @@ export const HERMES_DESKTOP_APP: DesktopAppDefinition = {
   },
 };
 
+export const DSH_DESKTOP_APP: DesktopAppDefinition = {
+  id: "dsh-desktop",
+  displayName: "DSH Desktop",
+  darwinBundle: "/Applications/DSH Desktop.app",
+  darwinPathCandidates: (home) => [
+    posix.join(home, "Applications", "DSH Desktop.app"),
+  ],
+  darwinExecutableName: "DSH Desktop",
+  win32ExecutableName: "DSH Desktop.exe",
+  envPathOverride: "BRIDGE_DSH_DESKTOP_PATH",
+  win32PathCandidates: (environment, home) => {
+    const { localAppData, programFiles } = win32Roots(environment, home);
+    return unique([
+      environment.BRIDGE_DSH_DESKTOP_PATH,
+      windowsPath.join(localAppData, "Programs", "DSH Desktop", "DSH Desktop.exe"),
+      windowsPath.join(localAppData, "DSH Desktop", "DSH Desktop.exe"),
+      ...programFiles.map((root) => windowsPath.join(root, "DSH Desktop", "DSH Desktop.exe")),
+    ]);
+  },
+};
+
 export const DESKTOP_APP_DEFINITIONS: DesktopAppDefinition[] = [
   CLAUDE_DESKTOP_APP,
   CODEX_DESKTOP_APP,
   HERMES_DESKTOP_APP,
+  DSH_DESKTOP_APP,
 ];
 
 /** Ordered executable candidates for the app; the first hit wins. */

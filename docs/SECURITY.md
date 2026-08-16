@@ -65,7 +65,7 @@ Claude、Codex、Hermes 间复制历史、认证、模型选择、权限规则�
 `CodexAppServerAdapter` 只启动 Bridge 自己拥有的官方 `codex app-server --stdio` 子进程，
 不附着已有 app-server 或 Codex Desktop 进程。`HermesGatewayAdapter` 只连接 `localhost` /
 `127.0.0.1` / `::1` WebSocket；未配置 Gateway 时由 Bridge 启动 Hermes sidecar，并为该进程
-生成随机会话令牌。Bridge 不读取 Hermes Desktop 的 token、keychain 或远端 Gateway 地址。
+生成随机会话令牌。Bridge 不读取 Hermes Desktop 的 token、keychain 或远端 Gateway 地址。DSH Desktop 经其宿主自带的回环 /api 契约接入（Host 头信任栅栏），Bridge 不读取 DSH 的凭据文件。
 adapter 启动超时、关闭或重试时必须关闭其自有子进程，不能保留后台访问通道。
 
 Codex/Hermes 的账号、凭据、token、keychain 和全局配置只在相应 Desktop 内管理。Bridge 可以在

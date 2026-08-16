@@ -21,7 +21,7 @@
 | License | MIT |
 | 平台 | macOS / Windows 桌面端；Android / iOS 移动端 |
 | 技术栈 | TypeScript、Electron、React、Capacitor、Node.js、SQLite、WebRTC |
-| 核心能力 | 端到端加密的手机遥控 Claude/Codex/Hermes Desktop；跨 Desktop 手动接力；会话同步、审批、成果预览、离线恢复 |
+| 核心能力 | 端到端加密的手机遥控 Claude/Codex/Hermes/DSH Desktop；跨 Desktop 手动接力；会话同步、审批、成果预览、离线恢复 |
 
 ## 三、申请定位与英文文案草稿
 
@@ -32,14 +32,14 @@ Bridge
 ### One-line summary
 
 An open-source, end-to-end encrypted remote and collaboration layer that lets one phone
-control Claude Desktop, Codex Desktop, and Hermes Desktop while keeping each native session,
+control Claude Desktop, Codex Desktop, Hermes Desktop, and DSH Desktop while keeping each native session,
 account, model, and permission fully separate.
 
 ### Tell us about your project
 
 Bridge is a multi-desktop collaboration product, not a remote desktop or input automator.
 It unifies session list, streaming output, approvals, questions, interrupts, and recovery
-across Claude Desktop, Codex Desktop, and Hermes Desktop. Phones pair with the desktop host
+across Claude Desktop, Codex Desktop, Hermes Desktop, and DSH Desktop. Phones pair with the desktop host
 over an encrypted QR handshake, prefer a WebRTC data channel, and fall back to a
 self-hostable WSS relay that only sees ciphertext.
 

@@ -1,6 +1,6 @@
 {
   "name": "@bridge/relay",
-  "version": "0.9.7",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -14,7 +14,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@bridge/protocol": "0.9.7",
+    "@bridge/protocol": "1.0.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {

@@ -7,6 +7,7 @@ import { LoaderCircle, Settings2, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
+import { desktopRuntimeName, isNativeRuntimeId } from "./MobileWorkspace.js";
 
 const EFFORT_LABELS: Record<string, string> = {
   none: "关闭",
@@ -106,12 +107,8 @@ export function SessionConfigurationDialog({
     : configuration?.availableReasoningEfforts?.length
       ? configuration.availableReasoningEfforts
       : configuration?.availableEffortLevels ?? ["low", "medium", "high", "xhigh", "max"];
-  const nativeRuntime = session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop";
-  const runtimeName = session.runtimeId === "codex-desktop"
-    ? "Codex"
-    : session.runtimeId === "hermes-desktop"
-      ? "Hermes"
-      : "Claude";
+  const nativeRuntime = isNativeRuntimeId(session.runtimeId);
+  const runtimeName = desktopRuntimeName(session.runtimeId);
   const fastSupported = Boolean(configuration?.supportsFastMode && selectedModel?.supportsFast !== false);
 
   function chooseModel(value: string): void {
@@ -217,7 +214,7 @@ export function SessionConfigurationDialog({
         {loading ? (
           <div className="session-configuration-loading">
             <LoaderCircle className="is-spinning" size={19} />
-            正在读取 {nativeRuntime ? `${session.runtimeId === "codex-desktop" ? "Codex" : "Hermes"} Desktop` : "Claude Host"} 配置
+            正在读取 {nativeRuntime ? `${runtimeName} Desktop` : "Claude Host"} 配置
           </div>
         ) : (
           <>

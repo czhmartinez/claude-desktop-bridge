@@ -195,6 +195,37 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
     });
   }
 
+  emitTurnLifecycle(nativeSessionId: string, turnId: string): void {
+    const at = Date.now();
+    this.emitRuntimeEvent({ type: "turn.started", nativeSessionId, turnId, at });
+    this.emitRuntimeEvent({
+      type: "tool.started",
+      nativeSessionId,
+      turnId,
+      itemId: `${turnId}:tool`,
+      toolName: "bash",
+      input: { command: "ls" },
+      at: at + 10,
+    });
+    this.emitRuntimeEvent({
+      type: "tool.completed",
+      nativeSessionId,
+      turnId,
+      itemId: `${turnId}:tool`,
+      toolName: "bash",
+      output: "ok",
+      at: at + 20,
+    });
+    this.emitRuntimeEvent({
+      type: "turn.completed",
+      nativeSessionId,
+      turnId,
+      at: at + 30,
+      result: "done",
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+  }
+
   mutateSilently(nativeSessionId: string, change: Partial<RuntimeAdapterSession>): void {
     const session = this.rows.get(nativeSessionId);
     if (!session) throw new Error("Session not found");
@@ -606,5 +637,72 @@ describe("RuntimeSessionBroker", () => {
     });
     await reopened.close();
     store.close();
+  });
+
+  it("archives native runtime turns into evidence bundles with real timing and usage", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-evidence-"));
+    directories.push(directory);
+    const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
+    const evidence = {
+      async startBridgeTurn(input: Record<string, unknown>) {
+        calls.push({ method: "startBridgeTurn", input });
+        return "evidence-1";
+      },
+      async attachTurn(evidenceId: string, turnId: string) {
+        calls.push({ method: "attachTurn", input: { evidenceId, turnId } });
+      },
+      async recordToolStarted(input: Record<string, unknown>) {
+        calls.push({ method: "recordToolStarted", input });
+      },
+      async recordToolCompleted(input: Record<string, unknown>) {
+        calls.push({ method: "recordToolCompleted", input });
+      },
+      async finalizeBridgeTurn(input: Record<string, unknown>) {
+        calls.push({ method: "finalizeBridgeTurn", input });
+        return undefined;
+      },
+    };
+    const dsh = new FakeRuntimeAdapter("dsh-desktop", "native-dsh");
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([dsh]),
+      new SessionEventLog(join(directory, "events.jsonl"), 1),
+      undefined,
+      { evidence: evidence as unknown as import("./evidence-manager.js").EvidenceManager },
+    );
+    await broker.initialize();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const sessionId = runtimeSessionId("dsh-desktop", "native-dsh");
+    dsh.emitTurnLifecycle("native-dsh", "dsh:turn-1");
+    await waitFor(() => calls.some((call) => call.method === "finalizeBridgeTurn"), "evidence finalization");
+
+    expect(calls.map((call) => call.method)).toEqual([
+      "startBridgeTurn",
+      "attachTurn",
+      "recordToolStarted",
+      "recordToolCompleted",
+      "finalizeBridgeTurn",
+    ]);
+    expect(calls[0]?.input).toMatchObject({
+      sessionId,
+      cwd: "/workspace/shared",
+      source: "runtime-host",
+      runtimeId: "dsh-desktop",
+    });
+    expect(calls[2]?.input).toMatchObject({
+      sessionId,
+      turnId: "dsh:turn-1",
+      itemId: "dsh:turn-1:tool",
+      toolName: "bash",
+    });
+    expect(calls[4]?.input).toMatchObject({
+      sessionId,
+      turnId: "dsh:turn-1",
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+
+    const persisted = broker.history(sessionId);
+    await expect(persisted).resolves.toMatchObject({ sessionId });
+    await broker.close();
   });
 });

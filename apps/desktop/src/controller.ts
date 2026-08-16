@@ -88,7 +88,12 @@ function runtimeIdParam(
 ): BridgeDesktopRuntimeId | undefined {
   const value = stringParam(params, key, required);
   if (!value) return undefined;
-  if (value === "claude-desktop" || value === "codex-desktop" || value === "hermes-desktop") return value;
+  if (
+    value === "claude-desktop" ||
+    value === "codex-desktop" ||
+    value === "hermes-desktop" ||
+    value === "dsh-desktop"
+  ) return value;
   throw new Error("Unknown Desktop runtime");
 }
 

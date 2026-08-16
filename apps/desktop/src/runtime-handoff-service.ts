@@ -36,7 +36,7 @@ const PREVIEW_TTL_MS = 30 * 60 * 1_000;
 const SOURCE_INTERRUPT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_CONTINUATIONS = 20;
 const PLAN_TEXT_LIMIT = 24_000;
-const RUNTIME_IDS: BridgeDesktopRuntimeId[] = ["claude-desktop", "codex-desktop", "hermes-desktop"];
+const RUNTIME_IDS: BridgeDesktopRuntimeId[] = ["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"];
 
 const GOAL_MARKER_PATTERN = /GOAL_STATUS:\s*(continue|done|blocked)\b\s*[:\-–]?\s*([^\n]*)/iu;
 
@@ -97,7 +97,7 @@ export class RuntimeHandoffService {
     this.maxContinuations = options.maxContinuations ?? DEFAULT_MAX_CONTINUATIONS;
     this.interruptTimeoutMs = options.interruptTimeoutMs ?? SOURCE_INTERRUPT_TIMEOUT_MS;
     this.endpoints.set("claude-desktop", this.claudeEndpoint());
-    for (const runtimeId of ["codex-desktop", "hermes-desktop"] as const) {
+    for (const runtimeId of ["codex-desktop", "hermes-desktop", "dsh-desktop"] as const) {
       this.endpoints.set(runtimeId, this.adapterEndpoint(runtimeId));
     }
   }

@@ -77,6 +77,8 @@ export type BridgeOrigin =
   | "codex-host"
   | "hermes-desktop"
   | "hermes-host"
+  | "dsh-desktop"
+  | "dsh-host"
   | "system";
 
 /**
@@ -84,7 +86,11 @@ export type BridgeOrigin =
  * Bridge normalizes the controls around it; it never turns these into one
  * shared conversation domain.
  */
-export type BridgeDesktopRuntimeId = "claude-desktop" | "codex-desktop" | "hermes-desktop";
+export type BridgeDesktopRuntimeId =
+  | "claude-desktop"
+  | "codex-desktop"
+  | "hermes-desktop"
+  | "dsh-desktop";
 export type BridgeDesktopRuntimeState = "ready" | "starting" | "unavailable" | "error";
 export type BridgeRuntimeCapability =
   | "session.list"
@@ -116,7 +122,8 @@ export type BridgeSessionTransport =
   | "claude-desktop-managed"
   | "bridge-host"
   | "codex-app-server"
-  | "hermes-gateway";
+  | "hermes-gateway"
+  | "dsh-gateway";
 export type ClaudeDesktopIntegrationState =
   | "not-managed"
   | "starting"
@@ -348,7 +355,16 @@ export interface BridgeConversationRoute {
   pendingHandoff?: BridgeHandoff;
 }
 
-export type BridgeEvidenceSource = "bridge-host" | "claude-desktop";
+export type BridgeEvidenceSource = "bridge-host" | "claude-desktop" | "runtime-host";
+
+/** Token accounting reported by a runtime for one turn (best effort, per provider). */
+export interface BridgeTokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+}
 export type BridgeEvidenceConfidence = "exact" | "inferred" | "partial";
 export type BridgeEvidenceState = "collecting" | "ready" | "failed";
 export type BridgeArtifactKind =
@@ -386,6 +402,8 @@ export interface BridgeToolEvidence {
   startedAt: number;
   completedAt?: number;
   exitCode?: number;
+  /** Redacted, size-capped rendering of the tool input for the record inspector. */
+  input?: string;
   outputSummary?: string;
   truncated: boolean;
 }
@@ -414,11 +432,15 @@ export interface BridgeEvidenceBundle {
   turnId?: string;
   laneId?: string;
   providerProfileId?: string;
+  /** Owning runtime when the bundle was produced from a native runtime turn. */
+  runtimeId?: BridgeDesktopRuntimeId;
   source: BridgeEvidenceSource;
   confidence: BridgeEvidenceConfidence;
   state: BridgeEvidenceState;
   startedAt: number;
   completedAt?: number;
+  /** Aggregated token usage of the turn, when the runtime reports it. */
+  usage?: BridgeTokenUsage;
   toolCount: number;
   changeCount: number;
   artifactCount: number;

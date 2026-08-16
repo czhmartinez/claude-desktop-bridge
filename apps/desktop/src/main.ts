@@ -52,6 +52,7 @@ import { ProviderRuntimePool } from "./provider-runtime-pool.js";
 import { HandoffService } from "./handoff-service.js";
 import { CodexAppServerAdapter } from "./codex-app-server-adapter.js";
 import { HermesGatewayAdapter } from "./hermes-gateway-adapter.js";
+import { DshDesktopAdapter } from "./dsh-desktop-adapter.js";
 import { RuntimeAdapterRegistry } from "./runtime-adapter.js";
 import { RuntimeSessionBroker } from "./runtime-session-broker.js";
 import { RuntimeHandoffService } from "./runtime-handoff-service.js";
@@ -211,8 +212,9 @@ async function desktopMain(): Promise<void> {
   const runtimeRegistry = new RuntimeAdapterRegistry([
     new CodexAppServerAdapter(),
     new HermesGatewayAdapter(),
+    new DshDesktopAdapter(),
   ]);
-  const runtimeSessions = new RuntimeSessionBroker(runtimeRegistry, eventLog, conversationState);
+  const runtimeSessions = new RuntimeSessionBroker(runtimeRegistry, eventLog, conversationState, { evidence });
   const handoffs = new HandoffService({
     state: conversationState,
     broker,
@@ -295,7 +297,12 @@ async function desktopMain(): Promise<void> {
   };
 
   function isDesktopRuntimeId(value: string): value is BridgeDesktopRuntimeId {
-    return value === "claude-desktop" || value === "codex-desktop" || value === "hermes-desktop";
+    return (
+      value === "claude-desktop" ||
+      value === "codex-desktop" ||
+      value === "hermes-desktop" ||
+      value === "dsh-desktop"
+    );
   }
 
   async function quitDesktopAppWithConfirmation(runtimeId: BridgeDesktopRuntimeId) {
@@ -303,7 +310,9 @@ async function desktopMain(): Promise<void> {
       ? "Claude Desktop"
       : runtimeId === "codex-desktop"
         ? "Codex（ChatGPT）"
-        : "Hermes";
+        : runtimeId === "dsh-desktop"
+          ? "DSH Desktop"
+          : "Hermes";
     const snapshot = await controller.snapshot();
     const desktopTurnRunning = runtimeId === "claude-desktop"
       ? snapshot.sessions.some((session) => (

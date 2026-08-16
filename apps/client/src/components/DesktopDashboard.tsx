@@ -73,6 +73,7 @@ import {
   desktopRuntimeName,
   fileToAttachment,
   goalStatusLabel,
+  isNativeRuntimeId,
   PermissionPrompt,
   runtimeProviderLabel,
   sessionProfile,
@@ -137,7 +138,7 @@ function sessionState(session: BridgeSessionInfo): string {
 
 function transportLabel(session: BridgeSessionInfo): string {
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.runtimeId === "codex-desktop" || session.runtimeId === "hermes-desktop") {
+  if (isNativeRuntimeId(session.runtimeId)) {
     return `${desktopRuntimeName(session.runtimeId)} 原生会话`;
   }
   if (session.source === "bridge") {
@@ -776,7 +777,7 @@ function DesktopSessions({
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
         <div className="desktop-sidebar-heading">
-          <div><span>Bridge 0.9</span><h1>会话</h1></div>
+          <div><span>Bridge 1.0</span><h1>会话</h1></div>
           <div className="desktop-sidebar-actions">
             <IconButton
               label="全部折叠"

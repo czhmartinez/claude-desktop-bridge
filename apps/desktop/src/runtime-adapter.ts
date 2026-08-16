@@ -12,6 +12,7 @@ import type {
   BridgeRuntimeProviderInfo,
   BridgeRuntimeCapability,
   BridgeSessionTransport,
+  BridgeTokenUsage,
   BridgeTurnState,
 } from "@bridge/protocol";
 
@@ -107,7 +108,7 @@ export interface RuntimeAdapterPermission {
 export type RuntimeAdapterEvent =
   | { type: "session.updated"; session: RuntimeAdapterSession }
   | { type: "turn.started"; nativeSessionId: string; turnId?: string; at: number }
-  | { type: "turn.completed"; nativeSessionId: string; turnId?: string; at: number; result?: string }
+  | { type: "turn.completed"; nativeSessionId: string; turnId?: string; at: number; result?: string; usage?: BridgeTokenUsage }
   | { type: "turn.failed"; nativeSessionId: string; turnId?: string; at: number; error: string }
   | { type: "turn.interrupted"; nativeSessionId: string; turnId?: string; at: number }
   | { type: "user.accepted"; nativeSessionId: string; turnId?: string; itemId?: string; text: string; at: number }

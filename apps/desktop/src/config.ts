@@ -27,7 +27,7 @@ export type RuntimePermissionModes = Partial<Record<BridgeDesktopRuntimeId, Brid
 function isRuntimePermissionModes(value: unknown): value is RuntimePermissionModes {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   return Object.entries(value).every(([runtimeId, mode]) => (
-    (runtimeId === "codex-desktop" || runtimeId === "hermes-desktop") &&
+    (runtimeId === "codex-desktop" || runtimeId === "hermes-desktop" || runtimeId === "dsh-desktop") &&
     (mode === "standard" || mode === "full-access")
   ));
 }

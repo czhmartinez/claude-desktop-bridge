@@ -2,9 +2,9 @@
 
 > English: [README_EN.md](README_EN.md) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
-Bridge 0.9 是一个独立的多 Desktop 协作产品：它给 Claude Desktop、Codex Desktop 和 Hermes Desktop
-提供一致的会话、发送、流式输出、审批、追问和中断体验，并支持把一段任务经用户确认后
-跨 Desktop 串行接力，但不会把三者的原生会话、账号、模型、权限或历史合并到一起。
+Bridge 1.0 是一个独立的多 Desktop 协作产品：它给 Claude Desktop、Codex Desktop、Hermes Desktop
+和 DSH Desktop（DeepSeek Harness）提供一致的会话、发送、流式输出、审批、追问和中断体验，并支持把
+一段任务经用户确认后跨 Desktop 串行接力，但不会把四者的原生会话、账号、模型、权限或历史合并到一起。
 
 ## 早期背景
 
@@ -26,7 +26,7 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前版本：0.9.5
+## 当前版本：1.0.0
 
 Bridge 0.9.2 新增可切换的主题家族：在原有 Sunstone 暖极简基线（浅/深）之外，提供一套
 完全独立的 Apple 主题家族——iOS 分组式浅色（#F2F2F7 组底 + 纯白组卡 + 系统蓝）与纯黑
@@ -83,21 +83,22 @@ Bridge 0.7 在 0.6 的统一操作体验上新增**跨 Desktop 串行接力**：
 Bridge 0.6 不再把自己定义为 Claude 的单一 tunnel。它保留一条加密的手机与 Bridge Host
 连接，并在 Host 内注册独立的 Desktop adapter：Claude 继续使用既有 `SessionBroker`；Codex
 通过 Bridge 自己启动的本地 `codex app-server --stdio` 接入；Hermes 通过 Bridge 自己启动的
-仅环回 Gateway 接入。统一列表只是入口索引，原生会话身份始终是
+仅环回 Gateway 接入；1.0 新增的 DSH 则直接附着正在运行的 DSH Desktop 宿主（回环 `/api`
+RPC + 双下行事件流，遵循 DSH 自带的 Host 头信任栅栏）。统一列表只是入口索引，原生会话身份始终是
 `(runtimeId, nativeSessionId)`。
 
 - **统一操作，不统一会话**：任何任务都可在 Bridge 中查看、继续、steer、审批、回答追问和中断；
-  Claude、Codex 与 Hermes 不会互相迁移、共享上下文或自动故障转移。
+  Claude、Codex、Hermes 与 DSH 不会互相迁移、共享上下文或自动故障转移。
   0.7 新增的跨 Desktop 接力是例外中的严格手动路径：它只在用户两次确认后，把有界可见
   上下文交给目标运行时的新会话，不迁移原生会话本身。
 - **本地最小权限**：Codex adapter 不附着或改写已经运行的 Desktop 进程；Hermes adapter 只接受
   环回 WebSocket，Bridge 为自己启动的 Gateway 生成进程级随机令牌，且不读取 Hermes Desktop 的
   token/keychain。
 - **能力按运行时声明**：文本会话、流、工具、审批和中断是 0.6 的共同基线；图片附件和模型配置
-  只在对应 adapter 确认支持时开放。Codex/Hermes 的会话配置通过各自 Desktop 的原生接口应用，
+  只在对应 adapter 确认支持时开放。Codex/Hermes/DSH 的会话配置通过各自 Desktop 的原生接口应用，
   不会变成 Bridge 的跨运行时 provider 或全局凭据配置。
 - **Claude 域内功能保持独立**：原有多 provider lane 与 handoff 仍只在 Claude 域内工作，不能用于
-  Codex/Hermes 跨应用迁移。
+  跨应用迁移。
 
 协议仍为 V3、配对 schema 仍为 V4；`runtimes`、`runtimeId` 与 `nativeSessionId` 是可选快照字段，
 旧客户端会忽略它们，新客户端会显示 Desktop 归属与筛选。
@@ -161,7 +162,7 @@ Bridge 工作手动接力到 Claude 官方本机应用，但官方 lane 不提�
 
 ## 使用方式
 
-1. 在电脑安装并打开 Bridge，启动需要使用的 Claude Desktop、Codex Desktop 或 Hermes Desktop。
+1. 在电脑安装并打开 Bridge，启动需要使用的 Claude Desktop、Codex Desktop、Hermes Desktop 或 DSH Desktop。
 2. Bridge 会发现本机 adapter；在桌面或手机的“项目与会话”中按 Desktop 归属筛选，或在创建任务时
    选择目标 runtime。
 3. 手机依次进入“主机 -> 项目 -> 会话”，即可查看历史、继续对话、审批工具、回答追问、调整或停止任务。

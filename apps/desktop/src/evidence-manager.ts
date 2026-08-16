@@ -11,8 +11,10 @@ import {
   type BridgeArtifactTransferInfo,
   type BridgeEvidenceBundle,
   type BridgeEvidencePage,
+  type BridgeDesktopRuntimeId,
   type BridgeEventType,
   type BridgeToolEvidence,
+  type BridgeTokenUsage,
 } from "@bridge/protocol";
 import {
   EvidenceStore,
@@ -28,6 +30,7 @@ import {
 
 const TOOL_OUTPUT_SNAPSHOT_BYTES = 256 * 1024;
 const TURN_TOOL_OUTPUT_BYTES = 2 * 1024 * 1024;
+const TOOL_INPUT_SNAPSHOT_BYTES = 4 * 1024;
 const PREVIEW_TEXT_BYTES = 1024 * 1024;
 const TURN_DIFF_PREVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_ACTIVE_TRANSFERS = 16;
@@ -243,6 +246,8 @@ export class EvidenceManager {
     commandId: string;
     laneId?: string;
     providerProfileId?: string;
+    source?: "bridge-host" | "runtime-host";
+    runtimeId?: BridgeDesktopRuntimeId;
     startedAt?: number;
   }): Promise<string> {
     const id = randomUUID();
@@ -252,7 +257,8 @@ export class EvidenceManager {
       sessionId: input.sessionId,
       ...(input.laneId ? { laneId: input.laneId } : {}),
       ...(input.providerProfileId ? { providerProfileId: input.providerProfileId } : {}),
-      source: "bridge-host",
+      ...(input.runtimeId ? { runtimeId: input.runtimeId } : {}),
+      source: input.source ?? "bridge-host",
       confidence: "partial",
       state: "collecting",
       startedAt,
@@ -333,12 +339,16 @@ export class EvidenceManager {
     active.capture?.addToolInput(input.toolInput);
     const existing = active.bundle.tools.find((tool) => tool.id === input.itemId);
     if (!existing) {
+      const redactedInput = input.toolInput === undefined || input.toolInput === null
+        ? ""
+        : redactEvidenceText(textFromOutput(input.toolInput)).slice(0, TOOL_INPUT_SNAPSHOT_BYTES);
       active.bundle.tools.push({
         id: input.itemId,
         toolName: input.toolName,
         status: "running",
         summary: toolSummary(input.toolName, input.toolInput),
         startedAt: input.at,
+        ...(redactedInput ? { input: redactedInput } : {}),
         truncated: false,
       });
     }
@@ -405,6 +415,7 @@ export class EvidenceManager {
     failed?: boolean;
     error?: string;
     completedAt?: number;
+    usage?: BridgeTokenUsage;
   }): Promise<BridgeEvidenceBundle | undefined> {
     const entry = [...this.active.entries()].find(([, active]) => (
       !active.finalizing &&
@@ -505,6 +516,7 @@ export class EvidenceManager {
         confidence,
         state: input.failed ? "failed" : "ready",
         completedAt: input.completedAt ?? Date.now(),
+        ...(input.usage ? { usage: input.usage } : {}),
         toolCount: active.bundle.tools.length,
         changeCount: capture?.changes.length ?? 0,
         artifactCount: artifacts.filter((artifact) => artifact.manifest.changeKind !== "deleted").length,

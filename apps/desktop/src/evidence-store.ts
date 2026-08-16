@@ -59,11 +59,17 @@ function bundleFromRow(row: SqlRow): BridgeEvidenceBundle {
     ...(row.provider_profile_id !== undefined && row.provider_profile_id !== null
       ? { providerProfileId: String(row.provider_profile_id) }
       : {}),
+    ...(row.runtime_id !== undefined && row.runtime_id !== null
+      ? { runtimeId: String(row.runtime_id) as NonNullable<BridgeEvidenceBundle["runtimeId"]> }
+      : {}),
     source: String(row.source) as BridgeEvidenceBundle["source"],
     confidence: String(row.confidence) as BridgeEvidenceBundle["confidence"],
     state: String(row.state) as BridgeEvidenceBundle["state"],
     startedAt: Number(row.started_at),
     ...(row.completed_at !== null ? { completedAt: Number(row.completed_at) } : {}),
+    ...(row.usage_json !== undefined && row.usage_json !== null
+      ? { usage: JSON.parse(String(row.usage_json)) as NonNullable<BridgeEvidenceBundle["usage"]> }
+      : {}),
     toolCount: Number(row.tool_count),
     changeCount: Number(row.change_count),
     artifactCount: Number(row.artifact_count),
@@ -179,6 +185,12 @@ export class EvidenceStore {
     if (!bundleColumns.has("provider_profile_id")) {
       database.exec("ALTER TABLE evidence_bundles ADD COLUMN provider_profile_id TEXT");
     }
+    if (!bundleColumns.has("runtime_id")) {
+      database.exec("ALTER TABLE evidence_bundles ADD COLUMN runtime_id TEXT");
+    }
+    if (!bundleColumns.has("usage_json")) {
+      database.exec("ALTER TABLE evidence_bundles ADD COLUMN usage_json TEXT");
+    }
     database.prepare(`
       INSERT INTO evidence_meta(key, value) VALUES ('version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -196,15 +208,16 @@ export class EvidenceStore {
     this.db.prepare(`
       INSERT INTO evidence_bundles(
         id, session_id, turn_id, lane_id, provider_profile_id,
-        source, confidence, state, started_at,
+        runtime_id, source, confidence, state, started_at,
         completed_at, tool_count, change_count, artifact_count,
-        tools_json, warnings_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        usage_json, tools_json, warnings_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         session_id = excluded.session_id,
         turn_id = excluded.turn_id,
         lane_id = excluded.lane_id,
         provider_profile_id = excluded.provider_profile_id,
+        runtime_id = excluded.runtime_id,
         source = excluded.source,
         confidence = excluded.confidence,
         state = excluded.state,
@@ -213,6 +226,7 @@ export class EvidenceStore {
         tool_count = excluded.tool_count,
         change_count = excluded.change_count,
         artifact_count = excluded.artifact_count,
+        usage_json = excluded.usage_json,
         tools_json = excluded.tools_json,
         warnings_json = excluded.warnings_json,
         updated_at = excluded.updated_at
@@ -222,6 +236,7 @@ export class EvidenceStore {
       bundle.turnId ?? null,
       bundle.laneId ?? null,
       bundle.providerProfileId ?? null,
+      bundle.runtimeId ?? null,
       bundle.source,
       bundle.confidence,
       bundle.state,
@@ -230,6 +245,7 @@ export class EvidenceStore {
       bundle.toolCount,
       bundle.changeCount,
       bundle.artifactCount,
+      bundle.usage ? JSON.stringify(bundle.usage) : null,
       JSON.stringify(bundle.tools),
       JSON.stringify(bundle.warnings),
       Date.now(),

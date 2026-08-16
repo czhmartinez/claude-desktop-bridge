@@ -192,7 +192,7 @@ export function RuntimeHandoffDialog({
               {!candidates.length && (
                 <div className="session-channel-warning">
                   <AlertTriangle size={17} />
-                  <span><strong>没有可用的目标 Desktop</strong>请先在 Bridge 中连接 Codex 或 Hermes。</span>
+                  <span><strong>没有可用的目标 Desktop</strong>请先在 Bridge 中连接 Codex、Hermes 或 DSH。</span>
                 </div>
               )}
             </div>

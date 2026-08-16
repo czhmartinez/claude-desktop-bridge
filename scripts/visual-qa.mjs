@@ -79,6 +79,16 @@ const hermesProject = {
   pendingCount: 0,
   lastActivityAt: now - 3_000_000,
 };
+const dshProject = {
+  projectId: "dsh-desktop:/Users/martinez/Documents/Htmls",
+  name: "Htmls",
+  cwd: "/Users/martinez/Documents/Htmls",
+  runtimeId: "dsh-desktop",
+  sessionCount: 1,
+  runningCount: 0,
+  pendingCount: 0,
+  lastActivityAt: now - 1_800_000,
+};
 const providerProfiles = [
   {
     id: "provider:claude-3p:default",
@@ -204,18 +214,41 @@ const sessions = [
     },
   },
   {
-    sessionId: "hermes-desktop:session-visual",
-    runtimeId: "hermes-desktop",
+   sessionId: "hermes-desktop:session-visual",
+   runtimeId: "hermes-desktop",
+   nativeSessionId: "session-visual",
+   projectId: hermesProject.projectId,
+   projectName: hermesProject.name,
+   cwd: hermesProject.cwd,
+   title: "Hermes Desktop 独立任务",
+   source: "desktop",
+   transport: "hermes-gateway",
+   ownership: "BRIDGE_IDLE",
+   turnState: "idle",
+   lastActivityAt: hermesProject.lastActivityAt,
+   pendingCount: 0,
+   allowedActions: {
+     canSend: true,
+     canSteer: true,
+     canInterrupt: true,
+     canSwitchProvider: false,
+     canContinueOfficial: false,
+     canConfigure: true,
+   },
+ },
+  {
+    sessionId: "dsh-desktop:session-visual",
+    runtimeId: "dsh-desktop",
     nativeSessionId: "session-visual",
-    projectId: hermesProject.projectId,
-    projectName: hermesProject.name,
-    cwd: hermesProject.cwd,
-    title: "Hermes Desktop 独立任务",
+    projectId: dshProject.projectId,
+    projectName: dshProject.name,
+    cwd: dshProject.cwd,
+    title: "DSH Desktop 独立任务",
     source: "desktop",
-    transport: "hermes-gateway",
+    transport: "dsh-gateway",
     ownership: "BRIDGE_IDLE",
     turnState: "idle",
-    lastActivityAt: hermesProject.lastActivityAt,
+    lastActivityAt: dshProject.lastActivityAt,
     pendingCount: 0,
     allowedActions: {
       canSend: true,
@@ -277,40 +310,43 @@ const evidence = {
   items: [
     {
       id: "evidence-exact",
-      sessionId: "session-running",
-      turnId: "turn-evidence",
-      source: "bridge-host",
-      confidence: "exact",
-      state: "ready",
-      startedAt: now - 82_000,
-      completedAt: now - 20_000,
-      toolCount: 2,
-      changeCount: 3,
-      artifactCount: 3,
-      tools: [
-        {
-          id: "tool-test",
-          toolName: "Bash",
-          status: "completed",
-          summary: "npm run test",
-          startedAt: now - 78_000,
-          completedAt: now - 65_000,
-          exitCode: 0,
-          outputSummary: "104 tests passed",
-          truncated: false,
-        },
-        {
-          id: "tool-build",
-          toolName: "Bash",
-          status: "failed",
-          summary: "npm run build:preview",
-          startedAt: now - 60_000,
-          completedAt: now - 55_000,
-          exitCode: 1,
-          outputSummary: "Preview command exited with code 1",
-          truncated: false,
-        },
-      ],
+     sessionId: "session-running",
+     turnId: "turn-evidence",
+     source: "bridge-host",
+     confidence: "exact",
+     state: "ready",
+     startedAt: now - 82_000,
+     completedAt: now - 20_000,
+      usage: { inputTokens: 12_800, cacheReadTokens: 96_200, outputTokens: 3_100, reasoningTokens: 900 },
+     toolCount: 2,
+     changeCount: 3,
+     artifactCount: 3,
+     tools: [
+       {
+         id: "tool-test",
+         toolName: "Bash",
+         status: "completed",
+         summary: "npm run test",
+         startedAt: now - 78_000,
+         completedAt: now - 65_000,
+         exitCode: 0,
+          input: "{ \"command\": \"npm run test\" }",
+         outputSummary: "104 tests passed",
+         truncated: false,
+       },
+       {
+         id: "tool-build",
+         toolName: "Bash",
+         status: "failed",
+         summary: "npm run build:preview",
+         startedAt: now - 60_000,
+         completedAt: now - 55_000,
+         exitCode: 1,
+          input: "{ \"command\": \"npm run build:preview\" }",
+         outputSummary: "Preview command exited with code 1",
+         truncated: false,
+       },
+     ],
       artifacts: [
         {
           id: "artifact-diff",
@@ -397,18 +433,57 @@ const evidence = {
       warnings: ["来自 Claude Desktop 事后记录，不代表实时或完整工作区差异"],
     },
     {
-      id: "evidence-collecting",
+     id: "evidence-collecting",
+     sessionId: "session-running",
+     turnId: "turn-active",
+     source: "bridge-host",
+     confidence: "exact",
+     state: "collecting",
+     startedAt: now - 45_000,
+     toolCount: 1,
+     changeCount: 0,
+     artifactCount: 0,
+     tools: [],
+     artifacts: [],
+     warnings: [],
+   },
+    {
+      id: "evidence-dsh",
       sessionId: "session-running",
-      turnId: "turn-active",
-      source: "bridge-host",
+      turnId: "turn-dsh",
+      source: "runtime-host",
+      runtimeId: "dsh-desktop",
       confidence: "exact",
-      state: "collecting",
-      startedAt: now - 45_000,
+      state: "ready",
+      startedAt: now - 420_000,
+      completedAt: now - 260_000,
+      usage: { inputTokens: 4_200, cacheReadTokens: 31_800, outputTokens: 1_400 },
       toolCount: 1,
-      changeCount: 0,
-      artifactCount: 0,
-      tools: [],
-      artifacts: [],
+      changeCount: 1,
+      artifactCount: 1,
+      tools: [{
+        id: "tool-dsh-edit",
+        toolName: "str_replace_editor",
+        status: "completed",
+        summary: "str_replace_editor: /Users/martinez/Documents/Htmls/index.html",
+        startedAt: now - 400_000,
+        completedAt: now - 330_000,
+        input: "{ \"command\": \"str_replace\", \"path\": \"/Users/martinez/Documents/Htmls/index.html\" }",
+        truncated: false,
+      }],
+      artifacts: [{
+        id: "artifact-dsh",
+        evidenceId: "evidence-dsh",
+        relativePath: "index.html",
+        name: "index.html",
+        kind: "html",
+        changeKind: "modified",
+        mimeType: "text/html",
+        size: 24_300,
+        availability: "current-file",
+        previewMode: "text",
+        downloadAllowed: false,
+      }],
       warnings: [],
     },
   ],
@@ -523,7 +598,7 @@ const hostSnapshot = {
     ],
     defaultPermissionMode: "standard",
   },
-  projects: [project, secondaryProject, codexProject, hermesProject],
+  projects: [project, secondaryProject, codexProject, hermesProject, dshProject],
   sessions,
   desktopApps: [
     {
@@ -543,10 +618,18 @@ const hostSnapshot = {
       canQuit: true,
     },
     {
-      id: "hermes-desktop",
-      name: "Hermes",
+     id: "hermes-desktop",
+     name: "Hermes",
+     state: "running",
+     detail: "Hermes 正在运行。",
+     canLaunch: false,
+     canQuit: true,
+   },
+    {
+      id: "dsh-desktop",
+      name: "DSH Desktop",
       state: "running",
-      detail: "Hermes 正在运行。",
+      detail: "DSH Desktop 正在运行。",
       canLaunch: false,
       canQuit: true,
     },
@@ -573,11 +656,21 @@ const hostSnapshot = {
       updatedAt: now,
     },
     {
-      id: "hermes-desktop",
-      name: "Hermes Desktop",
+     id: "hermes-desktop",
+     name: "Hermes Desktop",
+     state: "ready",
+     detail: "Hermes Gateway 已接入。",
+     capabilities: ["session.list", "session.create", "session.history", "turn.start", "turn.steer", "turn.interrupt", "permission.resolve", "tool.events"],
+     sessionIsolation: "independent",
+     sessionCount: 1,
+     updatedAt: now,
+   },
+    {
+      id: "dsh-desktop",
+      name: "DSH Desktop",
       state: "ready",
-      detail: "Hermes Gateway 已接入。",
-      capabilities: ["session.list", "session.create", "session.history", "turn.start", "turn.steer", "turn.interrupt", "permission.resolve", "tool.events"],
+      detail: "DSH Desktop 已接入。",
+      capabilities: ["session.list", "session.create", "session.history", "session.configure", "turn.start", "turn.steer", "turn.interrupt", "permission.resolve", "tool.events", "attachment.image"],
       sessionIsolation: "independent",
       sessionCount: 1,
       updatedAt: now,
@@ -862,19 +955,24 @@ try {
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
   const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.6 Windows 安装目录选择" });
   await waitingSessionRow.waitFor();
-  if (await mobile.locator(".session-row-v2").count() !== 5) {
-    errors.push("mobile catalog: expected five expanded session rows");
+  if (await mobile.locator(".session-row-v2").count() !== 6) {
+    errors.push("mobile catalog: expected six expanded session rows");
   }
   const mobileRuntimeFilter = mobile.getByRole("navigation", { name: "Desktop 运行时筛选" });
-  await mobileRuntimeFilter.getByRole("button", { name: "Codex Desktop", exact: true }).click();
+  await mobileRuntimeFilter.getByRole("button", { name: "Codex", exact: true }).click();
   await mobile.getByText("Codex Desktop 独立任务", { exact: true }).waitFor();
   if (await mobile.locator(".session-row-v2").count() !== 1) {
     errors.push("mobile runtime filter: Codex should show one isolated session");
   }
-  await mobileRuntimeFilter.getByRole("button", { name: "Hermes Desktop", exact: true }).click();
+  await mobileRuntimeFilter.getByRole("button", { name: "Hermes", exact: true }).click();
   await mobile.getByText("Hermes Desktop 独立任务", { exact: true }).waitFor();
   if (await mobile.locator(".session-row-v2").count() !== 1) {
     errors.push("mobile runtime filter: Hermes should show one isolated session");
+  }
+  await mobileRuntimeFilter.getByRole("button", { name: "DSH", exact: true }).click();
+  await mobile.getByText("DSH Desktop 独立任务", { exact: true }).waitFor();
+  if (await mobile.locator(".session-row-v2").count() !== 1) {
+    errors.push("mobile runtime filter: DSH should show one isolated session");
   }
   await mobileRuntimeFilter.getByRole("button", { name: "全部", exact: true }).click();
   await mobile.getByRole("button", { name: "全部折叠" }).click();
@@ -885,7 +983,7 @@ try {
   await waitingSessionRow.waitFor();
   const claudeMobileControl = mobile.locator(".mobile-desktop-control").filter({ hasText: "Claude Desktop" }).first();
   await claudeMobileControl.getByRole("button", { name: "退出", exact: true }).click();
-  await mobile.getByRole("button", { name: "退出 Claude Desktop", exact: true }).click();
+  await mobile.getByRole("button", { name: "退出 Claude", exact: true }).click();
   await mobile.getByText("Claude Desktop 已退出，Bridge 仍可继续处理远程会话。").waitFor();
   await claudeMobileControl.getByRole("button", { name: "启动", exact: true }).click();
   await mobile.getByText("Claude Desktop 正在运行。").waitFor();
@@ -921,7 +1019,7 @@ try {
       canAllowAlways: false,
     }, { itemId: "permission-write-live" }),
   });
-  const livePermissionSheet = mobile.getByRole("dialog", { name: "Claude Desktop 等待授权" });
+  const livePermissionSheet = mobile.getByRole("dialog", { name: "Claude 等待授权" });
   await livePermissionSheet.getByText("Write 请求权限", { exact: true }).waitFor();
   await livePermissionSheet.locator(".permission-facts").getByText(
     "/Users/martinez/Documents/Claude Bridge/tmp/permission-event.ts",
@@ -973,7 +1071,7 @@ try {
   await mobile.getByLabel("关闭预览").click();
   await mobile.getByRole("button", { name: "对话", exact: true }).click();
 
-  await mobile.getByLabel("给 Claude Desktop 发指令").fill("继续验证同一会话的手机消息。");
+  await mobile.getByLabel("给 Claude 发指令").fill("继续验证同一会话的手机消息。");
   await mobile.getByRole("button", { name: "发送", exact: true }).click();
   await mobile.getByText("收到。回复与手机消息已经写入同一个 Claude 会话。").waitFor();
   const sentCount = await mobile.getByText("继续验证同一会话的手机消息。", { exact: true }).count();
@@ -1260,8 +1358,8 @@ try {
   if (!registrationRestarted) {
     errors.push("desktop registration: restart and registration request were not completed");
   }
-  if (await desktop.locator(".desktop-session-row").count() !== 6) {
-    errors.push("desktop sessions: expected six expanded session rows");
+  if (await desktop.locator(".desktop-session-row").count() !== 7) {
+    errors.push("desktop sessions: expected seven expanded session rows");
   }
   await desktop.getByRole("button", { name: "全部折叠" }).click();
   if (await desktop.locator(".desktop-session-row").count() !== 0) {
@@ -1270,15 +1368,20 @@ try {
   await desktop.getByRole("button", { name: "全部展开" }).click();
   await desktop.locator(".desktop-session-row").first().waitFor();
   const desktopRuntimeFilter = desktop.locator(".desktop-runtime-filter");
-  await desktopRuntimeFilter.getByRole("button", { name: "Codex Desktop", exact: true }).click();
+  await desktopRuntimeFilter.getByRole("button", { name: "Codex", exact: true }).click();
   await desktop.getByText("Codex Desktop 独立任务", { exact: true }).waitFor();
   if (await desktop.locator(".desktop-session-row").count() !== 1) {
     errors.push("desktop runtime filter: Codex should show one isolated session");
   }
-  await desktopRuntimeFilter.getByRole("button", { name: "Hermes Desktop", exact: true }).click();
+  await desktopRuntimeFilter.getByRole("button", { name: "Hermes", exact: true }).click();
   await desktop.getByText("Hermes Desktop 独立任务", { exact: true }).waitFor();
   if (await desktop.locator(".desktop-session-row").count() !== 1) {
     errors.push("desktop runtime filter: Hermes should show one isolated session");
+  }
+  await desktopRuntimeFilter.getByRole("button", { name: "DSH", exact: true }).click();
+  await desktop.getByText("DSH Desktop 独立任务", { exact: true }).waitFor();
+  if (await desktop.locator(".desktop-session-row").count() !== 1) {
+    errors.push("desktop runtime filter: DSH should show one isolated session");
   }
   await desktopRuntimeFilter.getByRole("button", { name: "全部", exact: true }).click();
   await desktop.locator(".desktop-session-row").first().waitFor();
@@ -1316,6 +1419,39 @@ try {
   await checkPage(desktop, "desktop evidence preview");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-evidence-preview-1200x800.png"), fullPage: true });
   await desktop.getByLabel("关闭预览").click();
+
+  // 轨迹式总览：拖选区间聚焦过滤，右键恢复全量。
+  const timelineTrack = desktop.locator(".evidence-timeline-track");
+  const trackBox = await timelineTrack.boundingBox();
+  if (!trackBox) {
+    errors.push("evidence timeline: track not visible");
+  } else {
+    const totalBundles = await desktop.locator(".evidence-bundle").count();
+    await desktop.mouse.move(trackBox.x + trackBox.width * 0.6, trackBox.y + trackBox.height / 2);
+    await desktop.mouse.down();
+    await desktop.mouse.move(trackBox.x + trackBox.width * 0.85, trackBox.y + trackBox.height / 2, { steps: 6 });
+    await desktop.mouse.up();
+    await desktop.locator(".evidence-timeline-hint").waitFor();
+    const filteredBundles = await desktop.locator(".evidence-bundle").count();
+    if (filteredBundles < 1 || filteredBundles > totalBundles) {
+      errors.push(`evidence timeline: selection left ${filteredBundles} bundles (of ${totalBundles})`);
+    }
+    await desktop.mouse.click(trackBox.x + trackBox.width / 2, trackBox.y + trackBox.height / 2, { button: "right" });
+    await desktop.locator(".evidence-timeline-hint").waitFor({ state: "detached" });
+    // 工具行检查器：展开后有真实耗时与输入快照。
+    await desktopExactEvidence.locator("summary").click();
+    await desktop.locator(".evidence-tool-main").filter({ hasText: "npm run test" }).click();
+    const inspector = desktop.locator(".evidence-tool-inspector");
+    await inspector.waitFor();
+    await inspector.getByText("输入", { exact: true }).waitFor();
+    if (!(await inspector.textContent())?.includes("npm run test")) {
+      errors.push("evidence inspector: input snapshot missing the command text");
+    }
+    if (!(await inspector.textContent())?.includes("13.0 秒")) {
+      errors.push("evidence inspector: real duration missing");
+    }
+    await desktop.screenshot({ path: resolve(artifactDir, "desktop-evidence-inspector-1200x800.png"), fullPage: true });
+  }
 
   await desktop.getByRole("button", { name: "设备", exact: true }).click();
   await desktop.getByRole("heading", { name: "设备", exact: true }).waitFor();

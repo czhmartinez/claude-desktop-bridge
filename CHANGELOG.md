@@ -1,4 +1,68 @@
+## 1.0.0
+
+- DSH Desktop (DeepSeek Harness) joins the runtime roster as a first-class
+  native adapter, next to Claude, Codex and Hermes:
+  - Live attach over DSH's own loopback contract: the desktop discovers the
+    running DSH host (process scan → listening-port probe of the
+    `host.describe` handshake), then speaks the `/api/<method>`
+    client-request envelope for unary calls and keeps both
+    `/api/events.mux` + `/api/events.host` WebSocket downlinks open, exactly
+    like DSH's own browser client. `BRIDGE_DSH_GATEWAY_URL` overrides
+    discovery; when the app is installed but not running, Bridge launches it
+    and waits for the host to come up.
+  - Full turn lifecycle out of the raw session event log: `turn/start`,
+    per-token `assistant/chunk` text deltas (coalesced before they reach the
+    relay — DSH streams reasoning and tool-call deltas too, which never
+    surface), `assistant/message`, `tool/call`/`tool/result` with
+    file-change derivation for the editor tools, and `turn/end` reason
+    mapping (completed / aborted / max-tokens / error).
+  - Approvals and AskUserQuestion are real: `approval/requested` /
+    `question/requested` frames become Bridge permission cards, and answers
+    ride `/api/respond` with the host-minted frame rpcId the pending table
+    routes on (including cancellation as an `ok:false` client-response).
+  - Session configuration reads DSH's live catalog (`session.models` groups
+    with per-model reasoning efforts) and applies through
+    `session.selectModel`; queue/steer map to DSH's own prompt modes, and
+    image attachments inline as base64 content parts within DSH's published
+    limits.
+  - `session.list` projections keep titles, running flags and cwd live;
+    `session/projection` frames update titles mid-turn. A dropped stream
+    fails the in-flight turn honestly (turn.interrupted), parks sessions
+    back to idle and re-discovers on a 15s cadence.
+  - Evidence: `node scripts/dsh-gateway-probe.mjs [--exercise]` probes a
+    live DSH host (discovery, describe, list, both streams, and optionally a
+    full throwaway turn) in a few seconds.
+- Native runtime turns now archive 成果证据 exactly like bridge-host Claude
+  turns. Previously Codex/Hermes sessions only showed the aggregated
+  file-changes card; now every runtime turn opens a bundle on
+  `turn.started`, records tool rows with real start/finish timestamps,
+  attributes workspace file changes, and finalizes on completion — with the
+  owning runtimeId stamped on the bundle (`runtime-host` source).
+- 成果 upgrades, borrowing the strongest ideas from DSH's 轨迹 (trajectory)
+  view and keeping Bridge's own strengths:
+  - A pinned 总览 timeline sits above the record list and projects every
+    turn's real start time and duration left-to-right, with tool ticks
+    inside each bar. Collecting turns render a start marker only — no
+    fabricated spans, same discipline as the trajectory view. The mouse
+    wheel zooms the time domain around the pointer, drag-selecting an
+    interval focuses the list on overlapping turns, right-click clears, and
+    a leading ellipsis admits one earlier history page when more results
+    exist.
+  - Turn rows are numbered (第 N 轮, absolute once the list is complete)
+    and show real duration plus aggregated token usage when the runtime
+    reports it (DSH per-step usage chunks roll up into the bundle).
+  - Every tool record opens an inline inspector: real start clock time,
+    elapsed time (completed records only), exit code, a redacted input
+    snapshot and the captured output summary. Running rows say "进行中"
+    without an estimated duration.
+  - Bundle expansion is stable: filtering the timeline no longer collapses
+    bundles you opened.
+  - What Bridge keeps over 轨迹: workspace-attributed artifacts with
+    snapshot previews, downloads, sensitive-path blocking and offline cached
+    previews.
+
 ## 0.9.7
+
 
 - Pin sends to the desktop's home relay; proxy apps can no longer strand
   messages in the wrong relay namespace:

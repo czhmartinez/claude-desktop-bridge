@@ -1,11 +1,11 @@
-# Bridge 0.7 架构
+# Bridge 1.0 架构
 
 ## 产品边界
 
 Bridge 是独立的多 Desktop 协作产品，不是远程桌面，也不是任何一个 Desktop 输入框
 自动化。它统一手机与桌面上的会话列表、发送、流式输出、工具状态、审批、追问、中断和
-恢复体验；Claude Desktop、Codex Desktop 与 Hermes Desktop 的账户、原生会话、模型、
-权限与历史始终各自独立。0.7 新增经用户两次确认的跨 Desktop 串行接力：接力只在运行时
+恢复体验；Claude Desktop、Codex Desktop、Hermes Desktop 与 DSH Desktop 的账户、原生
+会话、模型、权限与历史始终各自独立。0.7 新增经用户两次确认的跨 Desktop 串行接力：接力只在运行时
 之间传递有界、脱敏、加密的可见上下文包，目标始终是新建原生会话，仍不构成会话迁移。
 Bridge 只建立出站连接，不要求公网 IP、端口映射或额外组网客户端。
 
@@ -21,6 +21,7 @@ flowchart LR
   RA --> B["Claude SessionBroker"]
   RA --> CA["Codex app-server adapter"]
   RA --> HG["Hermes Gateway adapter"]
+  RA --> DA["DSH Desktop adapter"]
   B --> CS[("conversation-state-v1.sqlite")]
   B --> PR["ProviderRegistry / RuntimePool"]
   PR --> H["Claude-3p / API SessionHost"]
@@ -57,6 +58,25 @@ Bridge 0.6 的统一对象是操作体验，不是对话本体。每个原生会
 | Claude Desktop | 既有 `SessionBroker`、Agent SDK 与只读 transcript 观察 | 会话、发送、流、审批、追问、中断、证据 | Claude 内部 lane/handoff 仅属于 Claude 域 |
 | Codex Desktop | Bridge 自己启动的本地 `codex app-server --stdio` | 会话、发送、steer、流、工具、审批、追问、中断 | 不附着或篡改已运行 Desktop 进程；不共享 Claude/Hermes 历史或授权 |
 | Hermes Desktop | Bridge 自己启动的仅环回 Hermes Gateway，使用进程级随机令牌 | 会话、发送、steer、流、工具、审批、追问、中断 | 不读取 Desktop token/keychain；不接受非环回 Gateway 地址 |
+| DSH Desktop | 附着正在运行的 DSH 宿主：`/api` 一元 RPC + `events.mux`/`events.host` 双下行流（DSH 自带回环信任栅栏） | 会话、发送、queue/steer、流、工具、审批、追问、中断、模型配置、图片附件 | 只认回环权威（Host 头），不读取 DSH 凭据；`BRIDGE_DSH_GATEWAY_URL` 可显式指定宿主 |
+
+## 1.0 DSH Desktop 运行时
+
+DSH Desktop（DeepSeek Harness）的宿主自带一个回环 web server：一元调用走
+`POST /api/<method>` 的 `client-request` 信封，事件走 `/api/events.mux` 与
+`/api/events.host` 两条只下行 WebSocket，就绪契约要求 `host.describe` 成功且两条
+流都已打开。宿主监听 OS 分配的随机回环端口，Bridge adapter 的发现路径是
+「按进程名找 PID → 枚举其监听端口 → 逐一探测 `host.describe`」；已安装未运行时先
+拉起应用再等宿主上线，连接中断后按 15 秒节奏重发现。审批与追问复用宿主自己的
+pending 表：`approval/requested`、`question/requested` 帧携带宿主铸造的 rpcId，
+应答经 `/api/respond` 回投（取消即 `ok:false` 的 client-response）。文本增量按 token
+到达，adapter 聚合后才发往中继；reasoning 与 tool-call 增量永不出站。
+
+1.0 起，原生运行时轮次与 bridge-host 的 Claude 轮次走同一条证据管线：
+`turn.started` 开立 bundle、`tool.*` 记录真实起止、工作区归因文件变化、
+`turn.completed` 收口并写入运行时上报的聚合 token 用量（DSH 按 step 上报，按轮
+累加）。成果栏因此对所有运行时一致：轮次编号、真实耗时、总览时间轴与工具检查器，
+进行中的记录只显示开始标记，不虚构耗时。
 
 `RuntimeAdapterRegistry` 只注册能力和健康状态，`RuntimeSessionBroker` 只做协议归一化、
 事件落盘与权限路由。跨运行时接力包与接力状态由独立的 `RuntimeHandoffService` 持有；

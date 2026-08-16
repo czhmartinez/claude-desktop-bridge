@@ -229,6 +229,47 @@ describe("EvidenceManager", () => {
     await manager.close();
   });
 
+  it("keeps a redacted input snapshot on tool rows and persists turn usage + runtime attribution", async () => {
+    const { directory, manager } = await managerFixture();
+    const evidenceId = await manager.startBridgeTurn({
+      sessionId: "dsh-desktop:session-9",
+      cwd: directory,
+      commandId: "dsh:turn-1",
+      source: "runtime-host",
+      runtimeId: "dsh-desktop",
+      startedAt: 2_000,
+    });
+    await manager.attachTurn(evidenceId, "dsh:turn-1");
+    await manager.recordToolStarted({
+      sessionId: "dsh-desktop:session-9",
+      turnId: "dsh:turn-1",
+      itemId: "call-1",
+      toolName: "str_replace_editor",
+      toolInput: { command: "create", path: "/tmp/x.html", file_text: "Authorization: Bearer should-hide" },
+      at: 2_100,
+    });
+    const evidence = await manager.finalizeBridgeTurn({
+      sessionId: "dsh-desktop:session-9",
+      turnId: "dsh:turn-1",
+      completedAt: 2_600,
+      usage: { inputTokens: 120, outputTokens: 45, cacheReadTokens: 300, reasoningTokens: 12 },
+    });
+
+    expect(evidence?.source).toBe("runtime-host");
+    expect(evidence?.runtimeId).toBe("dsh-desktop");
+    expect(evidence?.usage).toEqual({ inputTokens: 120, outputTokens: 45, cacheReadTokens: 300, reasoningTokens: 12 });
+    expect(evidence?.tools[0]?.input).toContain("create");
+    expect(evidence?.tools[0]?.input).not.toContain("should-hide");
+    expect(evidence?.tools[0]?.startedAt).toBe(2_100);
+    expect(evidence?.completedAt).toBe(2_600);
+
+    // Reload through the store: usage and runtime attribution survive persistence.
+    const reloaded = manager.list("dsh-desktop:session-9", undefined, 10).items[0];
+    expect(reloaded?.runtimeId).toBe("dsh-desktop");
+    expect(reloaded?.usage).toEqual({ inputTokens: 120, outputTokens: 45, cacheReadTokens: 300, reasoningTokens: 12 });
+    await manager.close();
+  });
+
   it("fails orphaned collecting evidence after a desktop restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-evidence-restart-"));
     directories.push(directory);

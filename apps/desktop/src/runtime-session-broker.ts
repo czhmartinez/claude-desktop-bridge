@@ -22,6 +22,7 @@ import type {
 } from "@bridge/protocol";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { ConversationStateStore } from "./conversation-state-store.js";
+import type { EvidenceManager } from "./evidence-manager.js";
 import {
   type DesktopRuntimeAdapter,
   type RuntimeAdapterEvent,
@@ -53,7 +54,7 @@ export function parseRuntimeSessionId(sessionId: string): { runtimeId: BridgeDes
   const separator = sessionId.indexOf(":");
   if (separator < 1) return undefined;
   const runtimeId = sessionId.slice(0, separator);
-  if (runtimeId !== "codex-desktop" && runtimeId !== "hermes-desktop") return undefined;
+  if (runtimeId !== "codex-desktop" && runtimeId !== "hermes-desktop" && runtimeId !== "dsh-desktop") return undefined;
   try {
     const nativeSessionId = decodeURIComponent(sessionId.slice(separator + 1));
     return nativeSessionId ? { runtimeId, nativeSessionId } : undefined;
@@ -62,8 +63,8 @@ export function parseRuntimeSessionId(sessionId: string): { runtimeId: BridgeDes
   }
 }
 
-function originFor(runtimeId: BridgeDesktopRuntimeId): "codex-host" | "hermes-host" {
-  return runtimeId === "codex-desktop" ? "codex-host" : "hermes-host";
+function originFor(runtimeId: BridgeDesktopRuntimeId): "codex-host" | "hermes-host" | "dsh-host" {
+  return runtimeId === "codex-desktop" ? "codex-host" : runtimeId === "dsh-desktop" ? "dsh-host" : "hermes-host";
 }
 
 function ownershipFor(state: BridgeTurnState): BridgeSessionInfo["ownership"] {
@@ -114,6 +115,13 @@ function sessionFingerprint(session: BridgeSessionInfo): string {
 
 export interface RuntimeSessionBrokerOptions {
   liveSyncIntervalMs?: number;
+  /**
+   * When present, native runtime turns archive 成果证据 exactly like
+   * bridge-host Claude turns do: one bundle per turn, tool rows with real
+   * timing, workspace-attributed file changes and (when the runtime reports
+   * it) aggregated token usage.
+   */
+  evidence?: EvidenceManager;
 }
 
 export class RuntimeSessionBroker extends EventEmitter {
@@ -126,6 +134,7 @@ export class RuntimeSessionBroker extends EventEmitter {
   private readonly historySyncPending = new Set<string>();
   private readonly publishedSessionFingerprints = new Map<string, string>();
   private readonly liveSyncIntervalMs: number;
+  private readonly evidence: EvidenceManager | undefined;
   private liveSyncTimer: ReturnType<typeof setTimeout> | undefined;
   private eventQueue: Promise<void> = Promise.resolve();
   private initialized = false;
@@ -138,6 +147,7 @@ export class RuntimeSessionBroker extends EventEmitter {
   ) {
     super();
     this.liveSyncIntervalMs = Math.max(500, options.liveSyncIntervalMs ?? 1_200);
+    this.evidence = options.evidence;
     registry.on("changed", () => {
       const before = this.sessionFingerprints();
       this.syncCachedSessions();
@@ -349,7 +359,7 @@ export class RuntimeSessionBroker extends EventEmitter {
   setHostPermissionModes(modes: Partial<Record<BridgeDesktopRuntimeId, BridgePermissionMode>>): void {
     this.hostPermissionModes.clear();
     for (const [runtimeId, mode] of Object.entries(modes)) {
-      if (runtimeId !== "codex-desktop" && runtimeId !== "hermes-desktop") continue;
+      if (runtimeId !== "codex-desktop" && runtimeId !== "hermes-desktop" && runtimeId !== "dsh-desktop") continue;
       if (mode !== "standard" && mode !== "full-access") continue;
       this.hostPermissionModes.set(runtimeId, mode);
     }
@@ -871,6 +881,7 @@ export class RuntimeSessionBroker extends EventEmitter {
     }
 
     const mapped = this.toBridgeEvent(event);
+    await this.recordEvidence(runtimeId, event, session);
     await this.eventLog.append({
       sessionId,
       ...(mapped.turnId ? { turnId: mapped.turnId } : {}),
@@ -971,7 +982,77 @@ export class RuntimeSessionBroker extends EventEmitter {
         reason: "policy-full-access",
       },
     });
-    return true;
+      return true;
+  }
+
+  /**
+   * Feed native runtime lifecycle events into the evidence pipeline so
+   * Codex/Hermes/DSH sessions get the same 成果 archive as bridge-host
+   * Claude turns: a per-turn bundle, timed tool rows and workspace
+   * attribution. Best-effort: evidence failures must never break the event
+   * pump, and turns observed mid-flight (no turn.started) are skipped.
+   */
+  private async recordEvidence(
+    runtimeId: BridgeDesktopRuntimeId,
+    event: Exclude<RuntimeAdapterEvent, { type: "session.updated" } | { type: "permission.requested" } | { type: "goal.updated" } | { type: "goal.cleared" }>,
+    session: RuntimeAdapterSession | undefined,
+  ): Promise<void> {
+    const evidence = this.evidence;
+    if (!evidence) return;
+    const adapter = this.registry.adapter(runtimeId);
+    if (!adapter?.status().capabilities.includes("tool.events")) return;
+    const sessionId = runtimeSessionId(runtimeId, event.nativeSessionId);
+    const turnId = "turnId" in event ? event.turnId : undefined;
+    try {
+      if (event.type === "turn.started") {
+        const cwd = session?.cwd;
+        if (!cwd) return;
+        const evidenceId = await evidence.startBridgeTurn({
+          sessionId,
+          cwd,
+          commandId: turnId ?? `runtime-${event.at}`,
+          source: "runtime-host",
+          runtimeId,
+          startedAt: event.at,
+        });
+        if (turnId) await evidence.attachTurn(evidenceId, turnId);
+        return;
+      }
+      if (event.type === "tool.started") {
+        await evidence.recordToolStarted({
+          sessionId,
+          ...(turnId ? { turnId } : {}),
+          itemId: event.itemId,
+          toolName: event.toolName,
+          toolInput: event.input,
+          at: event.at,
+        });
+        return;
+      }
+      if (event.type === "tool.completed") {
+        await evidence.recordToolCompleted({
+          sessionId,
+          ...(turnId ? { turnId } : {}),
+          itemId: event.itemId,
+          output: event.output,
+          at: event.at,
+        });
+        return;
+      }
+      if (event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.interrupted") {
+        await evidence.finalizeBridgeTurn({
+          sessionId,
+          ...(turnId ? { turnId } : {}),
+          failed: event.type !== "turn.completed",
+          ...(event.type === "turn.failed" ? { error: event.error } : {}),
+          ...(event.type === "turn.interrupted" ? { error: "任务已中断" } : {}),
+          completedAt: event.at,
+          ...(event.type === "turn.completed" && event.usage ? { usage: event.usage } : {}),
+        });
+      }
+    } catch {
+      // evidence is an observer; never let it break session streaming
+    }
   }
 
   private toBridgeEvent(event: Exclude<RuntimeAdapterEvent, { type: "session.updated" } | { type: "permission.requested" } | { type: "goal.updated" } | { type: "goal.cleared" }>): {
@@ -987,7 +1068,10 @@ export class RuntimeSessionBroker extends EventEmitter {
         return {
           type: "turn.completed",
           ...(event.turnId ? { turnId: event.turnId } : {}),
-          data: event.result ? { result: event.result } : {},
+          data: {
+            ...(event.result ? { result: event.result } : {}),
+            ...(event.usage ? { usage: event.usage } : {}),
+          },
         };
       case "turn.failed":
         return { type: "turn.failed", ...(event.turnId ? { turnId: event.turnId } : {}), data: { error: event.error } };

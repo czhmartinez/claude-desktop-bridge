@@ -4,8 +4,9 @@
 
 **Bridge** is an open-source, end-to-end encrypted remote and collaboration layer for
 [Claude Desktop](https://claude.com/download), [Codex Desktop](https://developers.openai.com/codex/),
-and Hermes Desktop. It gives you a consistent session list, streaming output, approvals,
-follow-up questions, interrupts, and recovery across your desktop and phone, without merging
+Hermes Desktop, and DSH Desktop (DeepSeek Harness). It gives you a consistent session list,
+streaming output, approvals, follow-up questions, interrupts, and recovery across your desktop
+and phone, without merging
 any native account, session, model, permission, or history.
 
 <img src="assets/social-preview.png" width="720" alt="Bridge social preview" />
@@ -22,7 +23,7 @@ that gap with a phone-first remote experience that still respects the boundaries
 desktop runtime:
 
 - **Unified control, separate identities.** View, send, approve, steer, and stop Claude,
-  Codex, and Hermes sessions from one place. Native sessions remain
+  Codex, Hermes, and DSH sessions from one place. Native sessions remain
   `(runtimeId, nativeSessionId)` identities and never silently migrate between runtimes.
 - **Cross-desktop relay.** Hand a bounded, redacted, encrypted task context from one desktop
   runtime to another. Every relay requires two human confirmations and runs through a
@@ -33,6 +34,8 @@ desktop runtime:
 - **Local-first adapters.** Claude is integrated through its public Agent SDK and read-only
   transcript observation. Codex uses the official `codex app-server --stdio` interface that
   Bridge starts itself. Hermes uses a loopback-only Gateway with a process-scoped token.
+  DSH attaches to the running DSH Desktop host over its own loopback `/api` RPC plus the
+  dual downlink event streams, behind DSH's Host-header trust fence.
 - **Real evidence, real previews.** Remote image attachments, file-change summaries,
   artifact previews, and workspace-confined file opening are rendered as actual content on
   desktop and mobile, not bare paths.
@@ -56,6 +59,7 @@ flowchart LR
   A --> C["Claude SessionBroker"]
   A --> X["Codex app-server adapter"]
   A --> H["Hermes Gateway adapter"]
+  A --> W["DSH Desktop adapter"]
   C --> CS[("conversation-state-v1.sqlite")]
   C --> E[("SessionEventLog JSONL")]
   C --> EM["EvidenceManager"]
@@ -70,7 +74,7 @@ requirements.
 ## Features
 
 - Session list, history, streaming output, approvals, questions, interrupts, and resume
-  across Claude Desktop, Codex Desktop, and Hermes Desktop
+  across Claude Desktop, Codex Desktop, Hermes Desktop, and DSH Desktop
 - Model/effort/permission configuration and provider switching per runtime, exposed only
   where the runtime actually supports it
 - Cross-desktop relay with plan-first execution, goal monitoring, pause/resume, and
