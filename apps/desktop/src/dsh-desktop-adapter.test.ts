@@ -84,8 +84,6 @@ function sessionEvent(sessionId: string, event: Record<string, unknown>): DshSer
 async function createAdapter(client: FakeDshClient): Promise<DshDesktopAdapter> {
   const adapter = new DshDesktopAdapter({
     discoverGatewayUrl: async () => "http://127.0.0.1:60768",
-    appInstalled: async () => true,
-    launchApp: async () => false,
     clientFactory: async () => client,
   });
   await adapter.initialize();
@@ -121,8 +119,6 @@ describe("DshDesktopAdapter", () => {
   it("stays unavailable with rediscovery scheduled when no gateway is found", async () => {
     adapter = new DshDesktopAdapter({
       discoverGatewayUrl: async () => undefined,
-      appInstalled: async () => false,
-      launchApp: async () => false,
       rediscoveryIntervalMs: 60_000,
     });
     await adapter.initialize();

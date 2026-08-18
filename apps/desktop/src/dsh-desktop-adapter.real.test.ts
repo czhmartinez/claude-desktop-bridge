@@ -18,8 +18,6 @@ describe("DshDesktopAdapter (live DSH host)", () => {
     expect(gatewayUrl).toBeTruthy();
     const adapter = new DshDesktopAdapter({
       discoverGatewayUrl: async () => gatewayUrl,
-      appInstalled: async () => true,
-      launchApp: async () => false,
     });
     const events: RuntimeAdapterEvent[] = [];
     adapter.on("event", (event) => events.push(event));

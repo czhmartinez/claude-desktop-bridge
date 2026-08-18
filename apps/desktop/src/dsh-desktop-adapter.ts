@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -21,7 +21,6 @@ import {
   type RuntimeAdapterTurnInput,
   type RuntimeAdapterTurnResult,
 } from "./runtime-adapter.js";
-import { DSH_DESKTOP_APP, desktopAppPathCandidates } from "./desktop-app-definitions.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -299,8 +298,6 @@ class HttpDshApiClient extends EventEmitter implements DshApiClient {
 export interface DshDesktopAdapterOptions {
   clientFactory?: (baseUrl: string) => Promise<DshApiClient>;
   discoverGatewayUrl?: () => Promise<string | undefined>;
-  appInstalled?: () => Promise<boolean>;
-  launchApp?: () => Promise<boolean>;
   fetchImpl?: typeof fetch;
   rediscoveryIntervalMs?: number;
 }
@@ -334,13 +331,7 @@ export class DshDesktopAdapter extends DesktopRuntimeAdapter {
     this.clearRediscovery();
     this.setStatus("starting", "正在发现 DSH Desktop 宿主。");
     try {
-      let baseUrl = await this.discover();
-      if (!baseUrl && lifecycleId === this.lifecycleId && await this.isAppInstalled()) {
-        this.setStatus("starting", "正在启动 DSH Desktop…");
-        if (await this.launch()) {
-          baseUrl = await this.waitForDiscovery(45_000);
-        }
-      }
+      const baseUrl = await this.discover();
       if (lifecycleId !== this.lifecycleId) return;
       if (!baseUrl) {
         this.setStatus(
@@ -1100,26 +1091,6 @@ export class DshDesktopAdapter extends DesktopRuntimeAdapter {
     return discoverRunningDshGateway(this.options.fetchImpl ?? fetch);
   }
 
-  private async isAppInstalled(): Promise<boolean> {
-    if (this.options.appInstalled) return this.options.appInstalled();
-    return dshDesktopInstalled();
-  }
-
-  private async launch(): Promise<boolean> {
-    // 自动拉起 DSH Desktop 已彻底禁用：忽略任何 launchApp 回调。
-    return false;
-  }
-
-  private async waitForDiscovery(timeoutMs: number): Promise<string | undefined> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const found = await this.discover().catch(() => undefined);
-      if (found) return found;
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-    }
-    return undefined;
-  }
-
   private scheduleRediscovery(): void {
     this.clearRediscovery();
     const interval = this.options.rediscoveryIntervalMs ?? REDISCOVERY_INTERVAL_MS;
@@ -1226,21 +1197,4 @@ export async function discoverRunningDshGateway(fetchImpl: typeof fetch = fetch)
     }
   }
   return undefined;
-}
-
-async function dshDesktopInstalled(): Promise<boolean> {
-  for (const candidate of desktopAppPathCandidates(DSH_DESKTOP_APP)) {
-    try {
-      await stat(candidate);
-      return true;
-    } catch {
-      continue;
-    }
-  }
-  return false;
-}
-
-async function launchDshDesktop(): Promise<boolean> {
-  // 自动拉起 DSH Desktop 已彻底禁用：不执行 open/spawn。
-  return false;
 }
