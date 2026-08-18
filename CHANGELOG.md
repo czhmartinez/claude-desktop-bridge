@@ -1,3 +1,13 @@
+## 1.0.1
+
+- DSH Desktop launch path removed entirely: Bridge no longer starts or
+  relaunches the DSH app. When the host is not running, sessions present as
+  honestly offline and re-discovery continues on its cadence — quitting DSH
+  no longer results in Bridge resurrecting it behind the user's back.
+- Packaged QA session picks are pinned to the Claude domain.
+- Runtime audit findings in transitive dependencies fixed; README gains the
+  1.0 section.
+
 ## 1.0.0
 
 - DSH Desktop (DeepSeek Harness) joins the runtime roster as a first-class

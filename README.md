@@ -26,7 +26,7 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前版本：1.0.0
+## 当前版本：1.0.1
 
 1.0 新增第四位运行时：**DSH Desktop（DeepSeek Harness）**。Bridge 不再启动任何 DSH
 旁路进程，而是直接附着正在运行的 DSH 宿主——按进程发现回环端口、探测 `host.describe`
@@ -34,8 +34,8 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 列表、创建、历史、模型目录与 queue/steer 指令，`events.mux` 与 `events.host` 两条
 下行 WebSocket 承载全部实时事件；审批与 AskUserQuestion 经 `/api/respond` 用宿主铸造的
 帧 rpcId 应答。DSH 的 Host 头信任栅栏决定了这条链路只能回本机回环，Bridge 不读取
-DSH 的凭据文件。已安装未运行时 Bridge 会先拉起应用再等宿主上线；连接中断会把在跑
-轮次如实标记为中断并按 15 秒节奏重发现。逐 token 的流式增量在出站前聚合，reasoning
+DSH 的凭据文件。1.0.1 起 Bridge 彻底不再拉起 DSH Desktop——宿主未运行时如实呈现离线，
+绝不在用户退出后复活应用；连接中断会把在跑轮次如实标记为中断并按 15 秒节奏重发现。逐 token 的流式增量在出站前聚合，reasoning
 与 tool-call 增量永不出站。模型与推理档位读取 DSH 实时目录并经 `session.selectModel`
 应用；图片附件按 DSH 公布的限额内联。`npm run probe:dsh` 可对活宿主做契约探测
 （`--exercise` 会跑一个一次性的真实轮次）。
@@ -55,6 +55,9 @@ Bridge 0.9.2 新增可切换的主题家族：在原有 Sunstone 暖极简基线
 Sunstone。主题对比度在四个组合下全部通过 axe/WCAG 4.5:1 门禁。
 
 逐版本摘要（完整记录见 [CHANGELOG.md](CHANGELOG.md)）：
+
+- **1.0.1**：彻底移除 DSH Desktop 拉起路径——Bridge 不再启动或复活 DSH 应用，
+  宿主离线时如实呈现并按节奏重发现；修复用户退出 DSH 后被 Bridge 重新拉起的问题。
 
 - **0.9.5**：根治"更新就要重配对"——桌面启动时把私网 IPv4 的局域网中继端点
   重写为当前地址并在快照中广播，手机原位自愈存储端点；新增上行看门狗，

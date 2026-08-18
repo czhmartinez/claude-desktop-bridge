@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<title>Claude Bridge · 模块架构图</title>
+<style>
+  html,body{height:100%;margin:0;background:#0b0d13;color:#e7eaf2;
+    font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC",sans-serif;}
+  header{padding:14px 18px;border-bottom:1px solid #232836;}
+  h1{font-size:16px;margin:0;}
+  .sub{color:#8b93a7;font-size:12px;}
+  #g{width:100vw;height:calc(100vh - 64px);}
+  .node{stroke:#0b0d13;stroke-width:1.5;cursor:pointer;}
+  .label{fill:#e7eaf2;font-size:12px;pointer-events:none;paint-order:stroke;stroke:rgba(11,13,19,.9);stroke-width:3px;}
+  .edge{stroke:#3d4557;stroke-opacity:.5;}
+  .wt{fill:#8b93a7;font-size:10px;pointer-events:none;paint-order:stroke;stroke:rgba(11,13,19,.9);stroke-width:2.5px;}
+</style></head>
+<body>
+<header><h1>Claude Bridge · 模块架构图</h1>
+<div class="sub">节点=模块，大小=文件数，箭头=import 依赖，数字=依赖条数（仅跨模块）</div></header>
+<svg id="g"></svg>
+<script src="./d3.v7.min.js"></script>
+<script>
+const MODULES=[{"name":"apps/desktop","files":81,"symbols":2284,"in":2,"out":69},{"name":"apps/client","files":43,"symbols":514,"in":8,"out":39},{"name":"packages/protocol","files":18,"symbols":598,"in":122,"out":0},{"name":"apps/mobile","files":13,"symbols":65,"in":0,"out":0},{"name":"scripts","files":10,"symbols":211,"in":1,"out":15},{"name":"apps/relay","files":9,"symbols":192,"in":1,"out":10}];
+const EDGES=[{"source":"apps/desktop","target":"packages/protocol","weight":60},{"source":"apps/client","target":"packages/protocol","weight":39},{"source":"scripts","target":"packages/protocol","weight":14},{"source":"apps/relay","target":"packages/protocol","weight":9},{"source":"apps/desktop","target":"apps/client","weight":8},{"source":"apps/desktop","target":"scripts","weight":1},{"source":"apps/relay","target":"apps/desktop","weight":1},{"source":"scripts","target":"apps/relay","weight":1}];
+const svg=d3.select('#g');const W=svg.node().clientWidth,H=svg.node().clientHeight;
+svg.attr('viewBox',[0,0,W,H]);
+const root=svg.append('g');
+const PAL=['#38bdf8','#34d399','#fbbf24','#fb7185','#a78bfa','#22d3ee','#f472b6','#4ade80','#facc15','#818cf8','#c084fc','#fb923c'];
+const cm=new Map(MODULES.map((m,i)=>[m.name,PAL[i%PAL.length]]));
+const nodes=MODULES.map(m=>({id:m.name,label:m.name,files:m.files,r:18+Math.sqrt(m.files)*4}));
+const links=EDGES.map(e=>({source:e.source,target:e.target,w:e.weight}));
+const sim=d3.forceSimulation(nodes)
+  .force('charge',d3.forceManyBody().strength(-900))
+  .force('center',d3.forceCenter(W/2,H/2))
+  .force('collide',d3.forceCollide().radius(d=>d.r+10))
+  .force('link',d3.forceLink(links).id(d=>d.id).distance(d=>140).strength(.25));
+const link=root.append('g').selectAll('line').data(links).join('line')
+  .attr('class','edge').attr('stroke-width',d=>Math.max(1,Math.sqrt(d.w)));
+const g=root.append('g').selectAll('g').data(nodes).join('g');
+g.append('circle').attr('class','node').attr('r',d=>d.r).attr('fill',d=>cm.get(d.id));
+g.append('text').attr('class','label').attr('text-anchor','middle').attr('dy',4).text(d=>d.label);
+g.append('text').attr('class','wt').attr('text-anchor','middle').attr('dy',d=>d.r+13).text(d=>d.files+' files');
+const wt=root.append('g').selectAll('text').data(links).join('text')
+  .attr('class','wt').text(d=>d.w);
+function ar(x1,y1,x2,y2){return x2-x1;}
+sim.on('tick',()=>{
+  link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+  g.attr('transform',d=>`translate(${d.x},${d.y})`);
+  wt.attr('x',d=>(d.source.x+d.target.x)/2).attr('y',d=>(d.source.y+d.target.y)/2);
+});
+const drag=d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y;})
+  .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;});
+g.call(drag);
+svg.call(d3.zoom().scaleExtent([.3,4]).on('zoom',e=>root.attr('transform',e.transform)));
+</script></body></html>
