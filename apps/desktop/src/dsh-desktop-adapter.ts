@@ -1106,8 +1106,8 @@ export class DshDesktopAdapter extends DesktopRuntimeAdapter {
   }
 
   private async launch(): Promise<boolean> {
-    if (this.options.launchApp) return this.options.launchApp();
-    return launchDshDesktop();
+    // 自动拉起 DSH Desktop 已彻底禁用：忽略任何 launchApp 回调。
+    return false;
   }
 
   private async waitForDiscovery(timeoutMs: number): Promise<string | undefined> {
@@ -1241,23 +1241,6 @@ async function dshDesktopInstalled(): Promise<boolean> {
 }
 
 async function launchDshDesktop(): Promise<boolean> {
-  for (const candidate of desktopAppPathCandidates(DSH_DESKTOP_APP)) {
-    try {
-      await stat(candidate);
-    } catch {
-      continue;
-    }
-    if (process.platform === "darwin") {
-      await run("open", ["-g", "-a", candidate]);
-      return true;
-    }
-    if (process.platform === "win32") {
-      const { spawn } = await import("node:child_process");
-      const child = spawn(`"${candidate}"`, [], { detached: true, stdio: "ignore", shell: true });
-      child.unref();
-      return true;
-    }
-    return false;
-  }
+  // 自动拉起 DSH Desktop 已彻底禁用：不执行 open/spawn。
   return false;
 }
